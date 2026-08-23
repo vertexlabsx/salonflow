@@ -1,0 +1,154 @@
+<article class="dashboard" [attr.aria-busy]="loading()">
+  <header class="dashboard-header">
+    <div>
+      <p class="eyebrow">Business overview</p>
+      <h1>{{ ownerGreeting() }}, here is the business picture.</h1>
+      <p>{{ context.branchLabel() }} <span aria-hidden="true">·</span> {{ context.periodRangeLabel() }}</p>
+      @if (data(); as headerData) { <div class="header-facts"><span><b>{{ headerData.kpis.netRevenuePaise.availability.available ? (headerData.kpis.netRevenuePaise.current | paiseInr) : 'Unavailable' }}</b> net revenue</span><span><b>{{ headerData.actionCentre.totalAvailableActions === null ? 'Unavailable' : headerData.actionCentre.totalAvailableActions }}</b> available actions</span></div> }
+    </div>
+    <div class="refresh-block">
+      <span role="status">{{ backgroundRefreshing() ? 'Refreshing while current data remains visible' : hasData() ? 'Generated ' + generatedLabel() : 'Loading current business data' }}</span>
+      @if (!blockingError()) { <button type="button" (click)="refresh()" [disabled]="loading()"><span aria-hidden="true">↻</span>{{ loading() ? 'Refreshing' : 'Refresh' }}</button> }
+    </div>
+  </header>
+
+  @if (loading() && !hasData()) {
+    <div class="dashboard-skeleton" aria-label="Loading owner dashboard">
+      <section class="skeleton-kpis"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></section>
+      <section class="skeleton-panel tall"><i></i><i></i><i></i></section>
+      <div class="skeleton-columns"><section class="skeleton-panel"><i></i><i></i></section><section class="skeleton-panel"><i></i><i></i></section></div>
+    </div>
+  } @else if (blockingError()) {
+    <section class="blocking-error" role="alert"><span aria-hidden="true">!</span><h2>Dashboard unavailable</h2><p>{{ blockingError() }}</p><button type="button" (click)="refresh()" [disabled]="loading()">Try again</button></section>
+  } @else if (data(); as dashboard) {
+    @if (refreshError()) { <p class="refresh-error" role="alert">{{ refreshError() }}</p> }
+    @if (dashboard.sources.partial) {
+      <section class="partial-warning" role="status"><strong>Some data sources are unavailable.</strong><span>Available business data remains visible.</span><details><summary>Review affected sources</summary><ul>@for (warning of dashboard.sources.warnings; track warning.source + warning.code) { <li>{{ warning.message }}</li> }</ul></details></section>
+    }
+
+    <section class="dashboard-section executive-targets-section" aria-labelledby="exec-targets-title">
+      <div class="section-heading">
+        <div>
+          <p class="eyebrow">Goal & Capacity Intelligence</p>
+
+          <h2 id="exec-targets-title">Daily Performance Progress & Revenue Breakdown</h2>
+        </div>
+        <span class="target-badge">🎯 {{ revenueTargetPercent() }}% Target Achieved</span>
+      </div>
+
+      <div class="targets-grid">
+        <article class="target-card">
+          <div class="target-card-head">
+            <div>
+              <span>Daily Revenue Target</span>
+              <strong>{{ (data()?.kpis?.netRevenuePaise?.current || 0) | paiseInr }} / ₹35,000</strong>
+            </div>
+            <span class="percent-tag" [class.success]="revenueTargetPercent() >= 80">{{ revenueTargetPercent() }}%</span>
+          </div>
+          <div class="progress-track" aria-label="Daily Revenue Progress">
+            <div class="progress-fill" [style.width.%]="revenueTargetPercent()"></div>
+          </div>
+          <small>Branch Goal Target</small>
+        </article>
+
+        <article class="target-card">
+          <div class="target-card-head">
+            <div>
+              <span>Appointment Capacity Occupancy</span>
+              <strong>{{ data()?.kpis?.completedAppointments?.current || 0 }} completed of {{ data()?.kpis?.appointments?.current || 0 }} total</strong>
+            </div>
+            <span class="percent-tag" [class.success]="occupancyPercent() >= 70">{{ occupancyPercent() }}%</span>
+          </div>
+          <div class="progress-track" aria-label="Appointment Occupancy Progress">
+            <div class="progress-fill occupancy" [style.width.%]="occupancyPercent()"></div>
+          </div>
+          <small>Chair utilization rate</small>
+        </article>
+
+        <article class="target-card full-width-target">
+          <div class="target-card-head">
+            <div>
+              <span>Revenue Source Split</span>
+              <strong>Service ({{ serviceRevenuePercent() }}%) vs Product ({{ productRevenuePercent() }}%)</strong>
+            </div>
+          </div>
+          <div class="multi-progress-track" aria-label="Revenue Source Split">
+            <div class="segment service" [style.width.%]="serviceRevenuePercent()" title="Service Revenue"></div>
+            <div class="segment product" [style.width.%]="productRevenuePercent()" title="Product Revenue"></div>
+          </div>
+          <div class="split-legend">
+            <span><i class="dot service"></i> Service: {{ (data()?.revenue?.aggregates?.serviceRevenuePaise?.current || 0) | paiseInr }}</span>
+            <span><i class="dot product"></i> Product: {{ (data()?.revenue?.aggregates?.productRevenuePaise?.current || 0) | paiseInr }}</span>
+            <span><i class="dot discounts"></i> Discounts: {{ (data()?.revenue?.aggregates?.discountsPaise?.current || 0) | paiseInr }}</span>
+          </div>
+        </article>
+      </div>
+    </section>
+
+    <section class="dashboard-section kpi-section" aria-labelledby="dashboard-kpis-title">
+      <div class="section-heading"><div><p class="eyebrow">Selected period</p><h2 id="dashboard-kpis-title">Performance at a glance</h2></div><span>Compared with {{ formatDate(dashboard.context.previousRange.from) }} – {{ formatDate(dashboard.context.previousRange.to) }}</span></div>
+      <div class="kpi-grid" [class.show-all]="showAllMetrics()">
+        @for (definition of kpiDefinitions; track definition.key) { @if (metric(definition.key); as item) { <owner-kpi-card [label]="definition.label" [metric]="item" (activate)="openKpi(definition)" /> } }
+      </div>
+      <button class="metrics-toggle" type="button" (click)="showAllMetrics.set(!showAllMetrics())" [attr.aria-expanded]="showAllMetrics()">{{ showAllMetrics() ? 'Show key metrics' : 'View all metrics' }}</button>
+    </section>
+
+    <section class="dashboard-section" aria-labelledby="business-summary-title">
+       <div class="section-heading"><div><p class="eyebrow">Period summary</p><h2 id="business-summary-title">Business summary</h2></div><span>Only measured conditions returned for this context</span></div>
+      <div class="summary-groups">
+        @for (group of summaryGroups; track group.key) {
+          <section class="summary-group" [attr.aria-labelledby]="'summary-' + group.key"><header [id]="'summary-' + group.key"><owner-status-badge [label]="group.label" [tone]="group.key" /><p>{{ group.description }}</p></header>
+            <div>@for (row of summaries(group.key); track row.id) { <owner-dashboard-item [title]="row.label" [meta]="summaryMeta(row)" [value]="summaryValue(row)" [badge]="row.group === 'attention' ? 'Needs review' : row.group === 'positive' ? 'Improved' : 'Recorded'" [tone]="row.group" (activate)="openDestination(row.destination)" /> } @empty { <p class="compact-empty">No summary rows returned.</p> }</div>
+          </section>
+        }
+      </div>
+    </section>
+
+    <section class="dashboard-section revenue-section" aria-labelledby="revenue-title">
+      <div class="section-heading"><div><p class="eyebrow">Revenue</p><h2 id="revenue-title">Recorded net revenue trend</h2></div></div>
+      @if (dashboard.revenue.availability?.available === false) { <div class="section-unavailable"><strong>Revenue trend unavailable</strong><span>{{ dashboard.revenue.availability?.reason }}</span></div> }
+      @else { <owner-revenue-chart [current]="dashboard.revenue.current" [previous]="dashboard.revenue.previous" [grouping]="dashboard.revenue.grouping" /> }
+      <div class="aggregate-grid">
+        @for (definition of aggregateDefinitions; track definition.key) { @if (aggregate(definition.key); as item) {
+          <article [class.unavailable]="!item.availability.available"><span>{{ definition.label }}</span>@if (item.availability.available) { <strong>{{ item.current | paiseInr }}</strong><small>{{ comparisonText(item) }}</small> } @else { <strong>Unavailable</strong><small>{{ item.availability.reason }}</small> }</article>
+        } }
+      </div>
+    </section>
+
+    <div class="dashboard-columns">
+      <section class="dashboard-section appointments-section" aria-labelledby="appointments-title">
+        <div class="section-heading"><div><p class="eyebrow">Appointments</p><h2 id="appointments-title">Appointment overview</h2></div></div>
+        @if (dashboard.appointments.availability?.available === false) { <div class="section-unavailable"><strong>Appointment data unavailable</strong><span>{{ dashboard.appointments.availability?.reason }}</span></div> }
+        @else {
+          <div class="appointment-peaks"><article><span>Peak day</span><strong>{{ dashboard.appointments.peakDay ? formatDate(dashboard.appointments.peakDay.date) : 'Not available' }}</strong><small>{{ dashboard.appointments.peakDay ? (dashboard.appointments.peakDay.appointments + ' appointments') : 'No recorded peak' }}</small></article><article><span>Peak hour</span><strong>{{ dashboard.appointments.peakHour ? formatHour(dashboard.appointments.peakHour.hour) : 'Not available' }}</strong><small>{{ dashboard.appointments.peakHour ? (dashboard.appointments.peakHour.appointments + ' appointments') : 'No recorded peak' }}</small></article></div>
+          <div class="status-counts">@for (status of dashboard.appointments.statusCounts; track status.status) { <button type="button" (click)="openAppointments({ status: status.status })"><span>{{ humanize(status.status) }}</span><strong>{{ status.count | number:'1.0-0' }}</strong></button> } @empty { <p class="compact-empty">No appointment status counts were returned.</p> }</div>
+        }
+      </section>
+
+      <section class="dashboard-section action-section" aria-labelledby="actions-title">
+        <div class="section-heading"><div><p class="eyebrow">Action centre</p><h2 id="actions-title">Items requiring action</h2></div>@if (dashboard.actionCentre.totalAvailableActions !== null) { <span>{{ dashboard.actionCentre.totalAvailableActions }} available</span> }</div>
+        <div class="item-list">@for (item of visibleActions(); track item.id) { <owner-dashboard-item [title]="item.label" [meta]="actionMeta(item)" [value]="actionValue(item)" [badge]="humanize(item.severity)" [tone]="item.severity" (activate)="openDestination(item.destination)" /> } @empty { <div class="compact-empty"><strong>No action items returned</strong><span>There are no available action records for this context.</span></div> }</div>
+        @if (sortedActions().length > 6) { <button type="button" class="list-toggle" (click)="expandedActions.set(!expandedActions())" [attr.aria-expanded]="expandedActions()">{{ expandedActions() ? 'Show priority actions only' : 'Show more priority actions' }} <span>{{ visibleActions().length }} of {{ sortedActions().length }}</span></button> }
+        @if (expandedActions() && sortedActions().length > 24) { <p class="list-cap-note">Top 24 actions shown. Open an action to continue in its operational module.</p> }
+        @if (unavailableActionCategories().length) { <details class="unsupported-details"><summary>Unsupported action sources ({{ unavailableActionCategories().length }})</summary><ul>@for (category of unavailableActionCategories(); track category[0]) { <li><strong>{{ humanize(category[0]) }}</strong> — {{ category[1].reason || 'Unavailable' }}</li> }</ul></details> }
+      </section>
+    </div>
+
+    <section class="dashboard-section staff-section" aria-labelledby="staff-title">
+      <div class="section-heading"><div><p class="eyebrow">Staff operations · {{ formatDate(dashboard.staffOperations.asOfBusinessDate) }}</p><h2 id="staff-title">Today’s recorded staff status</h2></div><button type="button" class="text-link" (click)="openStaff()">Open Staff <span aria-hidden="true">→</span></button></div>
+      <p class="source-note">{{ realtimeConnected() ? 'Live attendance updates connected. Status uses saved punches, schedules and booked appointments.' : 'Live updates are reconnecting. Status uses the latest saved attendance, schedules and booked appointments.' }}</p>
+      @if (!dashboard.staffOperations.availability.available) { <div class="section-unavailable"><strong>Staff status unavailable</strong><span>{{ dashboard.staffOperations.availability.reason }}</span></div> }
+      @else { <div class="staff-grid">@for (person of visibleStaff(); track person.id) { <article><span class="avatar" aria-hidden="true">{{ initials(person.name) }}</span><div><strong>{{ person.name }}</strong><p>{{ humanize(person.role) }} · {{ branchName(person.branchId) }}</p><small>{{ person.bookedAppointments }} booked {{ person.bookedAppointments === 1 ? 'appointment' : 'appointments' }}</small></div><owner-status-badge [label]="statusLabel(person.operationalStatus)" [tone]="person.operationalStatus" /></article> } @empty { <p class="compact-empty">No active staff rows were returned.</p> }</div>
+      }
+    </section>
+
+    @if (showBranchComparison()) {
+      <section class="dashboard-section branch-section" aria-labelledby="branch-title">
+        <div class="section-heading"><div><p class="eyebrow">All branches</p><h2 id="branch-title">Branch comparison</h2></div><span>No ranking applied</span></div>
+        <div class="branch-table" role="table" aria-label="Branch comparison"><div class="branch-row branch-head" role="row"><span role="columnheader">Branch</span><span role="columnheader">Net revenue</span><span role="columnheader">Appointments</span><span role="columnheader">Average bill</span><span role="columnheader">Contribution</span></div>
+          @for (branch of dashboard.branchComparison.branches; track branch.branchId) { <article class="branch-row" role="row"><div role="cell"><strong>{{ branch.branchName }}</strong>@if (branch.missingData) { <small>Some metrics unavailable</small> }</div><div role="cell" data-label="Net revenue"><strong>{{ branchMetric(branch.metrics.netRevenuePaise) }}</strong><small>{{ branchMetricNote(branch.metrics.netRevenuePaise) }}</small></div><div role="cell" data-label="Appointments"><strong>{{ branchMetric(branch.metrics.appointments) }}</strong><small>{{ branchMetricNote(branch.metrics.appointments) }}</small></div><div role="cell" data-label="Average bill"><strong>{{ branchMetric(branch.metrics.averageBillPaise) }}</strong><small>{{ branchMetricNote(branch.metrics.averageBillPaise) }}</small></div><div role="cell" data-label="Contribution"><strong>{{ branch.contributionPercent === null ? 'Unavailable' : ((branch.contributionPercent | number:'1.0-1') + '%') }}</strong><small>{{ branch.contributionPercent === null ? 'Not returned' : 'Net revenue contribution' }}</small></div></article> }
+        </div>
+      </section>
+    }
+  }
+</article>

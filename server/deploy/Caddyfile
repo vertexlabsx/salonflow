@@ -1,0 +1,21 @@
+{$DOMAIN} {
+	encode zstd gzip
+
+	# API and SSE stream
+	handle /api/v1/realtime/events* {
+		reverse_proxy api:4000 {
+			flush_interval -1
+		}
+	}
+
+	handle /api/* {
+		reverse_proxy api:4000
+	}
+
+	# Static frontend bundle (mount or bake into an image at /srv/app)
+	handle {
+		root * /srv/app
+		try_files {path} /index.html
+		file_server
+	}
+}

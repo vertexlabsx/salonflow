@@ -1,0 +1,221 @@
+@import "@ionic/angular/css/core.css";
+@import "@ionic/angular/css/normalize.css";
+@import "@ionic/angular/css/structure.css";
+@import "@ionic/angular/css/typography.css";
+@import "@ionic/angular/css/display.css";
+@import "@ionic/angular/css/padding.css";
+@import "@ionic/angular/css/flex-utils.css";
+
+:root {
+  --ion-font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --ion-color-primary: #00a884;
+  --ion-color-primary-rgb: 0, 168, 132;
+  --ion-color-primary-shade: #008069;
+  --ion-color-primary-tint: #1ab193;
+  --ion-color-primary-contrast: #ffffff;
+  --ion-background-color: #f8faf9;
+  --ion-text-color: #1f2937;
+  --staff-primary: #00a884;
+  --staff-primary-hover: #008069;
+  --staff-primary-light: #d9fdd3;
+  --staff-background: #f0f2f5;
+  --staff-surface: #ffffff;
+  --staff-surface-secondary: #f0f2f5;
+  --staff-surface-glass: rgba(255,255,255,.94);
+  --staff-border: #dfe3e5;
+  --staff-border-accent: #b7dfd3;
+  --staff-text: #111b21;
+  --staff-text-secondary: #667781;
+  --staff-text-placeholder: #8696a0;
+  --staff-text-inverse: #ffffff;
+  --staff-on-primary: #ffffff;
+  --staff-disabled: #aebac1;
+  --staff-track: #e5e9eb;
+  --staff-success: #22c55e;
+  --staff-warning: #64748b;
+  --staff-error: #ef4444;
+  --staff-info: #3b82f6;
+  --staff-success-surface: #e7f8ef;
+  --staff-success-border: #b6e8ca;
+  --staff-success-text: #147a43;
+  --staff-error-surface: #fff0f0;
+  --staff-error-border: #f3c4c4;
+  --staff-error-text: #b42323;
+  --staff-overlay: rgba(17,27,33,.42);
+  --staff-focus-ring: rgba(0,168,132,.24);
+  --staff-decoration-one: #b7eadb;
+  --staff-decoration-two: #d9fdd3;
+  --staff-shadow: 0 8px 24px rgba(17,27,33,.07);
+  --staff-shadow-elevated: 0 24px 64px rgba(17,27,33,.18);
+  --staff-space-1: 8px;
+  --staff-space-2: 16px;
+  --staff-space-3: 24px;
+  --staff-space-4: 32px;
+  --staff-card-padding: 20px;
+  --staff-control-height: 48px;
+  --staff-header-height: 54px;
+  --staff-mobile-nav-height: 72px;
+  --staff-mobile-nav-offset: 8px;
+  --staff-bottom-clearance: calc(var(--staff-mobile-nav-height) + var(--staff-mobile-nav-offset) + env(safe-area-inset-bottom) + 16px);
+  --staff-radius-control: 14px;
+  --staff-radius-card: 20px;
+  --staff-input-background: #fff8e7;
+  --staff-input-border: #d7e9dd;
+  --staff-input-text: #1f2937;
+  --staff-input-placeholder: #8a97a3;
+  --staff-input-label: #475569;
+  --staff-input-disabled-background: #f1f5f3;
+  --staff-input-disabled-text: #94a3b8;
+  --staff-input-focus: #5f9e7a;
+  --staff-input-focus-ring: rgba(95, 158, 122, .16);
+  --staff-input-error-background: #fef2f2;
+  --staff-input-radius: 18px;
+  --staff-input-height: 56px;
+  --staff-motion-fast: 180ms;
+  --staff-motion-standard: 220ms;
+  --staff-motion-ease: cubic-bezier(.2,.8,.2,1);
+}
+
+html[data-staff-theme="dark"] {
+  color-scheme: dark;
+  --ion-color-primary: #00a884;
+  --ion-color-primary-rgb: 0, 168, 132;
+  --ion-color-primary-shade: #00a884;
+  --ion-color-primary-tint: #06cf9c;
+  --ion-color-primary-contrast: #0b141a;
+  --ion-background-color: #0b141a;
+  --ion-text-color: #e9edef;
+  --staff-primary: #00a884;
+  --staff-primary-hover: #06cf9c;
+  --staff-primary-light: #0b3b32;
+  --staff-background: #0b141a;
+  --staff-surface: #111b21;
+  --staff-surface-secondary: #202c33;
+  --staff-surface-glass: rgba(17,27,33,.95);
+  --staff-border: #2a3942;
+  --staff-border-accent: #245b50;
+  --staff-text: #e9edef;
+  --staff-text-secondary: #8696a0;
+  --staff-text-placeholder: #667781;
+  --staff-text-inverse: #111b21;
+  --staff-on-primary: #071f1a;
+  --staff-disabled: #54656f;
+  --staff-track: #2a3942;
+  --staff-success-surface: #0b3b32;
+  --staff-success-border: #176b58;
+  --staff-success-text: #5ee6b5;
+  --staff-error-surface: #3b1e22;
+  --staff-error-border: #71343b;
+  --staff-error-text: #ff8f9a;
+  --staff-overlay: rgba(0,0,0,.64);
+  --staff-focus-ring: rgba(0,168,132,.32);
+  --staff-decoration-one: #123f36;
+  --staff-decoration-two: #0b3b32;
+  --staff-shadow: 0 8px 24px rgba(0,0,0,.18);
+  --staff-shadow-elevated: 0 24px 64px rgba(0,0,0,.42);
+  --staff-input-background: #202c33;
+  --staff-input-border: #2a3942;
+  --staff-input-text: #e9edef;
+  --staff-input-placeholder: #8696a0;
+  --staff-input-label: #aebac1;
+  --staff-input-disabled-background: #182229;
+  --staff-input-disabled-text: #667781;
+  --staff-input-focus: #00a884;
+  --staff-input-focus-ring: rgba(0,168,132,.28);
+  --staff-input-error-background: #3b1e22;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+ion-app {
+  min-width: 320px;
+  min-height: 100%;
+}
+
+body {
+  margin: 0;
+  overflow-x: hidden;
+  background: var(--staff-background);
+  color: var(--staff-text);
+  font-family: var(--ion-font-family);
+}
+
+button,
+a,
+input,
+select,
+textarea {
+  font: inherit;
+}
+
+:focus-visible {
+  outline: 3px solid var(--staff-focus-ring);
+  outline-offset: 2px;
+}
+
+html.staff-overlay-open,
+html.staff-overlay-open body {
+  overflow: hidden;
+  overscroll-behavior: none;
+}
+
+html.staff-overlay-open .staff-main-shell,
+html.staff-overlay-open .staff-content,
+html:has(.detail-drawer) .staff-main-shell,
+html:has(.detail-drawer) .staff-content {
+  overflow: hidden;
+}
+
+button, a { -webkit-tap-highlight-color: transparent; touch-action: manipulation; }
+button:not(:disabled), a { transition: scale var(--staff-motion-fast) var(--staff-motion-ease), transform var(--staff-motion-fast) var(--staff-motion-ease), background-color var(--staff-motion-fast) var(--staff-motion-ease), border-color var(--staff-motion-fast) var(--staff-motion-ease), color var(--staff-motion-fast) var(--staff-motion-ease), box-shadow var(--staff-motion-fast) var(--staff-motion-ease), opacity var(--staff-motion-fast) var(--staff-motion-ease); }
+button:not(:disabled):active, a:active { scale: .98; }
+@media (prefers-reduced-motion: reduce) { *, *::before, *::after { scroll-behavior: auto !important; transition-duration: .01ms !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; } }
+
+/* Complete, bulletproof scrollbar suppression for Android WebView, iOS WebKit, Ionic Shadow DOM, and Desktop */
+*,
+*::before,
+*::after,
+html,
+body,
+ion-app,
+ion-content,
+ion-content::part(scroll),
+.inner-scroll,
+.page,
+.chat-shell,
+.chat-sidebar,
+.chat-message-viewport,
+.detail-drawer,
+.business-appointment-row,
+.attendance-cards,
+.kanban-board {
+  -webkit-overflow-scrolling: touch !important;
+  scrollbar-width: none !important;
+  -ms-overflow-style: none !important;
+}
+
+*::-webkit-scrollbar,
+*::-webkit-scrollbar-thumb,
+*::-webkit-scrollbar-track,
+*::-webkit-scrollbar-corner,
+html::-webkit-scrollbar,
+body::-webkit-scrollbar,
+ion-app::-webkit-scrollbar,
+ion-content::-webkit-scrollbar,
+ion-content::part(scroll)::-webkit-scrollbar,
+.inner-scroll::-webkit-scrollbar {
+  display: none !important;
+  width: 0 !important;
+  height: 0 !important;
+  max-width: 0 !important;
+  max-height: 0 !important;
+  background: transparent !important;
+  opacity: 0 !important;
+  visibility: hidden !important;
+  -webkit-appearance: none !important;
+}
+

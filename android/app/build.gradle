@@ -1,0 +1,76 @@
+apply plugin: 'com.android.application'
+
+def isolatedBuildDir = System.getenv('AURA_ANDROID_BUILD_DIR')
+if (isolatedBuildDir) layout.buildDirectory.set(file(isolatedBuildDir))
+
+android {
+    namespace "com.aura.staff"
+    compileSdk rootProject.ext.compileSdkVersion
+    defaultConfig {
+        applicationId "com.aura.staff"
+        minSdkVersion rootProject.ext.minSdkVersion
+        targetSdkVersion rootProject.ext.targetSdkVersion
+        versionCode 1
+        versionName "1.0"
+        testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
+        aaptOptions {
+             // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.
+             // Default: https://android.googlesource.com/platform/frameworks/base/+/282e181b58cf72b6ca770dc7ca5f91f135444502/tools/aapt/AaptAssets.cpp#61
+            ignoreAssetsPattern '!.svn:!.git:!.ds_store:!*.scc:.*:!CVS:!thumbs.db:!picasa.ini:!*~'
+        }
+    }
+    buildTypes {
+        release {
+            minifyEnabled false
+            proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
+        }
+    }
+}
+
+repositories {
+    flatDir{
+        dirs '../capacitor-cordova-android-plugins/src/main/libs', 'libs'
+    }
+}
+
+dependencies {
+    implementation fileTree(include: ['*.jar'], dir: 'libs')
+    implementation "androidx.appcompat:appcompat:$androidxAppCompatVersion"
+    implementation "androidx.coordinatorlayout:coordinatorlayout:$androidxCoordinatorLayoutVersion"
+    implementation "androidx.core:core-splashscreen:$coreSplashScreenVersion"
+    implementation "androidx.biometric:biometric:$androidxBiometricVersion"
+    implementation "com.google.android.gms:play-services-location:$playServicesLocationVersion"
+    implementation "com.google.android.play:integrity:$playServicesIntegrityVersion"
+    implementation project(':capacitor-android')
+    testImplementation "junit:junit:$junitVersion"
+    androidTestImplementation "androidx.test.ext:junit:$androidxJunitVersion"
+    androidTestImplementation "androidx.test.espresso:espresso-core:$androidxEspressoCoreVersion"
+    implementation project(':capacitor-cordova-android-plugins')
+}
+
+def isolatedWebDir = System.getenv('AURA_ANDROID_WEB_DIR')
+def isolatedAssetsDir = System.getenv('AURA_ANDROID_ASSETS_DIR')
+if (isolatedWebDir && isolatedAssetsDir) {
+    android.sourceSets.main.assets.srcDirs = [file(isolatedAssetsDir)]
+    def prepareIsolatedWebAssets = tasks.register('prepareIsolatedWebAssets', Sync) {
+        from(file(isolatedWebDir))
+        into(file("${isolatedAssetsDir}/public"))
+        doLast {
+            file("${isolatedAssetsDir}/capacitor.config.json").text = '{"appId":"com.aura.staff","appName":"Aura Staff","webDir":"www/browser","server":{"androidScheme":"https"},"plugins":{"PushNotifications":{"presentationOptions":["badge","sound","alert"]},"CapacitorHttp":{"enabled":true}}}'
+            file("${isolatedAssetsDir}/public/cordova.js").text = ''
+            file("${isolatedAssetsDir}/public/cordova_plugins.js").text = ''
+        }
+    }
+    tasks.named('preBuild').configure { dependsOn prepareIsolatedWebAssets }
+}
+
+apply from: 'capacitor.build.gradle'
+
+try {
+    def servicesJSON = file('google-services.json')
+    if (servicesJSON.text) {
+        apply plugin: 'com.google.gms.google-services'
+    }
+} catch(Exception e) {
+    logger.info("google-services.json not found, google-services plugin not applied. Push Notifications won't work")
+}

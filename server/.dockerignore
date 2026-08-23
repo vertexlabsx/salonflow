@@ -1,0 +1,12 @@
+node_modules
+dist
+.env
+.env.*
+coverage
+.vitest
+npm-debug.log*
+Dockerfile.*
+deploy
+docs
+tests
+*.local

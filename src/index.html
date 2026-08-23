@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Aura Staff OS</title>
+    <base href="/" />
+    <meta name="viewport" content="viewport-fit=cover, width=device-width, initial-scale=1.0" />
+    <meta name="format-detection" content="telephone=no" />
+    <meta name="msapplication-tap-highlight" content="no" />
+    <meta name="theme-color" content="#00A884" />
+    <link rel="icon" type="image/svg+xml" href="assets/icons/icon.svg" />
+    <link rel="manifest" href="manifest.webmanifest" />
+  </head>
+  <body>
+    <aura-root></aura-root>
+    <script>
+      if ("serviceWorker" in navigator) {
+        window.addEventListener("load", function () {
+          var isLocalDev = location.hostname === "127.0.0.1" || location.hostname === "localhost";
+          if (isLocalDev) {
+            navigator.serviceWorker.getRegistrations().then(function (items) {
+              items.forEach(function (item) { item.unregister(); });
+            }).catch(function () {});
+            if (window.caches) caches.keys().then(function (keys) { keys.forEach(function (key) { caches.delete(key); }); }).catch(function () {});
+            return;
+          }
+          navigator.serviceWorker.register("/offline-sw.js").catch(function () {});
+        });
+      }
+    </script>
+  </body>
+</html>

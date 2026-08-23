@@ -1,0 +1,67 @@
+services:
+  mongo:
+    image: mongo:7
+    restart: unless-stopped
+    command: ["--replSet", "rs0", "--bind_ip_all"]
+    volumes:
+      - mongo-data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "try { rs.status().ok } catch (e) { rs.initiate() }"]
+      interval: 10s
+      timeout: 10s
+      retries: 12
+      start_period: 20s
+
+  api:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      mongo:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      PORT: "4000"
+      MONGODB_URI: mongodb://mongo:27017/aura?replicaSet=rs0
+      MONGODB_AUTO_INDEX: "false"
+      COOKIE_SECURE: "true"
+      CORS_ORIGINS: ${CORS_ORIGINS}
+      COOKIE_SAMESITE: none
+      JWT_ACCESS_SECRET: ${JWT_ACCESS_SECRET}
+      JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET}
+      SESSION_COOKIE_SECRET: ${SESSION_COOKIE_SECRET}
+      CSRF_SECRET: ${CSRF_SECRET}
+      SEED_STAFF_PASSWORD: ${SEED_STAFF_PASSWORD}
+      SEED_OWNER_PASSWORD: ${SEED_OWNER_PASSWORD}
+      WHATSAPP_PROVIDER: ${WHATSAPP_PROVIDER}
+      META_WHATSAPP_TOKEN: ${META_WHATSAPP_TOKEN}
+      META_WABA_PHONE_NUMBER_ID: ${META_WABA_PHONE_NUMBER_ID}
+      META_WEBHOOK_VERIFY_TOKEN: ${META_WEBHOOK_VERIFY_TOKEN}
+      META_APP_SECRET: ${META_APP_SECRET}
+      WEB_PUSH_PUBLIC_KEY: ${WEB_PUSH_PUBLIC_KEY}
+      WEB_PUSH_PRIVATE_KEY: ${WEB_PUSH_PRIVATE_KEY}
+    expose:
+      - "4000"
+
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    depends_on:
+      - api
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      DOMAIN: ${DOMAIN}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+      # Serve the built frontend: place `ng build` output in ./site
+      - ./site:/srv/app:ro
+
+volumes:
+  mongo-data:
+  caddy-data:
+  caddy-config:

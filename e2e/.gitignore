@@ -1,0 +1,7 @@
+# Playwright test artifacts
+test-results/
+screenshots/
+playwright-report/
+
+# Keep baselines committed, ignore generated artifacts
+!screenshots/

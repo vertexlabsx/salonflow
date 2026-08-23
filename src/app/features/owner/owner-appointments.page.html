@@ -1,0 +1,199 @@
+<article class="appointments-page" [attr.aria-busy]="loading()" [attr.inert]="modal() || detail() || detailLoading() || detailError() ? '' : null">
+  <header class="page-header">
+    <div>
+      <p class="eyebrow">Appointment operations</p>
+      <h1>Appointments</h1>
+      <p>Review and manage bookings across the current Owner branch and date context.</p>
+    </div>
+    <div class="header-actions">
+      @if (!blockingError()) { <button type="button" class="secondary-button refresh-button" (click)="refresh()" [disabled]="loading()" [attr.aria-label]="backgroundRefreshing() ? 'Refreshing appointments' : 'Refresh appointments'"><span aria-hidden="true">↻</span><span class="action-label">{{ backgroundRefreshing() ? 'Refreshing…' : 'Refresh' }}</span></button> }
+      <button type="button" class="primary-button new-appointment-button" (click)="openCreate($event)"><span aria-hidden="true">＋</span><span>New<span class="appointment-label"> appointment</span></span></button>
+    </div>
+  </header>
+
+  <p class="live-region" aria-live="polite">{{ mutationNotice() }}</p>
+  @if (refreshError()) { <p class="notice error" role="alert">{{ refreshError() }}</p> }
+  @if (optionsError()) { <p class="notice warning" role="status">{{ optionsError() }}</p> }
+
+  <section class="command-bar" aria-label="Appointment controls">
+    <div class="search-control">
+      <label for="owner-appointment-search">Search appointments</label>
+      <div><span aria-hidden="true">⌕</span><input id="owner-appointment-search" type="search" [ngModel]="search()" (ngModelChange)="searchChanged($event)" placeholder="Client, phone or staff" autocomplete="off" />@if (search()) { <button type="button" (click)="clearSearch()" aria-label="Clear appointment search">×</button> }</div>
+      @if (search() !== debouncedSearch()) { <small role="status">Waiting to search…</small> }
+    </div>
+    <div class="date-controls">
+      <label for="appointment-from">From<input id="appointment-from" type="date" [ngModel]="from()" (ngModelChange)="from.set($event); dateRangeChanged()" /></label>
+      <label for="appointment-to">To<input id="appointment-to" type="date" [ngModel]="to()" (ngModelChange)="to.set($event); dateRangeChanged()" /></label>
+    </div>
+    <div class="view-switcher" role="group" aria-label="Appointment view">
+      @for (item of views; track item.id) { <button type="button" [attr.aria-pressed]="view() === item.id" (click)="setView(item.id)">{{ item.label }}</button> }
+    </div>
+  </section>
+
+  <details class="filter-panel" [open]="activeFilterCount() > 0">
+    <summary><span>Filters</span><b>{{ activeFilterCount() ? activeFilterCount() + ' active' : 'All appointments' }}</b></summary>
+    <div class="filter-grid">
+      <label>Staff<select [ngModel]="staffId()" (ngModelChange)="staffId.set($event); filterChanged()"><option value="">All staff</option>@for (item of staff(); track item.id) { <option [value]="item.id">{{ item.name }}</option> }</select></label>
+      <label>Service<select [ngModel]="serviceId()" (ngModelChange)="serviceId.set($event); filterChanged()"><option value="">All services</option>@for (item of services(); track item.id) { <option [value]="item.id">{{ item.name }}</option> }</select></label>
+      <label>Client<select [ngModel]="clientId()" (ngModelChange)="clientId.set($event); filterChanged()"><option value="">All clients</option>@for (item of clients(); track item.id) { <option [value]="item.id">{{ item.name }}{{ item.phone ? ' · ' + item.phone : '' }}</option> }</select></label>
+      <label>Status<select [ngModel]="status()" (ngModelChange)="status.set($event); filterChanged()"><option value="">All statuses</option>@for (item of availableStatuses(); track item) { <option [value]="item">{{ humanize(item) }}</option> }</select></label>
+      <label>Booking source<select [ngModel]="source()" (ngModelChange)="source.set($event); filterChanged()"><option value="">All sources</option>@for (item of availableSources(); track item) { <option [value]="item">{{ humanize(item) }}</option> }</select></label>
+      <label>Payment status<select [ngModel]="paymentStatus()" (ngModelChange)="paymentStatus.set($event); filterChanged()"><option value="">All payment statuses</option>@for (item of availablePaymentStatuses(); track item) { <option [value]="item">{{ humanize(item) }}</option> }</select></label>
+    </div>
+    <div class="filter-footer"><span>{{ optionsLoading() ? 'Refreshing real filter options…' : 'Options reflect accessible branch context.' }}</span>@if (activeFilterCount()) { <button type="button" (click)="clearFilters()">Clear filters</button> }</div>
+  </details>
+
+  @if (blockingError()) {
+    <section class="state-panel error" role="alert"><span aria-hidden="true">!</span><h2>Appointments are unavailable</h2><p>{{ blockingError() }}</p><button type="button" class="secondary-button" (click)="refresh()">Try again</button></section>
+  } @else if (loading() && !hasRows()) {
+    <section class="loading-state" aria-label="Loading appointments"><i></i><i></i><i></i><i></i></section>
+  } @else {
+    <section class="results-header">
+      <div><p class="eyebrow">Live appointment book</p><h2>{{ view() === 'list' ? 'Bookings' : view() === 'day' ? 'Day calendar' : view() === 'week' ? 'Week calendar' : view() === 'staff' ? 'Staff schedule' : 'Branch schedule' }}</h2></div>
+      <span>{{ items().length }} of {{ page()?.total || items().length }} returned</span>
+    </section>
+
+    @if (page()?.total && items().length < (page()?.total || 0)) { <p class="partial-note" role="status">This view currently shows {{ items().length }} of {{ page()?.total }} matching appointments. Load more to extend the returned schedule.</p> }
+
+    @if (!hasRows()) {
+      <section class="state-panel"><span aria-hidden="true">—</span><h2>{{ debouncedSearch() || activeFilterCount() ? 'No matching appointments' : 'No appointments yet' }}</h2><p>{{ debouncedSearch() || activeFilterCount() ? 'Clear or adjust the current search and filters.' : 'Use the New appointment action above to create a booking for this branch and date range.' }}</p>@if (debouncedSearch() || activeFilterCount()) { <button type="button" class="secondary-button" (click)="clearSearch(); clearFilters()">Clear search and filters</button> }</section>
+    } @else if (view() === 'list') {
+      <div class="appointment-list" role="list">
+        <div class="list-heading" aria-hidden="true"><span>Client & services</span><span>Schedule</span><span>Assignment</span><span>Status</span></div>
+        @for (item of items(); track trackItem($index, item)) {
+          <button type="button" role="listitem" class="appointment-row" [class.selected]="selectedId() === item.id" (click)="openDetail(item, $event)" [attr.aria-label]="'Open ' + clientName(item) + ' appointment at ' + time(item.startAt)">
+            <span class="client-cell"><b>{{ clientName(item) }}</b><small>{{ serviceNames(item) }}</small></span>
+            <span class="time-cell"><b>{{ dateTime(item.startAt) }}</b><small>{{ duration(item) }}</small></span>
+            <span class="assignment-cell"><b>{{ staffName(item) }}</b><small>{{ branchName(item) }}</small></span>
+            <span class="status-cell"><owner-status-badge [label]="humanize(item.status)" [tone]="statusTone(item.status)" /><small>{{ sourceLabel(item) }} · {{ paymentLabel(item) }}</small></span>
+            <span class="row-arrow" aria-hidden="true">→</span>
+          </button>
+        }
+      </div>
+    } @else if (view() === 'day' || view() === 'week') {
+      <div class="calendar-toolbar"><button type="button" (click)="moveCalendar(-1)" aria-label="Previous calendar period">←</button><strong>{{ from() === to() ? calendarDays()[0]?.label : calendarDays()[0]?.label + ' – ' + calendarDays()[calendarDays().length - 1]?.label }}</strong><button type="button" (click)="moveCalendar(1)" aria-label="Next calendar period">→</button></div>
+      <div class="calendar-scroll" tabindex="0" aria-label="Scrollable appointment calendar">
+        <div class="calendar-grid" [class.day-grid]="view() === 'day'">
+          @for (day of calendarDays(); track day.date) {
+            <section class="calendar-day" [attr.aria-labelledby]="'calendar-' + day.date"><header><h3 [id]="'calendar-' + day.date">{{ day.label }}</h3><span>{{ day.items.length }} {{ day.items.length === 1 ? 'booking' : 'bookings' }}</span></header>
+              <div>@for (item of day.items; track item.id) { <button type="button" (click)="openDetail(item, $event)"><time>{{ time(item.startAt) }}</time><b>{{ clientName(item) }}</b><small>{{ serviceNames(item) }}</small><span>{{ staffName(item) }}</span><owner-status-badge [label]="humanize(item.status)" [tone]="statusTone(item.status)" /></button> } @empty { <p>No returned appointments</p> }</div>
+            </section>
+          }
+        </div>
+      </div>
+    } @else {
+      <div class="schedule-grid">
+        @for (group of view() === 'staff' ? staffGroups() : branchGroups(); track group.id) {
+          <section class="schedule-group"><header><div><h3>{{ group.label }}</h3><p>{{ group.meta }}</p></div><span>{{ group.items.length }}</span></header>
+            <div>@for (item of group.items; track item.id) { <button type="button" (click)="openDetail(item, $event)"><time>{{ dateTime(item.startAt) }}</time><strong>{{ clientName(item) }}</strong><small>{{ serviceNames(item) }} · {{ view() === 'staff' ? branchName(item) : staffName(item) }}</small><owner-status-badge [label]="humanize(item.status)" [tone]="statusTone(item.status)" /></button> }</div>
+          </section>
+        }
+      </div>
+    }
+
+    @if (page()?.hasMore) { <div class="load-more"><button type="button" class="secondary-button" (click)="loadMore()" [disabled]="loadingMore()">{{ loadingMore() ? 'Loading…' : 'Load more appointments' }}</button></div> }
+  }
+</article>
+
+@if (detail() || detailLoading() || detailError()) {
+  <button type="button" class="drawer-backdrop" (click)="closeDetail()" aria-label="Close appointment detail"></button>
+  <aside class="detail-drawer" role="dialog" [attr.aria-modal]="modal() ? null : 'true'" [attr.aria-hidden]="modal() ? 'true' : null" [attr.inert]="modal() ? '' : null" aria-labelledby="appointment-detail-title" tabindex="-1" #detailPanel>
+    <header><div><p class="eyebrow">Appointment detail</p><h2 id="appointment-detail-title">{{ detail() ? clientName(detail()!.appointment) : 'Appointment' }}</h2></div><button type="button" (click)="closeDetail()" aria-label="Close appointment detail">×</button></header>
+    @if (detailLoading()) { <div class="drawer-loading" role="status"><i></i><i></i><i></i><span>Loading authoritative detail…</span></div> }
+    @else if (detailError()) { <div class="drawer-error" role="alert"><strong>Detail unavailable</strong><p>{{ detailError() }}</p><button type="button" class="secondary-button" (click)="closeDetail()">Close</button></div> }
+    @else if (detail(); as current) {
+      <div class="drawer-body">
+        <section class="detail-summary"><div><owner-status-badge [label]="humanize(current.appointment.status)" [tone]="statusTone(current.appointment.status)" /><span>Version {{ current.version }}</span></div><strong>{{ dateTime(current.appointment.startAt) }}</strong><p>{{ current.appointment.endAt ? dateTime(current.appointment.endAt) + ' · ' + duration(current.appointment) : 'End time and duration were not supplied.' }}</p></section>
+        @if (mutationNotice()) { <p class="notice success" role="status">{{ mutationNotice() }}</p> }
+        @if (mutationError()) { <p class="notice error" role="alert">{{ mutationError() }}</p> }
+        @if (posFallback(); as fallback) { <section class="pos-fallback" role="alert" aria-live="assertive"><strong>Browser blocked the new POS tab</strong><p>The secure handoff expires {{ dateTime(fallback.expiresAt) }}. Continuing in this tab will leave the Owner workspace; use your browser’s Back control to return safely.</p><button type="button" class="primary-button" (click)="usePosFallback()">Continue to POS in this tab</button></section> }
+
+        <section class="detail-section"><h3>Booking</h3><dl>
+          <div><dt>Client</dt><dd>{{ current.context.client?.name || clientName(current.appointment) }}<small>{{ current.context.client?.phone || '' }}{{ current.context.client?.email ? ' · ' + current.context.client?.email : '' }}</small></dd></div>
+          <div><dt>Staff</dt><dd>{{ current.context.staff?.name || staffName(current.appointment) }}<small>{{ current.context.staff?.role || '' }}</small></dd></div>
+          <div><dt>Branch</dt><dd>{{ current.context.branch?.name || branchName(current.appointment) }}<small>{{ current.context.branch?.city || '' }}{{ current.context.branch?.timezone ? ' · ' + current.context.branch?.timezone : '' }}</small></dd></div>
+          <div><dt>Source</dt><dd>{{ sourceLabel(current.appointment) }}</dd></div>
+          <div><dt>Payment</dt><dd>{{ paymentLabel(current.appointment) }}</dd></div>
+          <div><dt>Created</dt><dd>{{ dateTime(current.appointment.createdAt) }}</dd></div>
+          <div><dt>Updated</dt><dd>{{ dateTime(current.appointment.updatedAt) }}</dd></div>
+        </dl></section>
+
+        <section class="detail-section"><h3>Services</h3><div class="service-list">@for (service of current.context.services; track service.id) { <article><div><strong>{{ service.name }}</strong><span>{{ service.category || 'Service' }}{{ service.durationMinutes ? ' · ' + service.durationMinutes + ' min' : '' }}</span></div><b>{{ service.pricePaise | paiseInr }}</b></article> } @empty { <p>No service detail was returned.</p> }</div></section>
+
+        @if (current.appointment.notes) { <section class="detail-section"><h3>Notes</h3><p class="notes">{{ current.appointment.notes }}</p></section> }
+        @if (current.appointment.touchupCostPaise !== undefined) { <section class="detail-section"><h3>Returned cost</h3><dl><div><dt>Touch-up cost</dt><dd>{{ current.appointment.touchupCostPaise | paiseInr }}</dd></div></dl></section> }
+
+        <section class="detail-section"><h3>Billing</h3>
+          @if (current.billing.invoice; as invoice) { <dl><div><dt>Invoice</dt><dd>{{ invoice.invoiceNumber || invoice.id }}<small>{{ humanize(invoice.status) }} · {{ humanize(invoice.paymentStatus) }}</small></dd></div><div><dt>Total</dt><dd>{{ invoice.grandTotalPaise | paiseInr }}</dd></div><div><dt>Paid</dt><dd>{{ invoice.paidAmountPaise | paiseInr }}</dd></div><div><dt>Due</dt><dd>{{ invoice.dueAmountPaise | paiseInr }}</dd></div></dl> }
+          @else { <p class="billing-note">{{ current.billing.reason || (current.billing.eligible ? 'Ready for POS handoff.' : 'No billing record was returned.') }}</p> }
+        </section>
+
+        <section class="detail-section activity"><h3>Activity history</h3><ol>@for (activity of current.activityHistory; track activity.id) { <li><span aria-hidden="true"></span><div><strong>{{ activityLabel(activity.action) }}</strong><p>@if (activity.statusBefore || activity.statusAfter) { {{ humanize(activity.statusBefore || 'Not set') }} → {{ humanize(activity.statusAfter || 'Not set') }} } @if (activity.reason) { <em>{{ activity.reason }}</em> }</p><small>{{ dateTime(activity.createdAt) }}{{ activity.changedByRole ? ' · ' + humanize(activity.changedByRole) : '' }}</small></div></li> } @empty { <li class="empty-activity">No activity entries were returned.</li> }</ol></section>
+      </div>
+
+      @if (current.supportedActions.length) {
+        <footer class="drawer-actions" aria-label="Supported appointment actions">
+          @if (actionSupported('update')) { <button type="button" [disabled]="!writeOptionsReady(current.appointment.branchId)" (click)="openEdit($event)" [title]="writeOptionsReady(current.appointment.branchId) ? 'Edit appointment' : 'Loading branch options'">Edit</button> }
+          @if (actionSupported('reschedule')) { <button type="button" (click)="openReschedule($event)">Reschedule</button> }
+          @if (actionSupported('checkIn')) { <button type="button" [disabled]="submitting()" (click)="runLifecycle('checkIn')">Check in</button> }
+          @if (actionSupported('startService')) { <button type="button" [disabled]="submitting()" (click)="runLifecycle('startService')">Start service</button> }
+          @if (actionSupported('setStatus')) { <button type="button" (click)="openActionModal('status', $event)">Set status</button> }
+          @if (actionSupported('complete')) { <button type="button" class="primary" (click)="openActionModal('complete', $event)">Complete</button> }
+          @if (actionSupported('noShow')) { <button type="button" class="danger" (click)="openActionModal('noShow', $event)">No-show</button> }
+          @if (actionSupported('cancel')) { <button type="button" class="danger" (click)="openActionModal('cancel', $event)">Cancel</button> }
+          @if (actionSupported('openPos')) { <button type="button" class="primary" [disabled]="submitting()" (click)="openPos()">{{ submitting() ? 'Opening…' : 'Open POS' }}</button> }
+        </footer>
+      }
+    }
+  </aside>
+}
+
+@if (modal()) {
+  <button type="button" class="modal-backdrop" (click)="closeModal()" aria-label="Close appointment form"></button>
+  <section class="appointment-modal" role="dialog" aria-modal="true" [attr.aria-labelledby]="'appointment-modal-title'" tabindex="-1" #modalPanel>
+    <header><div><p class="eyebrow">Appointment management</p><h2 id="appointment-modal-title">{{ modal() === 'create' ? 'New appointment' : modal() === 'edit' ? 'Edit appointment' : modal() === 'reschedule' ? 'Reschedule appointment' : modal() === 'cancel' ? 'Cancel appointment' : modal() === 'complete' ? 'Complete appointment' : modal() === 'noShow' ? 'Mark as no-show' : 'Set appointment status' }}</h2></div><button type="button" (click)="closeModal()" [disabled]="submitting()" aria-label="Close">×</button></header>
+    <div class="modal-body">
+      @if (mutationError()) { <p class="notice error" role="alert">{{ mutationError() }}</p> }
+      @if (conflicts().length) { <section class="conflict-list" role="alert"><strong>Returned scheduling conflicts</strong><ul>@for (conflict of conflicts(); track $index) { <li>{{ conflict.message || (conflict.startAt ? dateTime(conflict.startAt) : 'A conflicting appointment was returned.') }}</li> }</ul></section> }
+
+      @if (modal() === 'create' || modal() === 'edit') {
+        <form id="appointment-write-form" (ngSubmit)="saveAppointment()" novalidate>
+          <fieldset><legend>People and services</legend><div class="form-grid">
+            <label>Branch <span>*</span><select name="branchId" [ngModel]="form.branchId" (ngModelChange)="formBranchChanged($event)" [attr.aria-invalid]="!!formErrors().branchId" aria-describedby="write-branch-error"><option value="">Choose branch</option>@for (item of formBranches(); track item.id) { <option [value]="item.id">{{ item.name }}</option> }</select><small id="write-branch-error" class="field-error">{{ formErrors().branchId }}</small></label>
+            <label>Client <span>*</span><select name="clientId" [(ngModel)]="form.clientId" [attr.aria-invalid]="!!formErrors().clientId" aria-describedby="write-client-error"><option value="">Choose client</option>@for (item of formClients(); track item.id) { <option [value]="item.id">{{ item.name }}{{ item.phone ? ' · ' + item.phone : '' }}</option> }</select><small id="write-client-error" class="field-error">{{ formErrors().clientId }}</small></label>
+            <label>Staff <span>*</span><select name="staffId" [(ngModel)]="form.staffId" [attr.aria-invalid]="!!formErrors().staffId" aria-describedby="write-staff-error"><option value="">Choose staff</option>@for (item of formStaff(); track item.id) { <option [value]="item.id">{{ item.name }}</option> }</select><small id="write-staff-error" class="field-error">{{ formErrors().staffId }}</small></label>
+            <label>Services <span>*</span><select name="serviceIds" [(ngModel)]="form.serviceIds" multiple size="4" [disabled]="!form.branchId" [attr.aria-invalid]="!!formErrors().serviceIds" aria-describedby="write-services-help write-services-error">@for (item of formServices(); track item.id) { <option [ngValue]="item.id">{{ item.name }}</option> }</select><small id="write-services-help">{{ form.branchId ? 'Services available to this branch. Use Ctrl or Command to select more than one.' : 'Choose a branch first.' }}</small><small id="write-services-error" class="field-error">{{ formErrors().serviceIds }}</small></label>
+          </div></fieldset>
+          <fieldset><legend>Schedule</legend><div class="form-grid four">
+            <label>Date <span>*</span><input name="date" type="date" [(ngModel)]="form.date" [attr.aria-invalid]="!!formErrors().startAt" /></label><label>Start time <span>*</span><input name="time" type="time" [(ngModel)]="form.time" [attr.aria-invalid]="!!formErrors().startAt" /></label>
+            <label>End date <input name="endDate" type="date" [(ngModel)]="form.endDate" /></label><label>End time <input name="endTime" type="time" [(ngModel)]="form.endTime" /></label>
+          </div><small class="field-error">{{ formErrors().startAt || formErrors().endAt }}</small><p class="form-help">Times are interpreted in the salon’s IST appointment context. If no end is supplied, the backend may derive it from returned service duration rules.</p></fieldset>
+          <fieldset><legend>Booking detail</legend><div class="form-grid">@if (modal() === 'create') { <label>Initial status<select name="status" [(ngModel)]="form.status" [attr.aria-invalid]="!!formErrors().status" aria-describedby="write-status-error">@for (item of initialStatuses; track item) { <option [value]="item">{{ humanize(item) }}</option> }</select><small id="write-status-error" class="field-error">{{ formErrors().status }}</small></label> }<label>Source<input name="source" [(ngModel)]="form.source" list="owner-source-options" placeholder="Leave blank if not supplied" /><datalist id="owner-source-options">@for (item of availableSources(); track item) { <option [value]="item"></option> }</datalist></label><label class="full">Notes<textarea name="notes" [(ngModel)]="form.notes" rows="4"></textarea></label></div></fieldset>
+        </form>
+      } @else if (modal() === 'reschedule') {
+        <form id="appointment-reschedule-form" (ngSubmit)="saveReschedule()" novalidate><fieldset><legend>New schedule</legend><div class="form-grid">
+          <label>Branch <span>*</span><select name="rescheduleBranch" [ngModel]="rescheduleForm.branchId" (ngModelChange)="rescheduleBranchChanged($event)" [attr.aria-invalid]="!!formErrors().branchId"><option value="">Choose branch</option>@for (item of formBranches(); track item.id) { <option [value]="item.id">{{ item.name }}</option> }</select><small class="field-error">{{ formErrors().branchId }}</small></label>
+          <label>Staff <span>*</span><select name="rescheduleStaff" [(ngModel)]="rescheduleForm.staffId" [attr.aria-invalid]="!!formErrors().staffId"><option value="">Choose staff</option>@for (item of rescheduleStaff(); track item.id) { <option [value]="item.id">{{ item.name }}</option> }</select><small class="field-error">{{ formErrors().staffId }}</small></label>
+          <label>Date <span>*</span><input name="rescheduleDate" type="date" [(ngModel)]="rescheduleForm.date" /></label><label>Start time <span>*</span><input name="rescheduleTime" type="time" [(ngModel)]="rescheduleForm.time" /></label>
+          <label>End date<input name="rescheduleEndDate" type="date" [(ngModel)]="rescheduleForm.endDate" /></label><label>End time<input name="rescheduleEndTime" type="time" [(ngModel)]="rescheduleForm.endTime" /></label>
+          <label class="full">Reason (optional)<textarea name="rescheduleReason" [(ngModel)]="rescheduleForm.reason" rows="3"></textarea></label>
+        </div><small class="field-error">{{ formErrors().startAt || formErrors().endAt }}</small><p class="form-help">Availability, shifts, holds, blackouts and conflicts are validated by the backend.</p></fieldset></form>
+      } @else {
+        <div class="confirmation">
+          <span class="confirmation-mark" aria-hidden="true">{{ modal() === 'complete' ? '✓' : '!' }}</span>
+          <p>{{ modal() === 'cancel' ? 'This will cancel the appointment. The backend remains authoritative for any group or billing implications.' : modal() === 'complete' ? 'Confirm that service delivery is complete. This may make the appointment eligible for billing.' : modal() === 'noShow' ? 'Confirm that the client did not attend this appointment.' : 'Choose the status to apply to this appointment.' }}</p>
+          @if (detail()?.billing?.invoice; as invoice) { <div class="billing-implication"><strong>Existing billing</strong><span>{{ invoice.invoiceNumber || invoice.id }} · {{ humanize(invoice.paymentStatus) }} · Due {{ invoice.dueAmountPaise | paiseInr }}</span></div> }
+          @if (modal() === 'cancel') { <label>Cancellation reason <span>*</span><textarea [ngModel]="cancelReason()" (ngModelChange)="cancelReason.set($event)" rows="3" [attr.aria-invalid]="!!formErrors().reason" aria-describedby="cancel-reason-error"></textarea><small id="cancel-reason-error" class="field-error">{{ formErrors().reason }}</small></label> }
+          @if (modal() === 'status') { <label>New status <span>*</span><select [ngModel]="nextStatus()" (ngModelChange)="nextStatus.set($event)" [attr.aria-invalid]="!!formErrors().status"><option value="">Choose status</option>@for (item of allowedStatusTransitions(); track item) { <option [value]="item">{{ humanize(item) }}</option> }</select><small class="field-error">{{ formErrors().status }}</small></label> }
+          @if (modal() === 'complete') { <label>Completion note (optional)<textarea [ngModel]="actionNote()" (ngModelChange)="actionNote.set($event)" rows="3"></textarea></label> }
+          @if (modal() === 'noShow' || modal() === 'status') { <label>Reason (optional)<textarea [ngModel]="actionNote()" (ngModelChange)="actionNote.set($event)" rows="3"></textarea></label> }
+        </div>
+      }
+    </div>
+    <footer><button type="button" class="secondary-button" (click)="closeModal()" [disabled]="submitting()">Keep appointment</button>
+      @if (modal() === 'create' || modal() === 'edit') { <button type="submit" form="appointment-write-form" class="primary-button" [disabled]="submitting()">{{ submitting() ? 'Saving…' : modal() === 'create' ? 'Create appointment' : 'Save changes' }}</button> }
+      @else if (modal() === 'reschedule') { <button type="submit" form="appointment-reschedule-form" class="primary-button" [disabled]="submitting()">{{ submitting() ? 'Saving…' : 'Confirm reschedule' }}</button> }
+      @else { <button type="button" class="primary-button" [class.danger-button]="modal() === 'cancel' || modal() === 'noShow'" [disabled]="submitting()" (click)="confirmModalAction()">{{ submitting() ? 'Saving…' : modal() === 'cancel' ? 'Cancel appointment' : modal() === 'complete' ? 'Confirm completion' : modal() === 'noShow' ? 'Confirm no-show' : 'Update status' }}</button> }
+    </footer>
+  </section>
+}

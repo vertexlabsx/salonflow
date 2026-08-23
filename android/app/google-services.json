@@ -1,0 +1,39 @@
+{
+  "project_info": {
+    "project_number": "47194589898",
+    "project_id": "aurashineclient",
+    "storage_bucket": "aurashineclient.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:47194589898:android:1a953778161f7d54790233",
+        "android_client_info": {
+          "package_name": "com.aura.staff"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "47194589898-fkdr3rkiqv0p4eop81bl001e2bm8jts8.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyBDaBp-rsSOXnjo1OeKkQoUKbP9o1nn530"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "47194589898-fkdr3rkiqv0p4eop81bl001e2bm8jts8.apps.googleusercontent.com",
+              "client_type": 3
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

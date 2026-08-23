@@ -1,0 +1,37 @@
+# Fly.io blueprint — RECOMMENDED backend host for the pilot.
+# Always-on shared VM (~$2-3/mo, Mumbai region) — no sleep, so the Meta WhatsApp
+# webhook and SSE streams stay reliable. Hugging Face Spaces was evaluated and
+# rejected: free Spaces sleep after inactivity and are proxy-tuned for ML demos,
+# not always-on REST APIs.
+
+app = "aura-salon-api"
+primary_region = "bom"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  PORT = "4000"
+  NODE_ENV = "production"
+
+[http_service]
+  internal_port = 4000
+  force_https = true
+  auto_stop_machines = false
+  auto_start_machines = true
+  min_machines_running = 1
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "512mb"
+
+# Deploy steps (from server/):
+#   fly launch --no-deploy --copy-config
+#   fly secrets set MONGODB_URI="mongodb+srv://..." \
+#     JWT_ACCESS_SECRET=... JWT_REFRESH_SECRET=... CSRF_SECRET=... \
+#     CORS_ORIGINS=https://<your-app>.vercel.app COOKIE_SECURE=true COOKIE_SAMESITE=none \
+#     SEED_OWNER_PASSWORD=... SEED_STAFF_PASSWORD=...
+#   fly deploy
+#
+# Webhook URL to register with Meta:
+#   https://aura-salon-api.fly.dev/api/v1/whatsapp/webhook
