@@ -7,8 +7,15 @@ async function graph<T>(path: string, accessToken: string, init?: RequestInit): 
   if (!init?.body) url.searchParams.set("access_token", accessToken);
   const response = await fetch(url, init);
   const payload = (await response.json().catch(() => ({}))) as { error?: { message?: string; code?: number } } & T;
-  if (!response.ok) throw new ApiError(response.status >= 500 ? 502 : 400, payload.error?.message || `Meta API request failed (${response.status})`);
+  if (!response.ok) throw new ApiError(response.status >= 500 ? 502 : 400, sanitizeMetaError(payload.error?.message || `Meta API request failed (${response.status})`));
   return payload as T;
+}
+
+function sanitizeMetaError(message: string): string {
+  return message
+    .replace(/Bearer\s+[A-Za-z0-9._~+/-]+=*/gi, "Bearer [redacted]")
+    .replace(/access_token=[^\s&]+/gi, "access_token=[redacted]")
+    .replace(/EAA[A-Za-z0-9]+/g, "[redacted-token]");
 }
 
 export async function exchangeEmbeddedSignupCode(code: string, redirectUri?: string): Promise<{ access_token: string; expires_in?: number; token_type?: string }> {
@@ -21,7 +28,7 @@ export async function exchangeEmbeddedSignupCode(code: string, redirectUri?: str
   if (redirectUri) url.searchParams.set("redirect_uri", redirectUri);
   const response = await fetch(url);
   const payload = (await response.json().catch(() => ({}))) as { access_token?: string; expires_in?: number; token_type?: string; error?: { message?: string } };
-  if (!response.ok || !payload.access_token) throw new ApiError(400, payload.error?.message || "Unable to exchange Meta authorization code.");
+  if (!response.ok || !payload.access_token) throw new ApiError(400, sanitizeMetaError(payload.error?.message || "Unable to exchange Meta authorization code."));
   return { access_token: payload.access_token, expires_in: payload.expires_in, token_type: payload.token_type };
 }
 

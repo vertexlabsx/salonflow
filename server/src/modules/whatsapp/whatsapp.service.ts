@@ -14,13 +14,14 @@ async function attemptMetaSend(row: Pick<WhatsAppOutbound, "salonId" | "toPhone"
   if (env.WHATSAPP_PROVIDER === "meta_test" || env.WHATSAPP_PROVIDER === "meta_production") {
     const connection = await WhatsAppConnectionModel.findOne({ salonId: row.salonId, status: "connected" }).select("+encryptedAccessToken").sort({ connectedAt: -1 });
     if (!connection) throw new Error("No connected WhatsApp number for this salon.");
+    if (!connection.encryptedAccessToken) throw new Error("Connected WhatsApp credentials are missing for this salon.");
     token = decryptSecret(connection.encryptedAccessToken);
     phoneNumberId = connection.phoneNumberId;
   }
   if (!token || !phoneNumberId) throw new Error("Meta WhatsApp credentials are not configured.");
   const response = await fetch(`${env.META_GRAPH_API_BASE_URL}/${env.META_API_VERSION || env.META_GRAPH_API_VERSION}/${phoneNumberId}/messages`, {
     method: "POST",
-    headers: { Authorization: `Bearer ${env.META_WHATSAPP_TOKEN}`, "Content-Type": "application/json" },
+    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
     body: JSON.stringify({ messaging_product: "whatsapp", to: row.toPhone, type: "text", text: { body: row.body } })
   });
   const payload = (await response.json().catch(() => ({}))) as { messages?: Array<{ id?: string }>; error?: { message?: string } };

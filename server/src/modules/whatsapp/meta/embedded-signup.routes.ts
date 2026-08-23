@@ -21,13 +21,16 @@ embeddedSignupRouter.get("/status", requirePermissions({ every: READ }), asyncHa
   ok(res, { configured: embeddedSignupConfigured(), connections: docs.map(safeConnection) });
 }));
 
-embeddedSignupRouter.post("/embedded-signup/state", requirePermissions({ every: WRITE }), asyncHandler(async (req, res) => {
+const startEmbeddedSignup = asyncHandler(async (req, res) => {
   if (!embeddedSignupConfigured()) throw ApiError.unavailableFeature("Meta Embedded Signup is not configured for this environment.");
-  const state = createEmbeddedSignupState({ salonId: req.context!.salonId, userId: req.context!.userId });
+  const state = await createEmbeddedSignupState({ salonId: req.context!.salonId, userId: req.context!.userId });
   const config = metaConfig();
   await audit(req, "whatsapp.embedded_signup.started", "whatsapp_connection");
   ok(res, { ...state, appId: config.appId, configId: config.configId, apiVersion: config.apiVersion, provider: "meta_production" }, 201);
-}));
+});
+
+embeddedSignupRouter.post("/embedded-signup/state", requirePermissions({ every: WRITE }), startEmbeddedSignup);
+embeddedSignupRouter.post("/embedded-signup/start", requirePermissions({ every: WRITE }), startEmbeddedSignup);
 
 const callbackSchema = z.object({
   state: z.string().min(20),
@@ -40,7 +43,7 @@ const callbackSchema = z.object({
 
 embeddedSignupRouter.post("/embedded-signup/callback", requirePermissions({ every: WRITE }), asyncHandler(async (req, res) => {
   const body = callbackSchema.parse(req.body ?? {});
-  consumeEmbeddedSignupState(body.state, { salonId: req.context!.salonId, userId: req.context!.userId });
+  await consumeEmbeddedSignupState(body.state, { salonId: req.context!.salonId, userId: req.context!.userId });
 
   const token = await exchangeEmbeddedSignupCode(body.authorizationCode, body.redirectUri);
   const wabaId = body.wabaId;

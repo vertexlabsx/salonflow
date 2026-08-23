@@ -1,4 +1,4 @@
-import { beforeAll, beforeEach, afterAll, describe, expect, it } from "vitest";
+import { beforeAll, beforeEach, afterAll, afterEach, describe, expect, it, vi } from "vitest";
 import type { Express } from "express";
 import supertest from "supertest";
 import { createTestWorld, destroyTestWorld } from "./helpers/world";
@@ -10,6 +10,8 @@ import { ServiceModel } from "../src/models/service.model";
 import { CustomerModel } from "../src/models/customer.model";
 import { loadEnv, setEnvForTesting } from "../src/config/env";
 import { createHmac } from "node:crypto";
+import { encryptSecret } from "../src/shared/secret-box";
+import { sendWhatsAppMessage } from "../src/modules/whatsapp/whatsapp.service";
 
 let app: Express;
 
@@ -26,6 +28,10 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await destroyTestWorld();
+});
+
+afterEach(() => {
+  vi.restoreAllMocks();
 });
 
 beforeEach(async () => {
@@ -56,6 +62,62 @@ describe("multi-tenant WhatsApp onboarding", () => {
     const session = await ownerSession();
     const res = await supertest(app).post("/api/v1/whatsapp/embedded-signup/state").set({ Authorization: `Bearer ${session.accessToken}`, "x-csrf-token": session.csrfToken }).send({});
     expect(res.status).toBe(501);
+  });
+
+  it("rejects unauthenticated Embedded Signup start", async () => {
+    const res = await supertest(app).post("/api/v1/whatsapp/embedded-signup/start").send({});
+    expect(res.status).toBe(401);
+  });
+
+  it("generates durable one-time signup state and rejects replay", async () => {
+    setEnvForTesting({ ...loadEnv(), META_APP_ID: "1739408257311822", META_APP_SECRET: "meta-secret", META_CONFIG_ID: "2140964753518474", VERIFY_TOKEN: "verify" });
+    const session = await ownerSession();
+    const start = await supertest(app).post("/api/v1/whatsapp/embedded-signup/start").set({ Authorization: `Bearer ${session.accessToken}`, "x-csrf-token": session.csrfToken }).send({});
+    expect(start.status).toBe(201);
+    expect(start.body.data).toMatchObject({ appId: "1739408257311822", configId: "2140964753518474" });
+    const invalid = await supertest(app).post("/api/v1/whatsapp/embedded-signup/callback").set({ Authorization: `Bearer ${session.accessToken}`, "x-csrf-token": session.csrfToken }).send({ state: `${start.body.data.state}x`, authorizationCode: "code_12345", wabaId: "waba" });
+    expect(invalid.status).toBe(400);
+    vi.stubGlobal("fetch", vi.fn(async () => ({ ok: false, status: 400, json: async () => ({ error: { message: "bad OAuth access_token=EAASECRET" } }) })));
+    const first = await supertest(app).post("/api/v1/whatsapp/embedded-signup/callback").set({ Authorization: `Bearer ${session.accessToken}`, "x-csrf-token": session.csrfToken }).send({ state: start.body.data.state, authorizationCode: "code_12345", wabaId: "waba" });
+    expect(first.status).toBe(400);
+    expect(JSON.stringify(first.body)).not.toContain("EAASECRET");
+    const replay = await supertest(app).post("/api/v1/whatsapp/embedded-signup/callback").set({ Authorization: `Bearer ${session.accessToken}`, "x-csrf-token": session.csrfToken }).send({ state: start.body.data.state, authorizationCode: "code_12345", wabaId: "waba" });
+    expect(replay.status).toBe(400);
+    expect(replay.body.error.message).toContain("already been used");
+  });
+
+  it("scopes status and disconnect to the authenticated salon", async () => {
+    await SalonModel.create({ _id: "tenant_b", name: "Beta Salon", timezone: "Asia/Kolkata", currency: "INR", status: "active", whatsappPhoneNumberIds: [] });
+    await WhatsAppConnectionModel.create({ salonId: "tenant_b", provider: "meta_production", wabaId: "waba_b", phoneNumberId: "phone_b", displayPhoneNumber: "+918888888888", verifiedName: "Beta WhatsApp", status: "connected", encryptedAccessToken: "encrypted-secret", webhookSubscribed: true, connectedAt: new Date(), createdBy: "owner_b" });
+    await WhatsAppConnectionModel.create({ salonId: TENANT, provider: "meta_production", wabaId: "waba_a", phoneNumberId: "phone_a", displayPhoneNumber: "+919999999999", verifiedName: "Aura WhatsApp", status: "connected", encryptedAccessToken: "encrypted-secret", webhookSubscribed: true, connectedAt: new Date(), createdBy: "owner" });
+    const session = await ownerSession();
+    const status = await supertest(app).get("/api/v1/whatsapp/status").set({ Authorization: `Bearer ${session.accessToken}` });
+    expect(status.status).toBe(200);
+    expect(JSON.stringify(status.body)).toContain("phone_a");
+    expect(JSON.stringify(status.body)).not.toContain("phone_b");
+    const disconnectOther = await supertest(app).post("/api/v1/whatsapp/disconnect").set({ Authorization: `Bearer ${session.accessToken}`, "x-csrf-token": session.csrfToken }).send({ phoneNumberId: "phone_b" });
+    expect(disconnectOther.status).toBe(404);
+    const disconnectOwn = await supertest(app).post("/api/v1/whatsapp/disconnect").set({ Authorization: `Bearer ${session.accessToken}`, "x-csrf-token": session.csrfToken }).send({ phoneNumberId: "phone_a" });
+    expect(disconnectOwn.status).toBe(200);
+    expect((await WhatsAppConnectionModel.findOne({ phoneNumberId: "phone_b" }))?.status).toBe("connected");
+  });
+
+  it("rejects duplicate phoneNumberId across salons", async () => {
+    await WhatsAppConnectionModel.create({ salonId: TENANT, provider: "meta_production", wabaId: "waba_a", phoneNumberId: "phone_shared", displayPhoneNumber: "+919999999999", verifiedName: "Aura WhatsApp", status: "connected", encryptedAccessToken: "encrypted-secret", webhookSubscribed: true, connectedAt: new Date(), createdBy: "owner" });
+    await expect(WhatsAppConnectionModel.create({ salonId: "tenant_b", provider: "meta_production", wabaId: "waba_b", phoneNumberId: "phone_shared", displayPhoneNumber: "+918888888888", verifiedName: "Beta WhatsApp", status: "connected", encryptedAccessToken: "encrypted-secret", webhookSubscribed: true, connectedAt: new Date(), createdBy: "owner_b" })).rejects.toThrow();
+  });
+
+  it("uses the connected salon token for outbound Meta sends", async () => {
+    setEnvForTesting({ ...loadEnv(), WHATSAPP_PROVIDER: "meta_production", META_WHATSAPP_TOKEN: "global-token", META_WABA_PHONE_NUMBER_ID: "global-phone" });
+    await WhatsAppConnectionModel.create({ salonId: TENANT, provider: "meta_production", wabaId: "waba_a", phoneNumberId: "phone_a", displayPhoneNumber: "+919999999999", verifiedName: "Aura WhatsApp", status: "connected", encryptedAccessToken: encryptSecret("tenant-token-a"), webhookSubscribed: true, connectedAt: new Date(), createdBy: "owner" });
+    const fetchMock = vi.fn(async () => ({ ok: true, status: 200, json: async () => ({ messages: [{ id: "wamid.outbound" }] }) }));
+    vi.stubGlobal("fetch", fetchMock);
+    await sendWhatsAppMessage({ salonId: TENANT, toPhone: "919999000000", type: "utility", body: "Hello" });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const calls = fetchMock.mock.calls as unknown as Array<[string, RequestInit]>;
+    expect(String(calls[0]?.[0])).toContain("/phone_a/messages");
+    expect(calls[0]?.[1].headers).toMatchObject({ Authorization: "Bearer tenant-token-a" });
+    expect(JSON.stringify(fetchMock.mock.calls)).not.toContain("global-token");
   });
 
   it("routes inbound webhook messages by phoneNumberId to the owning salon", async () => {

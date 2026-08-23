@@ -29,6 +29,7 @@ import { WhatsAppBookingSessionModel } from "../models/whatsapp-booking-session.
 import { WhatsAppConnectionModel } from "../models/whatsapp-connection.model";
 import { WhatsAppInboundModel } from "../models/whatsapp-inbound.model";
 import { WhatsAppOutboundModel } from "../models/whatsapp-outbound.model";
+import { WhatsAppOAuthStateModel } from "../models/whatsapp-oauth-state.model";
 import { WhatsAppTemplateModel } from "../models/whatsapp-template.model";
 import { WhatsAppWebhookEventModel } from "../models/whatsapp-webhook-event.model";
 import { logger } from "../shared/logger";
@@ -63,6 +64,7 @@ const models = [
   WhatsAppConnectionModel,
   WhatsAppInboundModel,
   WhatsAppOutboundModel,
+  WhatsAppOAuthStateModel,
   WhatsAppTemplateModel,
   WhatsAppWebhookEventModel
 ];
