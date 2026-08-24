@@ -9,7 +9,7 @@ import { BranchModel } from "../../models/branch.model";
 import { ServiceModel } from "../../models/service.model";
 import { CustomerModel } from "../../models/customer.model";
 import { createAppointment } from "../appointments/appointment.service";
-import { applyWhatsAppDeliveryStatus } from "./whatsapp.service";
+import { applyWhatsAppDeliveryStatus, sendWhatsAppMessage } from "./whatsapp.service";
 import { zonedTimeToUtc } from "../../shared/business-date";
 import { WhatsAppConnectionModel } from "../../models/whatsapp-connection.model";
 import { WhatsAppWebhookEventModel } from "../../models/whatsapp-webhook-event.model";
@@ -291,6 +291,15 @@ const receiveWebhook = asyncHandler(async (req, res) => {
 
     const branchId = await defaultBranchId(String(salonId));
     const result = await handleBookingMessage(String(salonId), branchId, message);
+    if (result.reply) {
+      await sendWhatsAppMessage({
+        salonId: String(salonId),
+        toPhone: normalizePhone(message.waPhone),
+        type: "utility",
+        body: String(result.reply),
+        appointmentId: result.action === "appointment_created" ? String((result.appointment as { id?: string }).id || "") : null
+      });
+    }
     await WhatsAppInboundModel.create({
       salonId: salonId,
       waPhone: normalizePhone(message.waPhone),
