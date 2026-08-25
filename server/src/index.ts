@@ -3,6 +3,7 @@ import { loadEnv } from "./config/env";
 import { connectMongo, disconnectMongo } from "./config/mongo";
 import { createApp } from "./app";
 import { logger } from "./shared/logger";
+import { startShopifyAutomationScheduler } from "./jobs/shopify-automation";
 
 async function main(): Promise<void> {
   const env = loadEnv();
@@ -17,9 +18,11 @@ async function main(): Promise<void> {
   server.listen(env.PORT, "0.0.0.0", () => {
     logger.info(`Aura Staff server listening on port ${env.PORT}`, { env: env.NODE_ENV });
   });
+  const shopifyAutomationTimer = startShopifyAutomationScheduler();
 
   const shutdown = (signal: string) => {
     logger.info(`${signal} received — shutting down`);
+    clearInterval(shopifyAutomationTimer);
     server.close(() => {
       disconnectMongo()
         .catch((error) => logger.error("MongoDB disconnect failed", { error: String(error) }))

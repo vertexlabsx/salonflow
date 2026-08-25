@@ -6,6 +6,7 @@ import { UserModel } from "./models/user.model";
 import { BranchModel } from "./models/branch.model";
 import { ServiceModel } from "./models/service.model";
 import { ScheduleModel } from "./models/schedule.model";
+import { ShopifyUserModel } from "./models/shopify-user.model";
 import { logger } from "./shared/logger";
 
 /**
@@ -127,6 +128,32 @@ export async function seed(options: { disconnect?: boolean } = { disconnect: tru
     },
     { upsert: true, new: true, setDefaultsOnInsert: true }
   );
+
+  const shopifyUsersToSeed: Array<{ email: string; password: string; name: string; role: "admin" | "client"; shopDomain: string }> = [
+    { email: env.SHOPIFY_ADMIN_EMAIL, password: env.SHOPIFY_ADMIN_PASSWORD, name: "Shopify Admin", role: "admin", shopDomain: "admin" }
+  ];
+  if (env.SHOPIFY_CLIENT_EMAIL && env.SHOPIFY_CLIENT_PASSWORD) {
+    shopifyUsersToSeed.push({ email: env.SHOPIFY_CLIENT_EMAIL, password: env.SHOPIFY_CLIENT_PASSWORD, name: "Shopify Client", role: "client", shopDomain: "client" });
+  }
+  for (const entry of shopifyUsersToSeed) {
+    const loginIdNormalized = entry.email.trim().toLowerCase();
+    const existing = await ShopifyUserModel.findOne({ shopDomain: entry.shopDomain, loginIdNormalized });
+    if (existing) {
+      logger.info(`Shopify user already exists: ${entry.email} (${entry.role})`);
+      continue;
+    }
+    await ShopifyUserModel.create({
+      shopDomain: entry.shopDomain,
+      loginId: entry.email,
+      loginIdNormalized,
+      email: loginIdNormalized,
+      name: entry.name,
+      passwordHash: await bcrypt.hash(entry.password, 12),
+      role: entry.role,
+      status: "active"
+    });
+    logger.info(`Shopify user created: ${entry.email} (${entry.role})`);
+  }
 
   if (options.disconnect !== false) await disconnectMongo();
   logger.info("Seed complete.");

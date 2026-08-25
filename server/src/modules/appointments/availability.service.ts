@@ -7,7 +7,7 @@ import { ServiceModel } from "../../models/service.model";
 import { UserModel } from "../../models/user.model";
 import { ApiError } from "../../shared/http";
 
-const BOOKING_BLOCKING_STATUSES = ["booked", "confirmed", "arrived", "in_service"];
+const BOOKING_BLOCKING_STATUSES = ["pending", "booked", "confirmed", "arrived", "in_service"];
 
 function minutes(time: string): number {
   const [h, m] = time.split(":").map(Number);
@@ -31,6 +31,7 @@ export interface AvailabilityInput {
   serviceId: string;
   startAt: Date;
   preferredStaffId?: string;
+  excludeAppointmentId?: string;
 }
 
 export interface AvailabilityResult {
@@ -72,6 +73,7 @@ export async function findAvailableStaff(input: AvailabilityInput): Promise<Avai
         AppointmentModel.findOne({
           salonId: input.salonId,
           staffId,
+          ...(input.excludeAppointmentId ? { _id: { $ne: input.excludeAppointmentId } } : {}),
           status: { $in: BOOKING_BLOCKING_STATUSES },
           startAt: { $lt: endAt },
           endAt: { $gt: input.startAt }

@@ -7,7 +7,7 @@ import { decryptSecret } from "../../shared/secret-box";
 
 export const WHATSAPP_MAX_RETRIES = 5;
 
-async function attemptMetaSend(row: Pick<WhatsAppOutbound, "salonId" | "toPhone" | "type" | "body">): Promise<{ providerMessageId: string }> {
+async function attemptMetaSend(row: Pick<WhatsAppOutbound, "salonId" | "toPhone" | "type" | "body" | "interactive" | "templatePayload">): Promise<{ providerMessageId: string }> {
   const env = loadEnv();
   let token = env.META_WHATSAPP_TOKEN || "";
   let phoneNumberId = env.META_WABA_PHONE_NUMBER_ID || "";
@@ -19,10 +19,15 @@ async function attemptMetaSend(row: Pick<WhatsAppOutbound, "salonId" | "toPhone"
     phoneNumberId = connection.phoneNumberId;
   }
   if (!token || !phoneNumberId) throw new Error("Meta WhatsApp credentials are not configured.");
+  const messagePayload = row.templatePayload
+    ? row.templatePayload
+    : row.interactive
+    ? { messaging_product: "whatsapp", to: row.toPhone, type: "interactive", interactive: row.interactive }
+    : { messaging_product: "whatsapp", to: row.toPhone, type: "text", text: { body: row.body } };
   const response = await fetch(`${env.META_GRAPH_API_BASE_URL}/${env.META_API_VERSION || env.META_GRAPH_API_VERSION}/${phoneNumberId}/messages`, {
     method: "POST",
     headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-    body: JSON.stringify({ messaging_product: "whatsapp", to: row.toPhone, type: "text", text: { body: row.body } })
+    body: JSON.stringify(messagePayload)
   });
   const payload = (await response.json().catch(() => ({}))) as { messages?: Array<{ id?: string }>; error?: { message?: string } };
   if (!response.ok) throw new Error(payload.error?.message || `Meta send failed (${response.status})`);
@@ -35,6 +40,8 @@ export async function sendWhatsAppMessage(input: {
   toPhone: string;
   type: "confirmation" | "reminder" | "cancellation" | "reschedule" | "utility";
   body: string;
+  interactive?: Record<string, unknown> | null;
+  metadata?: Record<string, unknown> | null;
 }): Promise<void> {
   const env = loadEnv();
   const provider = env.WHATSAPP_PROVIDER;
@@ -48,7 +55,7 @@ export async function sendWhatsAppMessage(input: {
     }
   }
 
-  const row = await WhatsAppOutboundModel.create({ ...input, appointmentId: input.appointmentId || null, provider, status: "queued", lastAttemptAt: new Date() });
+  const row = await WhatsAppOutboundModel.create({ ...input, interactive: input.interactive || null, metadata: input.metadata || null, appointmentId: input.appointmentId || null, provider, status: "queued", lastAttemptAt: new Date() });
 
   if (provider === "mock") {
     row.status = "sent";
@@ -70,6 +77,68 @@ export async function sendWhatsAppMessage(input: {
     logger.error("WhatsApp send failed", { error: row.error, toPhone: input.toPhone, type: input.type });
   }
   await row.save();
+}
+
+function componentParameters(values: string[], type: "body" | "header" | "button", subType?: string, index?: string): Record<string, unknown> | null {
+  if (!values.length) return null;
+  return {
+    type,
+    ...(subType ? { sub_type: subType, index: index || "0" } : {}),
+    parameters: values.map((value) => ({ type: "text", text: value }))
+  };
+}
+
+export async function sendWhatsAppTemplateMessage(input: {
+  salonId: string;
+  toPhone: string;
+  templateName: string;
+  language: string;
+  bodyParameters?: string[];
+  headerParameters?: string[];
+  buttonParameters?: Array<{ subType?: string; index?: string; values: string[] }>;
+  category?: string;
+  metadata?: Record<string, unknown> | null;
+}): Promise<WhatsAppOutbound> {
+  const env = loadEnv();
+  const provider = env.WHATSAPP_PROVIDER;
+  const type = input.category?.toLowerCase() === "marketing" ? "reminder" : "utility";
+  if (type === "reminder") {
+    const customer = await CustomerModel.findOne({ salonId: input.salonId, normalizedPhone: input.toPhone }, { marketingOptOut: 1 });
+    if (customer?.marketingOptOut) {
+      return WhatsAppOutboundModel.create({ salonId: input.salonId, appointmentId: null, toPhone: input.toPhone, type, body: `Template ${input.templateName}`, provider, status: "failed", error: "recipient_opted_out", metadata: input.metadata || null, lastAttemptAt: new Date() });
+    }
+  }
+  const components = [
+    componentParameters(input.headerParameters || [], "header"),
+    componentParameters(input.bodyParameters || [], "body"),
+    ...(input.buttonParameters || []).map((button) => componentParameters(button.values, "button", button.subType || "url", button.index))
+  ].filter(Boolean);
+  const templatePayload = {
+    messaging_product: "whatsapp",
+    to: input.toPhone,
+    type: "template",
+    template: { name: input.templateName, language: { code: input.language }, ...(components.length ? { components } : {}) }
+  };
+  const row = await WhatsAppOutboundModel.create({ salonId: input.salonId, appointmentId: null, toPhone: input.toPhone, type, body: `Template ${input.templateName}`, templatePayload, metadata: input.metadata || null, provider, status: "queued", lastAttemptAt: new Date() });
+  if (provider === "mock") {
+    row.status = "sent";
+    row.providerMessageId = `mock_${String(row._id)}`;
+    await row.save();
+    return row;
+  }
+  try {
+    const { providerMessageId } = await attemptMetaSend(row);
+    row.status = "sent";
+    row.providerMessageId = providerMessageId;
+    row.error = "";
+  } catch (error) {
+    row.status = "failed";
+    row.retryCount += 1;
+    row.error = error instanceof Error ? error.message : String(error);
+    logger.error("WhatsApp template send failed", { error: row.error, toPhone: input.toPhone, templateName: input.templateName });
+  }
+  await row.save();
+  return row;
 }
 
 export async function retryFailedMessages(salonId?: string): Promise<{ attempted: number; sent: number; failed: number }> {

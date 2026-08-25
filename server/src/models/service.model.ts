@@ -4,6 +4,7 @@ import type { Model } from "mongoose";
 export interface Service {
   salonId: string;
   branchIds: string[];
+  category: string;
   name: string;
   description: string;
   pricePaise: number;
@@ -18,6 +19,7 @@ const serviceSchema = new Schema<Service>(
   {
     salonId: { type: String, required: true },
     branchIds: { type: [String], default: [] },
+    category: { type: String, maxlength: 80, default: "Services" },
     name: { type: String, required: true, maxlength: 160 },
     description: { type: String, maxlength: 1000, default: "" },
     pricePaise: { type: Number, required: true, min: 0 },

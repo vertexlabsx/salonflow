@@ -1,0 +1,40 @@
+import mongoose, { model, Schema } from "mongoose";
+import type { Model } from "mongoose";
+
+export type FlowStatus = "draft" | "active" | "paused";
+export type FlowNodeKind = "trigger" | "wait" | "condition" | "whatsapp_template" | "stop";
+
+export interface ShopifyStore { salonId: string; shop: string; storeName: string; encryptedAccessToken: string; scopes: string[]; status: "connected" | "disconnected"; lastSyncAt?: Date | null; connectedAt?: Date | null; createdBy?: string; }
+export interface ShopifyFlow { salonId: string; name: string; description: string; trigger: string; status: FlowStatus; nodes: Array<{ id: string; type: FlowNodeKind; label: string; config: Record<string, unknown>; next?: string; yes?: string; no?: string }>; metrics: { triggered: number; completed: number; messagesSent: number; failed: number; stopped: number }; createdBy?: string; updatedBy?: string; createdAt?: Date; updatedAt?: Date; }
+export interface ShopifyFlowExecution { salonId: string; flowId: string; eventId: string; externalEventId: string; status: "queued" | "running" | "waiting" | "completed" | "stopped" | "failed"; currentNodeId: string; context: Record<string, unknown>; scheduledAt: Date; nextRunAt?: Date | null; lockedAt?: Date | null; retryCount: number; isTest: boolean; error: string; createdAt?: Date; updatedAt?: Date; }
+export interface ShopifyEvent { salonId: string; shop: string; topic: string; externalEventId: string; payload: Record<string, unknown>; processedAt?: Date | null; createdAt?: Date; }
+export interface ShopifyAudience { salonId: string; name: string; description: string; conditions: Record<string, unknown>; source: "shopify" | "import" | "manual"; createdBy?: string; createdAt?: Date; updatedAt?: Date; }
+export interface ShopifyCustomer { salonId: string; shopifyCustomerId: string; name: string; phone: string; normalizedPhone: string; email: string; orderCount: number; totalSpend: number; tags: string[]; marketingOptOut: boolean; marketingConsent: boolean; source: string; createdAt?: Date; updatedAt?: Date; }
+export interface ShopifyCampaign { salonId: string; name: string; audienceId: string; templateName: string; language: string; status: "draft" | "scheduled" | "running" | "completed" | "paused" | "failed"; scheduledAt?: Date | null; createdBy?: string; sentCount: number; failedCount: number; confirmedAt?: Date | null; createdAt?: Date; updatedAt?: Date; }
+
+const storeSchema = new Schema<ShopifyStore>({ salonId: { type: String, required: true, index: true }, shop: { type: String, required: true }, storeName: { type: String, default: "" }, encryptedAccessToken: { type: String, required: true, select: false }, scopes: { type: [String], default: [] }, status: { type: String, enum: ["connected", "disconnected"], default: "connected" }, lastSyncAt: { type: Date, default: null }, connectedAt: { type: Date, default: null }, createdBy: { type: String, default: "" } }, { timestamps: true });
+storeSchema.index({ salonId: 1, shop: 1 }, { unique: true });
+
+const flowSchema = new Schema<ShopifyFlow>({ salonId: { type: String, required: true, index: true }, name: { type: String, required: true }, description: { type: String, default: "" }, trigger: { type: String, required: true, index: true }, status: { type: String, enum: ["draft", "active", "paused"], default: "draft" }, nodes: { type: Schema.Types.Mixed, default: [] }, metrics: { triggered: { type: Number, default: 0 }, completed: { type: Number, default: 0 }, messagesSent: { type: Number, default: 0 }, failed: { type: Number, default: 0 }, stopped: { type: Number, default: 0 } }, createdBy: { type: String, default: "" }, updatedBy: { type: String, default: "" } }, { timestamps: true });
+flowSchema.index({ salonId: 1, trigger: 1, status: 1 });
+
+const executionSchema = new Schema<ShopifyFlowExecution>({ salonId: { type: String, required: true, index: true }, flowId: { type: String, required: true }, eventId: { type: String, required: true }, externalEventId: { type: String, required: true }, status: { type: String, enum: ["queued", "running", "waiting", "completed", "stopped", "failed"], default: "queued", index: true }, currentNodeId: { type: String, default: "" }, context: { type: Schema.Types.Mixed, default: {} }, scheduledAt: { type: Date, required: true, index: true }, nextRunAt: { type: Date, default: null, index: true }, lockedAt: { type: Date, default: null }, retryCount: { type: Number, default: 0 }, isTest: { type: Boolean, default: false }, error: { type: String, default: "" } }, { timestamps: true });
+executionSchema.index({ salonId: 1, flowId: 1, externalEventId: 1 }, { unique: true });
+executionSchema.index({ status: 1, nextRunAt: 1, lockedAt: 1 });
+
+const eventSchema = new Schema<ShopifyEvent>({ salonId: { type: String, required: true, index: true }, shop: { type: String, required: true }, topic: { type: String, required: true, index: true }, externalEventId: { type: String, required: true }, payload: { type: Schema.Types.Mixed, required: true }, processedAt: { type: Date, default: null } }, { timestamps: true });
+eventSchema.index({ shop: 1, topic: 1, externalEventId: 1 }, { unique: true });
+
+const customerSchema = new Schema<ShopifyCustomer>({ salonId: { type: String, required: true, index: true }, shopifyCustomerId: { type: String, default: "" }, name: { type: String, default: "" }, phone: { type: String, default: "" }, normalizedPhone: { type: String, required: true }, email: { type: String, default: "" }, orderCount: { type: Number, default: 0 }, totalSpend: { type: Number, default: 0 }, tags: { type: [String], default: [] }, marketingOptOut: { type: Boolean, default: false }, marketingConsent: { type: Boolean, default: false }, source: { type: String, default: "shopify" } }, { timestamps: true });
+customerSchema.index({ salonId: 1, normalizedPhone: 1 }, { unique: true });
+
+const audienceSchema = new Schema<ShopifyAudience>({ salonId: { type: String, required: true, index: true }, name: { type: String, required: true }, description: { type: String, default: "" }, conditions: { type: Schema.Types.Mixed, default: {} }, source: { type: String, enum: ["shopify", "import", "manual"], default: "shopify" }, createdBy: { type: String, default: "" } }, { timestamps: true });
+const campaignSchema = new Schema<ShopifyCampaign>({ salonId: { type: String, required: true, index: true }, name: { type: String, required: true }, audienceId: { type: String, required: true }, templateName: { type: String, required: true }, language: { type: String, default: "en" }, status: { type: String, enum: ["draft", "scheduled", "running", "completed", "paused", "failed"], default: "draft" }, scheduledAt: { type: Date, default: null }, createdBy: { type: String, default: "" }, sentCount: { type: Number, default: 0 }, failedCount: { type: Number, default: 0 }, confirmedAt: { type: Date, default: null } }, { timestamps: true });
+
+export const ShopifyStoreModel: Model<ShopifyStore> = (mongoose.models.ShopifyStore as Model<ShopifyStore>) || model<ShopifyStore>("ShopifyStore", storeSchema);
+export const ShopifyFlowModel: Model<ShopifyFlow> = (mongoose.models.ShopifyFlow as Model<ShopifyFlow>) || model<ShopifyFlow>("ShopifyFlow", flowSchema);
+export const ShopifyFlowExecutionModel: Model<ShopifyFlowExecution> = (mongoose.models.ShopifyFlowExecution as Model<ShopifyFlowExecution>) || model<ShopifyFlowExecution>("ShopifyFlowExecution", executionSchema);
+export const ShopifyEventModel: Model<ShopifyEvent> = (mongoose.models.ShopifyEvent as Model<ShopifyEvent>) || model<ShopifyEvent>("ShopifyEvent", eventSchema);
+export const ShopifyCustomerModel: Model<ShopifyCustomer> = (mongoose.models.ShopifyCustomer as Model<ShopifyCustomer>) || model<ShopifyCustomer>("ShopifyCustomer", customerSchema);
+export const ShopifyAudienceModel: Model<ShopifyAudience> = (mongoose.models.ShopifyAudience as Model<ShopifyAudience>) || model<ShopifyAudience>("ShopifyAudience", audienceSchema);
+export const ShopifyCampaignModel: Model<ShopifyCampaign> = (mongoose.models.ShopifyCampaign as Model<ShopifyCampaign>) || model<ShopifyCampaign>("ShopifyCampaign", campaignSchema);

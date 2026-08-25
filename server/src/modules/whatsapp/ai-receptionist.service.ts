@@ -2,6 +2,7 @@ import { loadEnv } from "../../config/env";
 
 export interface AiReceptionistResult {
   intent: "BOOK_APPOINTMENT" | "CANCEL_APPOINTMENT" | "RESCHEDULE_APPOINTMENT" | "CHECK_APPOINTMENT" | "SERVICES" | "PRICES" | "HUMAN_SUPPORT" | "GENERAL_QUESTION";
+  branch?: string;
   service?: string;
   date?: string;
   time?: string;
@@ -44,7 +45,7 @@ function localFallbackEntities(text: string): Partial<AiReceptionistResult> {
 export async function extractReceptionistIntent(text: string): Promise<AiReceptionistResult> {
   const lower = text.toLowerCase();
   const local = localFallbackEntities(text);
-  const fallback: AiReceptionistResult = { ...(lower.includes("cancel") ? { intent: "CANCEL_APPOINTMENT" } : lower.includes("reschedule") ? { intent: "RESCHEDULE_APPOINTMENT" } : lower.includes("price") || lower.includes("rate") ? { intent: "PRICES" } : local.isSalonRelated ? { intent: "BOOK_APPOINTMENT" } : { intent: "GENERAL_QUESTION" }), ...local };
+  const fallback: AiReceptionistResult = { ...(lower.includes("cancel") ? { intent: "CANCEL_APPOINTMENT" } : lower.includes("reschedule") || lower.includes("instead") || lower.includes("come at") ? { intent: "RESCHEDULE_APPOINTMENT" } : lower.includes("price") || lower.includes("rate") ? { intent: "PRICES" } : lower.includes("service") ? { intent: "SERVICES" } : local.isSalonRelated ? { intent: "BOOK_APPOINTMENT" } : { intent: "GENERAL_QUESTION" }), ...local };
   const env = loadEnv();
   if (!env.OPENAI_API_KEY) return fallback;
   try {
@@ -58,7 +59,7 @@ export async function extractReceptionistIntent(text: string): Promise<AiRecepti
         messages: [
           { role: "system", content: `You are a multilingual salon WhatsApp receptionist for SalonFlow. Understand English, Hindi, Hinglish, Urdu, Punjabi-style roman text, and mixed language. Today is ${new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" })} in Asia/Kolkata.
 
-Return only compact JSON with: intent, service, date, time, language, isSalonRelated, reply.
+Return only compact JSON with: intent, branch, service, date, time, language, isSalonRelated, reply.
 
 Intent must be one of: BOOK_APPOINTMENT, CANCEL_APPOINTMENT, RESCHEDULE_APPOINTMENT, CHECK_APPOINTMENT, SERVICES, PRICES, HUMAN_SUPPORT, GENERAL_QUESTION.
 

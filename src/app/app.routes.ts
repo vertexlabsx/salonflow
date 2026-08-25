@@ -1,6 +1,8 @@
 import { Routes } from "@angular/router";
 import { rootRedirectGuard, staffAuthGuard, staffGuestGuard, staffPermissionGuard } from "./core/staff-auth.guard";
 import { ownerAuthGuard, ownerGuestGuard } from "./features/owner/owner-auth.guard";
+import { shopifyAdminAuthGuard, shopifyAdminGuestGuard } from "./core/shopify-admin-auth.guard";
+import { shopifyClientAuthGuard, shopifyClientGuestGuard } from "./core/shopify-client-auth.guard";
 
 export const routes: Routes = [
   { path: "", canActivate: [rootRedirectGuard], children: [] },
@@ -12,6 +14,34 @@ export const routes: Routes = [
   {
     path: "staff/open",
     loadComponent: () => import("./features/staff/staff-open.page").then((m) => m.StaffOpenPage)
+  },
+  {
+    path: "shopify-admin/login",
+    canActivate: [shopifyAdminGuestGuard],
+    loadComponent: () => import("./features/shopify-admin/shopify-admin-login.page").then((m) => m.ShopifyAdminLoginPage)
+  },
+  {
+    path: "shopify-admin",
+    canActivate: [shopifyAdminAuthGuard],
+    loadComponent: () => import("./features/shopify-admin/shopify-admin-layout.page").then((m) => m.ShopifyAdminLayoutPage),
+    children: [
+      { path: "", redirectTo: "dashboard", pathMatch: "full" },
+      { path: "dashboard", loadComponent: () => import("./features/shopify-admin/index").then((m) => m.ShopifyAdminPage) }
+    ]
+  },
+  {
+    path: "shopify/login",
+    canActivate: [shopifyClientGuestGuard],
+    loadComponent: () => import("./features/shopify-client/shopify-client-login.page").then((m) => m.ShopifyClientLoginPage)
+  },
+  {
+    path: "shopify",
+    canActivate: [shopifyClientAuthGuard],
+    loadComponent: () => import("./features/shopify-client/shopify-client-layout.page").then((m) => m.ShopifyClientLayoutPage),
+    children: [
+      { path: "", redirectTo: "dashboard", pathMatch: "full" },
+      { path: "dashboard", loadComponent: () => import("./features/shopify-client/shopify-client.page").then((m) => m.ShopifyClientPage) }
+    ]
   },
   {
     path: "owner/login",

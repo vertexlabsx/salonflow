@@ -5,6 +5,27 @@ import { createApp } from "./app";
 import { connectMongo } from "./config/mongo";
 import { setEnvForTesting } from "./config/env";
 import { seed } from "./seed";
+import { ShopifyUserModel } from "./models/shopify-user.model";
+import bcrypt from "bcryptjs";
+
+async function seedShopifyUsers() {
+  const adminEmail = process.env.SHOPIFY_ADMIN_EMAIL || "admin@shopify.local";
+  const adminPassword = process.env.SHOPIFY_ADMIN_PASSWORD || "admin123456";
+  const existing = await ShopifyUserModel.findOne({ shopDomain: "admin", loginIdNormalized: adminEmail.toLowerCase() });
+  if (!existing) {
+    await ShopifyUserModel.create({
+      shopDomain: "admin",
+      loginId: adminEmail,
+      loginIdNormalized: adminEmail.toLowerCase(),
+      email: adminEmail.toLowerCase(),
+      name: "Shopify Admin",
+      passwordHash: await bcrypt.hash(adminPassword, 12),
+      role: "admin",
+      status: "active"
+    });
+    console.log(`Shopify admin created: ${adminEmail}`);
+  }
+}
 
 async function main(): Promise<void> {
   const dbPath = path.join(process.cwd(), ".mongodata", `dev-${process.pid}-${Date.now()}`);
@@ -43,6 +64,20 @@ async function main(): Promise<void> {
     META_CONFIG_ID: undefined,
     META_CREDENTIAL_ENCRYPTION_KEY: undefined,
     META_WEBHOOK_APP_SECRET: undefined,
+    SHOPIFY_API_KEY: undefined,
+    SHOPIFY_API_SECRET: undefined,
+    SHOPIFY_SCOPES: "read_customers,read_orders,read_products,read_checkouts,write_webhooks",
+    SHOPIFY_APP_URL: undefined,
+    SHOPIFY_JWT_SECRET: "dev-shopify-jwt-secret-please-change-012345",
+    SHOPIFY_ADMIN_EMAIL: "admin@shopify.local",
+    SHOPIFY_ADMIN_PASSWORD: "admin123456",
+    SHOPIFY_CLIENT_EMAIL: "",
+    SHOPIFY_CLIENT_PASSWORD: "",
+    RAZORPAY_KEY_ID: undefined,
+    RAZORPAY_KEY_SECRET: undefined,
+    RAZORPAY_WEBHOOK_SECRET: undefined,
+    OPENAI_API_KEY: undefined,
+    OPENAI_MODEL: "gpt-4o-mini",
     WEB_PUSH_PUBLIC_KEY: undefined,
     WEB_PUSH_PRIVATE_KEY: undefined,
     META_GRAPH_API_VERSION: "v21.0",
@@ -52,6 +87,7 @@ async function main(): Promise<void> {
 
   await connectMongo(uri);
   await seed({ disconnect: false });
+  await seedShopifyUsers();
   const app = createApp();
   const server = app.listen(4000, "127.0.0.1", () => {
     console.log("API ready: http://127.0.0.1:4000/api/v1");

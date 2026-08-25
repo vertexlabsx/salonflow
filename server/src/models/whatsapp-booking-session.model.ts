@@ -6,12 +6,14 @@ export interface WhatsAppBookingSession {
   branchId: string;
   waPhone: string;
   profileName: string;
-  state: "select_service" | "select_date" | "select_time" | "confirm_name" | "confirm" | "completed" | "cancelled";
+  state: "select_branch" | "select_category" | "select_service" | "select_date" | "select_time" | "confirm_hold" | "awaiting_payment" | "confirm_name" | "confirm" | "completed" | "cancelled";
+  category: string | null;
   serviceId: string | null;
   serviceName: string | null;
   date: string | null;
   startAt: Date | null;
   staffId: string | null;
+  holdAppointmentId: string | null;
   customerName: string;
   expiresAt: Date;
   createdAt?: Date;
@@ -25,11 +27,13 @@ const whatsAppBookingSessionSchema = new Schema<WhatsAppBookingSession>(
     waPhone: { type: String, required: true },
     profileName: { type: String, maxlength: 160, default: "" },
     state: { type: String, required: true, default: "select_service" },
+    category: { type: String, default: null },
     serviceId: { type: String, default: null },
     serviceName: { type: String, default: null },
     date: { type: String, default: null },
     startAt: { type: Date, default: null },
     staffId: { type: String, default: null },
+    holdAppointmentId: { type: String, default: null },
     customerName: { type: String, maxlength: 160, default: "" },
     expiresAt: { type: Date, required: true }
   },

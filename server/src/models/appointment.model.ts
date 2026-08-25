@@ -1,7 +1,7 @@
 import mongoose, { model, Schema } from "mongoose";
 import type { Model, Types } from "mongoose";
 
-export type AppointmentStatus = "booked" | "confirmed" | "arrived" | "in_service" | "completed" | "cancelled" | "no_show";
+export type AppointmentStatus = "pending" | "booked" | "confirmed" | "arrived" | "in_service" | "completed" | "cancelled" | "no_show" | "expired";
 
 export interface Appointment {
   salonId: string;
@@ -19,6 +19,13 @@ export interface Appointment {
   status: AppointmentStatus;
   chair?: string;
   source?: string;
+  paymentStatus?: "not_required" | "pending" | "paid" | "failed";
+  depositAmountPaise?: number;
+  paymentLink?: string;
+  paymentProvider?: "razorpay" | "manual" | "none";
+  paymentProviderId?: string;
+  paymentReference?: string;
+  holdExpiresAt?: Date | null;
   version: number;
   whatsappConfirmationSentAt?: Date | null;
   whatsappReminderSentAt?: Date | null;
@@ -41,9 +48,16 @@ const appointmentSchema = new Schema<Appointment>(
     value: { type: Number, required: true, min: 0 },
     startAt: { type: Date, required: true },
     endAt: { type: Date, required: true },
-    status: { type: String, enum: ["booked", "confirmed", "arrived", "in_service", "completed", "cancelled", "no_show"], default: "booked" },
+    status: { type: String, enum: ["pending", "booked", "confirmed", "arrived", "in_service", "completed", "cancelled", "no_show", "expired"], default: "booked" },
     chair: { type: String, maxlength: 60 },
     source: { type: String, maxlength: 60, default: "crm" },
+    paymentStatus: { type: String, enum: ["not_required", "pending", "paid", "failed"], default: "not_required" },
+    depositAmountPaise: { type: Number, min: 0, default: 0 },
+    paymentLink: { type: String, maxlength: 1000, default: "" },
+    paymentProvider: { type: String, enum: ["razorpay", "manual", "none"], default: "none" },
+    paymentProviderId: { type: String, maxlength: 160, default: "" },
+    paymentReference: { type: String, maxlength: 200, default: "" },
+    holdExpiresAt: { type: Date, default: null },
     version: { type: Number, default: 1 },
     whatsappConfirmationSentAt: { type: Date, default: null },
     whatsappReminderSentAt: { type: Date, default: null }

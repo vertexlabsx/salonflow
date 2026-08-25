@@ -53,6 +53,18 @@ const envSchema = z.object({
   META_WEBHOOK_APP_SECRET: z.string().optional(),
   VERIFY_TOKEN: z.string().optional(),
   META_WEBHOOK_VERIFY_TOKEN: z.string().optional(),
+  SHOPIFY_API_KEY: z.string().optional(),
+  SHOPIFY_API_SECRET: z.string().optional(),
+  SHOPIFY_SCOPES: z.string().default("read_customers,read_orders,read_products,read_checkouts,write_webhooks"),
+  SHOPIFY_APP_URL: z.string().optional(),
+  SHOPIFY_JWT_SECRET: z.string().min(16),
+  SHOPIFY_ADMIN_EMAIL: z.string().min(1),
+  SHOPIFY_ADMIN_PASSWORD: z.string().min(8),
+  SHOPIFY_CLIENT_EMAIL: z.string().default(""),
+  SHOPIFY_CLIENT_PASSWORD: z.string().default(""),
+  RAZORPAY_KEY_ID: z.string().optional(),
+  RAZORPAY_KEY_SECRET: z.string().optional(),
+  RAZORPAY_WEBHOOK_SECRET: z.string().optional(),
   OPENAI_API_KEY: z.string().optional(),
   OPENAI_MODEL: z.string().default("gpt-4o-mini")
 }).superRefine((env, ctx) => {

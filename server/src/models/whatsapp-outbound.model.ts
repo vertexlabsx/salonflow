@@ -7,6 +7,9 @@ export interface WhatsAppOutbound {
   toPhone: string;
   type: "confirmation" | "reminder" | "cancellation" | "reschedule" | "utility";
   body: string;
+  interactive?: Record<string, unknown> | null;
+  templatePayload?: Record<string, unknown> | null;
+  metadata?: Record<string, unknown> | null;
   provider: "mock" | "meta" | "meta_test" | "meta_production";
   providerMessageId: string;
   status: "queued" | "sent" | "delivered" | "read" | "failed";
@@ -26,6 +29,9 @@ const whatsAppOutboundSchema = new Schema<WhatsAppOutbound>(
     toPhone: { type: String, required: true },
     type: { type: String, enum: ["confirmation", "reminder", "cancellation", "reschedule", "utility"], required: true },
     body: { type: String, required: true, maxlength: 4096 },
+    interactive: { type: Schema.Types.Mixed, default: null },
+    templatePayload: { type: Schema.Types.Mixed, default: null },
+    metadata: { type: Schema.Types.Mixed, default: null },
     provider: { type: String, enum: ["mock", "meta", "meta_test", "meta_production"], required: true },
     providerMessageId: { type: String, default: "" },
     status: { type: String, enum: ["queued", "sent", "delivered", "read", "failed"], default: "queued" },
@@ -40,6 +46,7 @@ const whatsAppOutboundSchema = new Schema<WhatsAppOutbound>(
 
 whatsAppOutboundSchema.index({ salonId: 1, appointmentId: 1, type: 1 });
 whatsAppOutboundSchema.index({ status: 1, createdAt: 1 });
+whatsAppOutboundSchema.index({ salonId: 1, "metadata.dedupeKey": 1 }, { unique: true, sparse: true });
 
 export const WhatsAppOutboundModel: Model<WhatsAppOutbound> =
   (mongoose.models.WhatsAppOutbound as Model<WhatsAppOutbound>) || model<WhatsAppOutbound>("WhatsAppOutbound", whatsAppOutboundSchema);

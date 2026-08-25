@@ -17,10 +17,14 @@ import { mobileRouter } from "./modules/push/push.routes";
 import { catalogRouter } from "./modules/catalog/catalog.routes";
 import { realtimeRouter } from "./modules/realtime/realtime.routes";
 import { ownerConsoleRouter } from "./modules/owner-console/owner-console.routes";
+import { shopifyAutomationRouter, shopifyWebhookRouter } from "./modules/shopify-automation/shopify-automation.routes";
+import { shopifyProductAuthRouter } from "./modules/shopify-product/shopify-product-auth.routes";
+import { shopifyProductAdminRouter } from "./modules/shopify-product/shopify-product-admin.routes";
+import { shopifyProductClientRouter } from "./modules/shopify-product/shopify-product-client.routes";
 import { ok } from "./shared/http";
 
 /** Mutating endpoints that cannot carry CSRF headers (native app refresh/logout, provider webhooks). */
-const CSRF_EXEMPT_PATHS = [/^\/auth\/refresh$/, /^\/auth\/logout$/, /^\/whatsapp(?:\/|$)/];
+const CSRF_EXEMPT_PATHS = [/^\/auth\/refresh$/, /^\/auth\/logout$/, /^\/whatsapp(?:\/|$)/, /^\/shopify-automation\/webhooks(?:\/|$)/];
 
 function corsOptions() {
   const env = loadEnv();
@@ -76,9 +80,14 @@ export function createApp(): Express {
   api.use("/realtime", realtimeRouter);
   api.use("/whatsapp", whatsappRouter);
   api.use("/owner-console", ownerConsoleRouter);
+  api.use("/shopify-automation", shopifyAutomationRouter);
+  api.use("/shopify-api/auth", shopifyProductAuthRouter);
+  api.use("/shopify-api/admin", shopifyProductAdminRouter);
+  api.use("/shopify-api/client", shopifyProductClientRouter);
 
   app.use("/api/v1", api);
   app.use("/webhook", metaWebhookRouter);
+  app.use("/shopify/webhooks", shopifyWebhookRouter);
 
   app.use(notFoundHandler);
   app.use(errorHandler);
