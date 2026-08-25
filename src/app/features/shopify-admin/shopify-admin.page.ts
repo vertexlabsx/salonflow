@@ -110,7 +110,15 @@ export class ShopifyAdminPage implements OnInit {
   async createFlow() { await this.post<Flow>("/flows", { ...this.draftFlow, nodes: [{ id: "trigger", type: "trigger", label: this.draftFlow.trigger, config: {}, next: "stop" }, { id: "stop", type: "stop", label: "Stop", config: {} }] }); this.draftFlow.name = ""; await this.refresh(); }
   async updateFlow(flow: Flow, status: Flow["status"]) { await this.patch<Flow>(`/flows/${flow._id}`, { status }); await this.refresh(); }
   async sendTest(flow: Flow, nodeId: string) { const phone = this.testPhone || window.prompt("Test WhatsApp phone number") || ""; if (!phone) return; this.testPhone = phone; const result = await this.post<{ status: string; error?: string }>(`/flows/${flow._id}/test-message`, { nodeId, phone }); this.message.set(result.error ? `Test failed: ${result.error}` : `Test message ${result.status}.`); await this.refresh(); }
-  async beginShopifyInstall() { const result = await this.post<{ installUrl: string }>("/shopify/install-url", { shop: this.connect.shop }); window.location.href = result.installUrl; }
+  async beginShopifyInstall() {
+    this.message.set("Opening Shopify install page...");
+    try {
+      const result = await this.post<{ installUrl: string }>("/shopify/install-url", { shop: this.connect.shop });
+      window.location.assign(result.installUrl);
+    } catch (error) {
+      this.message.set(error instanceof Error ? `Shopify install failed: ${error.message}` : "Shopify install failed.");
+    }
+  }
   async connectShopify() { await this.post("/shopify/connect", this.connect); this.message.set("Shopify connected server-side."); await this.refresh(); }
   async testShopify() { await this.post("/shopify/test", {}); this.message.set("Shopify connection test passed."); await this.refresh(); }
   async disconnectShopify() { await this.post("/shopify/disconnect", {}); this.message.set("Shopify disconnected."); await this.refresh(); }

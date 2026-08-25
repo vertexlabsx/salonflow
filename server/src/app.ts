@@ -24,7 +24,13 @@ import { shopifyProductClientRouter } from "./modules/shopify-product/shopify-pr
 import { ok } from "./shared/http";
 
 /** Mutating endpoints that cannot carry CSRF headers (native app refresh/logout, provider webhooks). */
-const CSRF_EXEMPT_PATHS = [/^\/auth\/refresh$/, /^\/auth\/logout$/, /^\/whatsapp(?:\/|$)/, /^\/shopify-automation\/webhooks(?:\/|$)/];
+const CSRF_EXEMPT_PATHS = [
+  /^\/auth\/refresh$/,
+  /^\/auth\/logout$/,
+  /^\/shopify-api\/auth(?:\/|$)/,
+  /^\/whatsapp(?:\/|$)/,
+  /^\/shopify-automation\/webhooks(?:\/|$)/
+];
 
 function corsOptions() {
   const env = loadEnv();
