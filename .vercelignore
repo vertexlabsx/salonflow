@@ -1,0 +1,12 @@
+server/
+android/
+apk-output/
+www/
+.git/
+.angular/
+node_modules/
+coverage/
+playwright-report/
+test-results/
+*.apk
+*.log
