@@ -9,14 +9,35 @@ export interface AiReceptionistResult {
 
 function normalizeTime(value?: string): string | undefined {
   if (!value) return undefined;
-  const exact = value.trim().match(/^(\d{1,2}):(\d{2})$/);
+  const trimmed = value.trim().toLowerCase();
+  const exact = trimmed.match(/^(\d{1,2}):(\d{2})$/);
   if (exact) return `${exact[1]!.padStart(2, "0")}:${exact[2]}`;
-  return value;
+  const meridiem = trimmed.match(/\b(\d{1,2})(?::(\d{2}))?\s*(am|pm)\b/);
+  if (!meridiem) return value;
+  let hour = Number(meridiem[1]);
+  const minute = meridiem[2] || "00";
+  if (meridiem[3] === "pm" && hour < 12) hour += 12;
+  if (meridiem[3] === "am" && hour === 12) hour = 0;
+  return `${String(hour).padStart(2, "0")}:${minute}`;
+}
+
+function addDays(date: Date, days: number): Date {
+  const next = new Date(date);
+  next.setDate(next.getDate() + days);
+  return next;
+}
+
+function localFallbackEntities(text: string): Partial<AiReceptionistResult> {
+  const lower = text.toLowerCase();
+  const today = new Date(new Date().toLocaleString("en-US", { timeZone: "Asia/Kolkata" }));
+  const date = lower.includes("day after tomorrow") ? addDays(today, 2).toLocaleDateString("en-CA") : lower.includes("tomorrow") ? addDays(today, 1).toLocaleDateString("en-CA") : lower.match(/\b\d{4}-\d{2}-\d{2}\b/)?.[0];
+  const time = normalizeTime(lower.match(/\b\d{1,2}(?::\d{2})?\s*(?:am|pm)\b/)?.[0] || lower.match(/\b\d{1,2}:\d{2}\b/)?.[0]);
+  return { ...(date ? { date } : {}), ...(time ? { time } : {}) };
 }
 
 export async function extractReceptionistIntent(text: string): Promise<AiReceptionistResult> {
   const lower = text.toLowerCase();
-  const fallback: AiReceptionistResult = lower.includes("cancel") ? { intent: "CANCEL_APPOINTMENT" } : lower.includes("reschedule") ? { intent: "RESCHEDULE_APPOINTMENT" } : lower.includes("price") || lower.includes("rate") ? { intent: "PRICES" } : /book|appointment|hair|spa|skin|nail|makeup|beard|colour|color|service/.test(lower) ? { intent: "BOOK_APPOINTMENT" } : { intent: "GENERAL_QUESTION" };
+  const fallback: AiReceptionistResult = { ...(lower.includes("cancel") ? { intent: "CANCEL_APPOINTMENT" } : lower.includes("reschedule") ? { intent: "RESCHEDULE_APPOINTMENT" } : lower.includes("price") || lower.includes("rate") ? { intent: "PRICES" } : /book|appointment|hair|spa|skin|nail|makeup|beard|colour|color|service/.test(lower) ? { intent: "BOOK_APPOINTMENT" } : { intent: "GENERAL_QUESTION" }), ...localFallbackEntities(text) };
   const env = loadEnv();
   if (!env.OPENAI_API_KEY) return fallback;
   try {
@@ -35,7 +56,7 @@ export async function extractReceptionistIntent(text: string): Promise<AiRecepti
     });
     const payload = (await response.json()) as { choices?: Array<{ message?: { content?: string } }> };
     const parsed = JSON.parse(payload.choices?.[0]?.message?.content || "{}") as Partial<AiReceptionistResult>;
-    return { ...fallback, ...parsed, intent: parsed.intent || fallback.intent, time: normalizeTime(parsed.time) } as AiReceptionistResult;
+    return { ...fallback, ...parsed, intent: parsed.intent || fallback.intent, date: parsed.date || fallback.date, time: normalizeTime(parsed.time) || fallback.time } as AiReceptionistResult;
   } catch {
     return fallback;
   }

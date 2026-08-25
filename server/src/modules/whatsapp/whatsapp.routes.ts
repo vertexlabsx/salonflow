@@ -144,6 +144,11 @@ function normalizeTimeInput(value: string): string {
   return `${String(hour).padStart(2, "0")}:${minute}`;
 }
 
+function isPastBusinessDate(value: string): boolean {
+  const today = new Date(new Date().toLocaleString("en-US", { timeZone: "Asia/Kolkata" })).toLocaleDateString("en-CA");
+  return value < today;
+}
+
 async function handleBookingMessage(salonId: string, branchId: string, message: WaInboundMessage): Promise<Record<string, unknown>> {
   const text = message.text.trim();
   const lower = text.toLowerCase();
@@ -212,6 +217,7 @@ async function handleBookingMessage(salonId: string, branchId: string, message: 
   if (session.state === "select_date") {
     const dateInput = ai.date || text;
     if (!/^\d{4}-\d{2}-\d{2}$/.test(dateInput)) return { action: "needs_date", reply: "Please send date as YYYY-MM-DD." };
+    if (isPastBusinessDate(dateInput)) return { action: "past_date", reply: "Please choose today or a future date." };
     session.date = dateInput;
     session.state = "select_time";
     session.expiresAt = sessionExpiry();
