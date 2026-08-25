@@ -1,5 +1,6 @@
 import { Router } from "express";
 import { z } from "zod";
+import { loadEnv } from "../../config/env";
 import { requireAuth } from "../../middleware/auth.middleware";
 import { requirePermissions } from "../../middleware/rbac";
 import { ApiError, asyncHandler, ok } from "../../shared/http";
@@ -14,7 +15,8 @@ shopifyAutomationRouter.get("/shopify/callback", asyncHandler(async (req, res) =
   const state = JSON.parse(Buffer.from(query.state, "base64url").toString("utf8")) as { salonId?: string; userId?: string; ts?: number };
   if (!state.salonId || !state.userId || !state.ts || Date.now() - state.ts > 10 * 60_000) throw ApiError.forbidden("Invalid Shopify OAuth state.");
   await connectShopifyAndRegisterWebhooks(state.salonId, state.userId, query.shop, query.code);
-  res.redirect("/staff/shopify-automation?shopify=connected");
+  const frontendUrl = loadEnv().CORS_ORIGINS.split(",").map((origin) => origin.trim()).find((origin) => origin.includes("staff-app-kappa.vercel.app")) || "https://staff-app-kappa.vercel.app";
+  res.redirect(`${frontendUrl}/shopify-admin/dashboard?shopify=connected`);
 }));
 
 shopifyAutomationRouter.use(requireAuth, requirePermissions(STAFF_PERMISSION));
