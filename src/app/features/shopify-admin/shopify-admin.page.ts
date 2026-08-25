@@ -1,5 +1,6 @@
 import { Component, OnInit, computed, inject, signal } from "@angular/core";
 import { FormsModule } from "@angular/forms";
+import { HttpErrorResponse } from "@angular/common/http";
 import { ShopfiyAdminService } from "../../core/shopify-admin.service";
 import { DateTextPipe, JsonTextPipe } from "./shopify-admin.pipes";
 import type { Overview, Flow, Template, Customer, Campaign, LogRow } from "./shopify-admin.types";
@@ -116,7 +117,7 @@ export class ShopifyAdminPage implements OnInit {
       const result = await this.post<{ installUrl: string }>("/shopify/install-url", { shop: this.connect.shop });
       window.location.assign(result.installUrl);
     } catch (error) {
-      this.message.set(error instanceof Error ? `Shopify install failed: ${error.message}` : "Shopify install failed.");
+      this.message.set(`Shopify install failed: ${this.installErrorMessage(error)}`);
     }
   }
   async connectShopify() { await this.post("/shopify/connect", this.connect); this.message.set("Shopify connected server-side."); await this.refresh(); }
@@ -129,4 +130,18 @@ export class ShopifyAdminPage implements OnInit {
   private get<T>(path: string): Promise<T> { return this.admin.get<T>(path); }
   private post<T = unknown>(path: string, body: Record<string, unknown>): Promise<T> { return this.admin.post<T>(path, body); }
   private patch<T = unknown>(path: string, body: Record<string, unknown>): Promise<T> { return this.admin.patch<T>(path, body); }
+
+  private installErrorMessage(error: unknown): string {
+    if (error instanceof HttpErrorResponse) {
+      const body = error.error as { error?: { message?: string } | string; message?: string } | string | undefined;
+      const bodyMessage = typeof body === "string" ? body : typeof body?.error === "string" ? body.error : body?.error?.message || body?.message;
+      return bodyMessage || `HTTP ${error.status || 0}: ${error.message || "request failed"}`;
+    }
+    if (error && typeof error === "object") {
+      const maybeMessage = (error as { message?: unknown }).message;
+      if (typeof maybeMessage === "string" && maybeMessage.trim()) return maybeMessage;
+      try { return JSON.stringify(error); } catch { /* ignore */ }
+    }
+    return String(error || "unknown error");
+  }
 }
