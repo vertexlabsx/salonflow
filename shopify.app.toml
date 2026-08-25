@@ -1,0 +1,31 @@
+# Shopify App configuration for SalonFlow WhatsApp Automation
+# This file is used by Shopify CLI for app configuration management.
+# The actual production application runs on the existing SalonFlow backend.
+# Docs: https://shopify.dev/docs/apps/tools/cli/configuration
+
+name = "SalonFlow WhatsApp Automation"
+handle = "salonflow-whatsapp-automation"
+client_id = "SHOPIFY_API_KEY_HERE"
+application_url = "https://salonflow-0o9u.onrender.com"
+embedded = false
+
+[access_scopes]
+# Scopes required for the SalonFlow automation features:
+#   read_customers  – sync customer data and marketing consent
+#   read_orders     – process order events via webhooks
+#   read_products   – product data for template variables
+#   read_checkouts  – abandoned checkout recovery
+#   write_webhooks  – register webhook subscriptions automatically
+scopes = "read_customers,read_orders,read_products,read_checkouts,write_webhooks"
+
+[auth]
+redirect_urls = [
+  "https://salonflow-0o9u.onrender.com/api/v1/shopify-automation/shopify/callback"
+]
+
+[webhooks]
+api_version = "2025-07"
+
+  [[webhooks.subscriptions]]
+  topics = ["orders/create", "orders/paid", "orders/fulfilled", "orders/cancelled", "checkouts/create"]
+  uri = "https://salonflow-0o9u.onrender.com/shopify/webhooks"

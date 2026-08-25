@@ -9,6 +9,9 @@ import { logger } from "../../shared/logger";
 import { sendWhatsAppTemplateMessage } from "../whatsapp/whatsapp.service";
 import { ShopifyAudienceModel, ShopifyCampaignModel, ShopifyCustomerModel, ShopifyEventModel, ShopifyFlowExecutionModel, ShopifyFlowModel, ShopifyStoreModel, type ShopifyFlow, type FlowNodeKind } from "../../models/shopify-automation.model";
 
+/** Single source of truth for Shopify Admin API version. Used for all Admin API calls and webhook subscriptions. */
+export const SHOPIFY_API_VERSION = "2025-07";
+
 const TOPICS = ["orders/create", "orders/paid", "orders/fulfilled", "orders/cancelled", "checkouts/create"];
 const MAX_EXECUTION_RETRIES = 3;
 
@@ -91,10 +94,83 @@ export async function exchangeShopifyCode(salonId: string, userId: string, shopI
   return { shop: store.shop, status: store.status, connectedAt: store.connectedAt };
 }
 
+/**
+ * Idempotently register required webhook subscriptions on a Shopify store.
+ * Fetches existing subscriptions first, then only creates the missing ones.
+ * Never creates duplicates regardless of how many times it is called.
+ */
+export async function registerWebhooks(shop: string, accessToken: string): Promise<{ registered: string[]; existing: string[]; failed: string[] }> {
+  const env = loadEnv();
+  const appUrl = (env.SHOPIFY_APP_URL || "").replace(/\/$/, "");
+  if (!appUrl) throw ApiError.unavailableFeature("SHOPIFY_APP_URL is not configured. Cannot register webhooks.");
+
+  const webhookUri = `${appUrl}/shopify/webhooks`;
+  const token = decryptSecret(accessToken);
+
+  const listResponse = await fetch(`https://${shop}/admin/api/${SHOPIFY_API_VERSION}/webhooks.json`, {
+    headers: { "X-Shopify-Access-Token": token }
+  });
+  if (!listResponse.ok) throw ApiError.badRequest(`Failed to list existing webhooks (${listResponse.status}).`);
+  const listPayload = await listResponse.json().catch(() => ({})) as { webhooks?: Array<{ topic?: string; callback_url?: string }> };
+  const existingWebhooks = listPayload.webhooks || [];
+
+  const existingTopics = new Set(
+    existingWebhooks
+      .filter((w) => w.callback_url === webhookUri && w.topic)
+      .map((w) => w.topic as string)
+  );
+
+  const missingTopics = TOPICS.filter((topic) => !existingTopics.has(topic));
+  const registered: string[] = [];
+  const failed: string[] = [];
+
+  for (const topic of missingTopics) {
+    const createResponse = await fetch(`https://${shop}/admin/api/${SHOPIFY_API_VERSION}/webhooks.json`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Shopify-Access-Token": token },
+      body: JSON.stringify({ webhook: { topic, address: webhookUri, format: "json" } })
+    });
+    if (createResponse.ok) {
+      registered.push(topic);
+    } else {
+      const errorBody = await createResponse.json().catch(() => ({})) as { errors?: unknown };
+      logger.error("Shopify webhook registration failed", { topic, status: createResponse.status, errors: errorBody.errors });
+      failed.push(topic);
+    }
+  }
+
+  return { registered, existing: [...existingTopics], failed };
+}
+
+/**
+ * Unified connection function used by both the OAuth callback and the /shopify/connect route.
+ * Exchanges the OAuth code, stores the access token, then idempotently registers webhooks.
+ * Both routes use this single implementation — no duplication.
+ */
+export async function connectShopifyAndRegisterWebhooks(salonId: string, userId: string, shopInput: string, code: string) {
+  const result = await exchangeShopifyCode(salonId, userId, shopInput, code);
+  const shop = normalizeShop(shopInput);
+
+  let webhooks: { registered: string[]; existing: string[]; failed: string[] } | null = null;
+  let webhookError: string | null = null;
+
+  try {
+    const store = await ShopifyStoreModel.findOne({ salonId, shop, status: "connected" }).select("+encryptedAccessToken");
+    if (store) {
+      webhooks = await registerWebhooks(shop, store.encryptedAccessToken);
+    }
+  } catch (error) {
+    webhookError = error instanceof Error ? error.message : String(error);
+    logger.error("Webhook registration failed after Shopify connect", { salonId, shop, error: webhookError });
+  }
+
+  return { ...result, webhooks, webhookError };
+}
+
 export async function testShopifyConnection(salonId: string) {
   const store = await ShopifyStoreModel.findOne({ salonId, status: "connected" }).select("+encryptedAccessToken");
   if (!store) throw ApiError.notFound("No connected Shopify store.");
-  const response = await fetch(`https://${store.shop}/admin/api/2025-07/shop.json`, { headers: { "X-Shopify-Access-Token": decryptSecret(store.encryptedAccessToken) } });
+  const response = await fetch(`https://${store.shop}/admin/api/${SHOPIFY_API_VERSION}/shop.json`, { headers: { "X-Shopify-Access-Token": decryptSecret(store.encryptedAccessToken) } });
   if (!response.ok) throw ApiError.badRequest(`Shopify test failed (${response.status}).`);
   const payload = await response.json().catch(() => ({})) as { shop?: { name?: string; myshopify_domain?: string } };
   store.storeName = payload.shop?.name || store.storeName;

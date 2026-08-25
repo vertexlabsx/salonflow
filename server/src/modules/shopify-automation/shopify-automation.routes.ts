@@ -3,7 +3,7 @@ import { z } from "zod";
 import { requireAuth } from "../../middleware/auth.middleware";
 import { requirePermissions } from "../../middleware/rbac";
 import { ApiError, asyncHandler, ok } from "../../shared/http";
-import { addFlowNode, automationModels, campaignPreview, deleteFlowNode, exchangeShopifyCode, importCustomers, ingestWebhook, markOptOut, normalizeShop, overview, runDueExecutions, seedReadyMadeFlows, sendCampaign, sendFlowTestMessage, shopifyInstallUrl, testShopifyConnection, updateFlowNode, validateFlowForActivation, verifyShopifyWebhook } from "./shopify-automation.service";
+import { addFlowNode, automationModels, campaignPreview, connectShopifyAndRegisterWebhooks, deleteFlowNode, importCustomers, ingestWebhook, markOptOut, normalizeShop, overview, runDueExecutions, seedReadyMadeFlows, sendCampaign, sendFlowTestMessage, shopifyInstallUrl, testShopifyConnection, updateFlowNode, validateFlowForActivation, verifyShopifyWebhook } from "./shopify-automation.service";
 
 export const shopifyAutomationRouter = Router();
 export const shopifyWebhookRouter = Router();
@@ -13,7 +13,7 @@ shopifyAutomationRouter.get("/shopify/callback", asyncHandler(async (req, res) =
   const query = z.object({ shop: z.string().min(1), code: z.string().min(1), state: z.string().min(1) }).parse(req.query);
   const state = JSON.parse(Buffer.from(query.state, "base64url").toString("utf8")) as { salonId?: string; userId?: string; ts?: number };
   if (!state.salonId || !state.userId || !state.ts || Date.now() - state.ts > 10 * 60_000) throw ApiError.forbidden("Invalid Shopify OAuth state.");
-  await exchangeShopifyCode(state.salonId, state.userId, query.shop, query.code);
+  await connectShopifyAndRegisterWebhooks(state.salonId, state.userId, query.shop, query.code);
   res.redirect("/staff/shopify-automation?shopify=connected");
 }));
 
@@ -52,7 +52,7 @@ shopifyAutomationRouter.delete("/flows/:flowId/nodes/:nodeId", asyncHandler(asyn
 
 shopifyAutomationRouter.post("/shopify/connect", asyncHandler(async (req, res) => {
   const body = z.object({ shop: z.string().min(1), code: z.string().min(1) }).parse(req.body);
-  ok(res, await exchangeShopifyCode(req.context!.salonId, req.context!.userId, body.shop, body.code), 201);
+  ok(res, await connectShopifyAndRegisterWebhooks(req.context!.salonId, req.context!.userId, body.shop, body.code), 201);
 }));
 shopifyAutomationRouter.post("/shopify/install-url", asyncHandler(async (req, res) => {
   const body = z.object({ shop: z.string().min(1) }).parse(req.body);
