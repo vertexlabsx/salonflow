@@ -37,7 +37,7 @@ function localFallbackEntities(text: string): Partial<AiReceptionistResult> {
   const rawTime = lower.match(/\b\d{1,2}(?::\d{2})?\s*(?:am|pm)\b/)?.[0] || lower.match(/\b\d{1,2}:\d{2}\b/)?.[0] || lower.match(/\b\d{1,2}\s*baje\b/)?.[0]?.replace(/\s*baje\b/, lower.includes("raat") && !lower.includes("subah") ? "pm" : "");
   const time = normalizeTime(rawTime);
   const service = /baal|hair|haircut|kaat|kat|cut/.test(lower) ? "Haircut" : undefined;
-  const isIndic = /[\u0600-\u06FF\u0900-\u097F]|\b(mujhe|baal|kaatna|kal|parso|raat|subah|shaam|baje|chahiye)\b/.test(lower);
+  const isIndic = /[\u0600-\u06FF\u0900-\u097F]|\b(tu|tum|aap|kaisa|kaisi|kaise|hai|hain|mujhe|baal|kaatna|kal|parso|raat|subah|shaam|baje|chahiye|bata|batao|shukriya)\b/.test(lower);
   return { ...(date ? { date } : {}), ...(time ? { time } : {}), ...(service ? { service } : {}), language: isIndic ? "hi-Latn" : "en", isSalonRelated: /book|appointment|hair|spa|skin|nail|makeup|beard|colour|color|service|price|baal|kaat|kat|cut|salon/.test(lower) };
 }
 
@@ -56,7 +56,21 @@ export async function extractReceptionistIntent(text: string): Promise<AiRecepti
         temperature: 0,
         response_format: { type: "json_object" },
         messages: [
-          { role: "system", content: `You are a multilingual salon WhatsApp receptionist parser. Understand English, Hindi, Hinglish, Urdu, Punjabi-style roman text, and mixed language. Today is ${new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" })} in Asia/Kolkata. Return only compact JSON with: intent, service, date, time, language, isSalonRelated, reply. Use intent BOOK_APPOINTMENT, CANCEL_APPOINTMENT, RESCHEDULE_APPOINTMENT, CHECK_APPOINTMENT, SERVICES, PRICES, HUMAN_SUPPORT, or GENERAL_QUESTION. Use YYYY-MM-DD date and HH:mm 24-hour time. Convert phrases like kal/tomorrow, parso/day after tomorrow, raat ko 11 baje, shaam 5 baje, subah 10 baje. Map baal kaatna / hair cut to Haircut. isSalonRelated must be false for unrelated personal statements like "kal mein ghar jaunga". reply must be in the same language/script as the user and only used for clarification/unrelated messages. Never invent price, staff, availability, or booking status.` },
+          { role: "system", content: `You are a multilingual salon WhatsApp receptionist for SalonFlow. Understand English, Hindi, Hinglish, Urdu, Punjabi-style roman text, and mixed language. Today is ${new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" })} in Asia/Kolkata.
+
+Return only compact JSON with: intent, service, date, time, language, isSalonRelated, reply.
+
+Intent must be one of: BOOK_APPOINTMENT, CANCEL_APPOINTMENT, RESCHEDULE_APPOINTMENT, CHECK_APPOINTMENT, SERVICES, PRICES, HUMAN_SUPPORT, GENERAL_QUESTION.
+
+Use YYYY-MM-DD date and HH:mm 24-hour time. Convert natural phrases: kal/tomorrow, parso/day after tomorrow, raat ko 11 baje, shaam 5 baje, subah 10 baje. Map baal kaatna / hair cut / haircut to Haircut.
+
+Language must reflect the user's language and script. If user writes roman Hindi/Hinglish like "tu kaisa hai", use language "hi-Latn" and reply in roman Hindi/Hinglish. If user writes Urdu script, reply in Urdu script. If user writes English, reply in English.
+
+For casual/non-booking messages like "tu kaisa hai?", "how are you?", or greetings, set intent GENERAL_QUESTION, isSalonRelated false, and provide a short same-language friendly receptionist reply that gently offers salon help. Example for "tu kaisa hai?": {"intent":"GENERAL_QUESTION","language":"hi-Latn","isSalonRelated":false,"reply":"Main theek hoon, shukriya. Appointment book karni ho toh service aur time bata do."}
+
+For unrelated personal statements like "kal mein ghar jaunga", set isSalonRelated false and reply in the same language that you can only help with salon appointments, services, prices, cancellations, reschedules, or staff support.
+
+Never invent price, staff, availability, or booking status.` },
           { role: "user", content: text.slice(0, 500) }
         ]
       })
