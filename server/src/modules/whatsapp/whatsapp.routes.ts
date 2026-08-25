@@ -149,6 +149,19 @@ function isPastBusinessDate(value: string): boolean {
   return value < today;
 }
 
+function parseUserDate(value: string): string | null {
+  const trimmed = value.trim();
+  if (/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) return trimmed;
+  const match = trimmed.match(/^(\d{2})-(\d{2})-(\d{4})$/);
+  if (!match) return null;
+  return `${match[3]}-${match[2]}-${match[1]}`;
+}
+
+function displayDate(value: string): string {
+  const match = value.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  return match ? `${match[3]}-${match[2]}-${match[1]}` : value;
+}
+
 async function handleBookingMessage(salonId: string, branchId: string, message: WaInboundMessage): Promise<Record<string, unknown>> {
   const text = message.text.trim();
   const lower = text.toLowerCase();
@@ -195,9 +208,9 @@ async function handleBookingMessage(salonId: string, branchId: string, message: 
     );
     if (!session) throw ApiError.badRequest("Unable to start booking session.");
     await CustomerModel.updateOne({ salonId, normalizedPhone: phone }, { $set: { interactionStatus: "booking_started" } });
-    if (matchedService && ai.date && ai.time) return { action: "service_date_time_selected", state: session.state, reply: `I understood ${matchedService.name} on ${ai.date} around ${normalizeTimeInput(ai.time)}. Please send ${normalizeTimeInput(ai.time)} to check availability.` };
-    if (matchedService && ai.date) return { action: "service_date_selected", state: session.state, reply: `${matchedService.name} selected for ${ai.date}. Please send time as HH:mm.` };
-    if (matchedService) return { action: "service_selected", state: session.state, reply: `${matchedService.name} selected. Please send appointment date as YYYY-MM-DD.` };
+    if (matchedService && ai.date && ai.time) return { action: "service_date_time_selected", state: session.state, reply: `I understood ${matchedService.name} on ${displayDate(ai.date)} around ${normalizeTimeInput(ai.time)}. Please send ${normalizeTimeInput(ai.time)} to check availability.` };
+    if (matchedService && ai.date) return { action: "service_date_selected", state: session.state, reply: `${matchedService.name} selected for ${displayDate(ai.date)}. Please send time as HH:mm.` };
+    if (matchedService) return { action: "service_selected", state: session.state, reply: `${matchedService.name} selected. Please send appointment date as DD-MM-YYYY.` };
     return { action: "booking_started", state: session.state, reply: `Which service would you like? ${services.map((s, i) => `${i + 1}. ${s.name}`).join(" ")}` };
   }
 
@@ -211,18 +224,18 @@ async function handleBookingMessage(salonId: string, branchId: string, message: 
     session.state = "select_date";
     session.expiresAt = sessionExpiry();
     await session.save();
-    return { action: "service_selected", service: selected.name, reply: "Please send appointment date as YYYY-MM-DD." };
+    return { action: "service_selected", service: selected.name, reply: "Please send appointment date as DD-MM-YYYY." };
   }
 
   if (session.state === "select_date") {
-    const dateInput = ai.date || text;
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(dateInput)) return { action: "needs_date", reply: "Please send date as YYYY-MM-DD." };
+    const dateInput = parseUserDate(ai.date || text);
+    if (!dateInput) return { action: "needs_date", reply: "Please send date as DD-MM-YYYY." };
     if (isPastBusinessDate(dateInput)) return { action: "past_date", reply: "Please choose today or a future date." };
     session.date = dateInput;
     session.state = "select_time";
     session.expiresAt = sessionExpiry();
     await session.save();
-    if (ai.time) return { action: "date_selected", date: dateInput, reply: `Please send ${normalizeTimeInput(ai.time)} to check availability.` };
+    if (ai.time) return { action: "date_selected", date: dateInput, reply: `Date set to ${displayDate(dateInput)}. Please send ${normalizeTimeInput(ai.time)} to check availability.` };
     return { action: "date_selected", date: dateInput, reply: "Please send time as HH:mm (24-hour format)." };
   }
 
@@ -246,7 +259,7 @@ async function handleBookingMessage(salonId: string, branchId: string, message: 
     session.state = "confirm";
     session.expiresAt = sessionExpiry();
     await session.save();
-    return { action: "name_selected", reply: `Confirm booking for ${session.serviceName} on ${session.date}? Reply CONFIRM.` };
+    return { action: "name_selected", reply: `Confirm booking for ${session.serviceName} on ${displayDate(session.date || "")}? Reply CONFIRM.` };
   }
 
   if (session.state === "confirm") {
