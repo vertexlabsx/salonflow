@@ -14,6 +14,7 @@ import { zonedTimeToUtc } from "../../shared/business-date";
 import { WhatsAppConnectionModel } from "../../models/whatsapp-connection.model";
 import { WhatsAppWebhookEventModel } from "../../models/whatsapp-webhook-event.model";
 import { embeddedSignupRouter } from "./meta/embedded-signup.routes";
+import { extractReceptionistIntent } from "./ai-receptionist.service";
 
 export const whatsappRouter = Router();
 export const metaWebhookRouter = Router();
@@ -130,9 +131,23 @@ async function defaultBranchId(salonId: string): Promise<string> {
   return branch?._id || `${salonId}_main`;
 }
 
+function normalizeTimeInput(value: string): string {
+  const trimmed = value.trim().toLowerCase();
+  const exact = trimmed.match(/^(\d{1,2}):(\d{2})$/);
+  if (exact) return `${exact[1]!.padStart(2, "0")}:${exact[2]}`;
+  const meridiem = trimmed.match(/\b(\d{1,2})(?::(\d{2}))?\s*(am|pm)\b/);
+  if (!meridiem) return value;
+  let hour = Number(meridiem[1]);
+  const minute = meridiem[2] || "00";
+  if (meridiem[3] === "pm" && hour < 12) hour += 12;
+  if (meridiem[3] === "am" && hour === 12) hour = 0;
+  return `${String(hour).padStart(2, "0")}:${minute}`;
+}
+
 async function handleBookingMessage(salonId: string, branchId: string, message: WaInboundMessage): Promise<Record<string, unknown>> {
   const text = message.text.trim();
   const lower = text.toLowerCase();
+  const ai = await extractReceptionistIntent(text);
   const phone = normalizePhone(message.waPhone);
   await CustomerModel.findOneAndUpdate(
     { salonId, normalizedPhone: phone },
@@ -149,19 +164,22 @@ async function handleBookingMessage(salonId: string, branchId: string, message: 
   let session = await WhatsAppBookingSessionModel.findOne({ salonId, waPhone: phone });
 
   if (!session || session.expiresAt < new Date() || BOOKING_KEYWORDS.includes(lower)) {
-    if (!BOOKING_KEYWORDS.some((keyword) => lower === keyword || lower.includes(keyword))) {
+    const hasBookingIntent = ai.intent === "BOOK_APPOINTMENT" || BOOKING_KEYWORDS.some((keyword) => lower === keyword || lower.includes(keyword)) || /hair|spa|skin|nail|makeup|beard|colour|color|service|price/.test(lower);
+    if (!hasBookingIntent) {
       return { action: "ignored", reply: "Send 'Book appointment' to start booking." };
     }
+    const services = await ServiceModel.find({ salonId, status: "active", $or: [{ branchIds: branchId }, { branchIds: { $size: 0 } }] }).limit(10);
+    const matchedService = services.find((service) => service.name.toLowerCase() === lower || lower.includes(service.name.toLowerCase()) || (ai.service && service.name.toLowerCase().includes(ai.service.toLowerCase())));
     session = await WhatsAppBookingSessionModel.findOneAndUpdate(
       { salonId, waPhone: phone },
       {
         $set: {
           branchId,
           profileName: message.profileName,
-          state: "select_service",
-          serviceId: null,
-          serviceName: null,
-          date: null,
+          state: matchedService ? (ai.date ? "select_time" : "select_date") : "select_service",
+          serviceId: matchedService ? String(matchedService._id) : null,
+          serviceName: matchedService?.name || null,
+          date: ai.date || null,
           startAt: null,
           staffId: null,
           customerName: message.profileName || "",
@@ -172,14 +190,16 @@ async function handleBookingMessage(salonId: string, branchId: string, message: 
     );
     if (!session) throw ApiError.badRequest("Unable to start booking session.");
     await CustomerModel.updateOne({ salonId, normalizedPhone: phone }, { $set: { interactionStatus: "booking_started" } });
-    const services = await ServiceModel.find({ salonId, status: "active", $or: [{ branchIds: branchId }, { branchIds: { $size: 0 } }] }).limit(10);
+    if (matchedService && ai.date && ai.time) return { action: "service_date_time_selected", state: session.state, reply: `I understood ${matchedService.name} on ${ai.date} around ${normalizeTimeInput(ai.time)}. Please send ${normalizeTimeInput(ai.time)} to check availability.` };
+    if (matchedService && ai.date) return { action: "service_date_selected", state: session.state, reply: `${matchedService.name} selected for ${ai.date}. Please send time as HH:mm.` };
+    if (matchedService) return { action: "service_selected", state: session.state, reply: `${matchedService.name} selected. Please send appointment date as YYYY-MM-DD.` };
     return { action: "booking_started", state: session.state, reply: `Which service would you like? ${services.map((s, i) => `${i + 1}. ${s.name}`).join(" ")}` };
   }
 
   if (session.state === "select_service") {
     const services = await ServiceModel.find({ salonId, status: "active", $or: [{ branchIds: branchId }, { branchIds: { $size: 0 } }] }).limit(10);
     const index = Number(text) - 1;
-    const selected = services[index] || services.find((service) => service.name.toLowerCase() === lower);
+    const selected = services[index] || services.find((service) => service.name.toLowerCase() === lower || lower.includes(service.name.toLowerCase()) || (ai.service && service.name.toLowerCase().includes(ai.service.toLowerCase())));
     if (!selected) return { action: "needs_service", reply: "Please select a valid service number/name." };
     session.serviceId = String(selected._id);
     session.serviceName = selected.name;
@@ -190,26 +210,29 @@ async function handleBookingMessage(salonId: string, branchId: string, message: 
   }
 
   if (session.state === "select_date") {
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(text)) return { action: "needs_date", reply: "Please send date as YYYY-MM-DD." };
-    session.date = text;
+    const dateInput = ai.date || text;
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(dateInput)) return { action: "needs_date", reply: "Please send date as YYYY-MM-DD." };
+    session.date = dateInput;
     session.state = "select_time";
     session.expiresAt = sessionExpiry();
     await session.save();
-    return { action: "date_selected", date: text, reply: "Please send time as HH:mm (24-hour format)." };
+    if (ai.time) return { action: "date_selected", date: dateInput, reply: `Please send ${normalizeTimeInput(ai.time)} to check availability.` };
+    return { action: "date_selected", date: dateInput, reply: "Please send time as HH:mm (24-hour format)." };
   }
 
   if (session.state === "select_time") {
-    if (!/^\d{2}:\d{2}$/.test(text)) return { action: "needs_time", reply: "Please send time as HH:mm." };
+    const timeInput = normalizeTimeInput(ai.time || text);
+    if (!/^\d{2}:\d{2}$/.test(timeInput)) return { action: "needs_time", reply: "Please send time as HH:mm." };
     const branch = await BranchModel.findOne({ _id: session.branchId, salonId });
     const timezone = branch?.timezone || loadEnv().SALON_TIMEZONE || "Asia/Kolkata";
-    const [hour, minute] = text.split(":").map(Number);
+    const [hour, minute] = timeInput.split(":").map(Number);
     const startAt = zonedTimeToUtc(timezone, session.date || "", hour || 0, minute || 0);
     if (Number.isNaN(startAt.getTime())) return { action: "needs_time", reply: "Invalid time. Please send time as HH:mm." };
     session.startAt = startAt;
     session.state = session.customerName ? "confirm" : "confirm_name";
     session.expiresAt = sessionExpiry();
     await session.save();
-    return { action: "time_selected", reply: session.customerName ? `Confirm booking for ${session.serviceName} at ${text}? Reply CONFIRM.` : "Please send your name." };
+    return { action: "time_selected", reply: session.customerName ? `Confirm booking for ${session.serviceName} at ${timeInput}? Reply CONFIRM.` : "Please send your name." };
   }
 
   if (session.state === "confirm_name") {

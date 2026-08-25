@@ -52,7 +52,9 @@ const envSchema = z.object({
   META_APP_SECRET: z.string().optional(),
   META_WEBHOOK_APP_SECRET: z.string().optional(),
   VERIFY_TOKEN: z.string().optional(),
-  META_WEBHOOK_VERIFY_TOKEN: z.string().optional()
+  META_WEBHOOK_VERIFY_TOKEN: z.string().optional(),
+  OPENAI_API_KEY: z.string().optional(),
+  OPENAI_MODEL: z.string().default("gpt-4o-mini")
 }).superRefine((env, ctx) => {
   if (env.NODE_ENV !== "production") return;
 

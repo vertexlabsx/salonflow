@@ -45,7 +45,9 @@ async function main(): Promise<void> {
     META_WEBHOOK_APP_SECRET: undefined,
     WEB_PUSH_PUBLIC_KEY: undefined,
     WEB_PUSH_PRIVATE_KEY: undefined,
-    META_GRAPH_API_VERSION: "v21.0"
+    META_GRAPH_API_VERSION: "v21.0",
+    OPENAI_API_KEY: undefined,
+    OPENAI_MODEL: "gpt-4o-mini"
   });
 
   await connectMongo(uri);
