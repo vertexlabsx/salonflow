@@ -86,9 +86,7 @@ export function testEnv(overrides: Partial<Env> = {}): Env {
     SEED_STAFF_PASSWORD: "staff@123",
     WHATSAPP_PROVIDER: "mock",
     WEB_PUSH_PUBLIC_KEY: undefined,
-    WEB_PUSH_PRIVATE_KEY: undefined,
-    OPENAI_API_KEY: undefined,
-    OPENAI_MODEL: "gpt-4o-mini"
+    WEB_PUSH_PRIVATE_KEY: undefined
   };
   const merged = { ...base, ...overrides } as Env;
   setEnvForTesting(merged);

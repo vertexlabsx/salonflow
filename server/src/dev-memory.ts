@@ -80,9 +80,7 @@ async function main(): Promise<void> {
     OPENAI_MODEL: "gpt-4o-mini",
     WEB_PUSH_PUBLIC_KEY: undefined,
     WEB_PUSH_PRIVATE_KEY: undefined,
-    META_GRAPH_API_VERSION: "v21.0",
-    OPENAI_API_KEY: undefined,
-    OPENAI_MODEL: "gpt-4o-mini"
+    META_GRAPH_API_VERSION: "v21.0"
   });
 
   await connectMongo(uri);
