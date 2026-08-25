@@ -162,6 +162,11 @@ function displayDate(value: string): string {
   return match ? `${match[3]}-${match[2]}-${match[1]}` : value;
 }
 
+function clarifyReply(aiReply?: string, language?: string): string {
+  if (aiReply?.trim()) return aiReply.trim();
+  return language?.startsWith("hi") ? "Maaf kijiye, main aapki baat samajh nahi paya. Appointment book karne ke liye service aur time batayein." : "Sorry, I could not understand that. Please tell me the salon service and preferred time to book an appointment.";
+}
+
 async function handleBookingMessage(salonId: string, branchId: string, message: WaInboundMessage): Promise<Record<string, unknown>> {
   const text = message.text.trim();
   const lower = text.toLowerCase();
@@ -182,9 +187,9 @@ async function handleBookingMessage(salonId: string, branchId: string, message: 
   let session = await WhatsAppBookingSessionModel.findOne({ salonId, waPhone: phone });
 
   if (!session || session.expiresAt < new Date() || BOOKING_KEYWORDS.includes(lower)) {
-    const hasBookingIntent = ai.intent === "BOOK_APPOINTMENT" || BOOKING_KEYWORDS.some((keyword) => lower === keyword || lower.includes(keyword)) || /hair|spa|skin|nail|makeup|beard|colour|color|service|price/.test(lower);
+    const hasBookingIntent = ai.isSalonRelated !== false && (ai.intent === "BOOK_APPOINTMENT" || BOOKING_KEYWORDS.some((keyword) => lower === keyword || lower.includes(keyword)) || /hair|spa|skin|nail|makeup|beard|colour|color|service|price|baal|kaat|kat|salon/.test(lower));
     if (!hasBookingIntent) {
-      return { action: "ignored", reply: "Send 'Book appointment' to start booking." };
+      return { action: "clarify", reply: clarifyReply(ai.reply, ai.language) };
     }
     const services = await ServiceModel.find({ salonId, status: "active", $or: [{ branchIds: branchId }, { branchIds: { $size: 0 } }] }).limit(10);
     const matchedService = services.find((service) => service.name.toLowerCase() === lower || lower.includes(service.name.toLowerCase()) || (ai.service && service.name.toLowerCase().includes(ai.service.toLowerCase())));

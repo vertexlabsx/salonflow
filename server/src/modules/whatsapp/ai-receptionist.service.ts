@@ -5,6 +5,9 @@ export interface AiReceptionistResult {
   service?: string;
   date?: string;
   time?: string;
+  language?: string;
+  isSalonRelated?: boolean;
+  reply?: string;
 }
 
 function normalizeTime(value?: string): string | undefined {
@@ -30,14 +33,18 @@ function addDays(date: Date, days: number): Date {
 function localFallbackEntities(text: string): Partial<AiReceptionistResult> {
   const lower = text.toLowerCase();
   const today = new Date(new Date().toLocaleString("en-US", { timeZone: "Asia/Kolkata" }));
-  const date = lower.includes("day after tomorrow") ? addDays(today, 2).toLocaleDateString("en-CA") : lower.includes("tomorrow") ? addDays(today, 1).toLocaleDateString("en-CA") : lower.match(/\b\d{4}-\d{2}-\d{2}\b/)?.[0];
-  const time = normalizeTime(lower.match(/\b\d{1,2}(?::\d{2})?\s*(?:am|pm)\b/)?.[0] || lower.match(/\b\d{1,2}:\d{2}\b/)?.[0]);
-  return { ...(date ? { date } : {}), ...(time ? { time } : {}) };
+  const date = lower.includes("day after tomorrow") || lower.includes("parso") ? addDays(today, 2).toLocaleDateString("en-CA") : lower.includes("tomorrow") || lower.includes("kal") ? addDays(today, 1).toLocaleDateString("en-CA") : lower.match(/\b\d{4}-\d{2}-\d{2}\b/)?.[0];
+  const rawTime = lower.match(/\b\d{1,2}(?::\d{2})?\s*(?:am|pm)\b/)?.[0] || lower.match(/\b\d{1,2}:\d{2}\b/)?.[0] || lower.match(/\b\d{1,2}\s*baje\b/)?.[0]?.replace(/\s*baje\b/, lower.includes("raat") && !lower.includes("subah") ? "pm" : "");
+  const time = normalizeTime(rawTime);
+  const service = /baal|hair|haircut|kaat|kat|cut/.test(lower) ? "Haircut" : undefined;
+  const isIndic = /[\u0600-\u06FF\u0900-\u097F]|\b(mujhe|baal|kaatna|kal|parso|raat|subah|shaam|baje|chahiye)\b/.test(lower);
+  return { ...(date ? { date } : {}), ...(time ? { time } : {}), ...(service ? { service } : {}), language: isIndic ? "hi-Latn" : "en", isSalonRelated: /book|appointment|hair|spa|skin|nail|makeup|beard|colour|color|service|price|baal|kaat|kat|cut|salon/.test(lower) };
 }
 
 export async function extractReceptionistIntent(text: string): Promise<AiReceptionistResult> {
   const lower = text.toLowerCase();
-  const fallback: AiReceptionistResult = { ...(lower.includes("cancel") ? { intent: "CANCEL_APPOINTMENT" } : lower.includes("reschedule") ? { intent: "RESCHEDULE_APPOINTMENT" } : lower.includes("price") || lower.includes("rate") ? { intent: "PRICES" } : /book|appointment|hair|spa|skin|nail|makeup|beard|colour|color|service/.test(lower) ? { intent: "BOOK_APPOINTMENT" } : { intent: "GENERAL_QUESTION" }), ...localFallbackEntities(text) };
+  const local = localFallbackEntities(text);
+  const fallback: AiReceptionistResult = { ...(lower.includes("cancel") ? { intent: "CANCEL_APPOINTMENT" } : lower.includes("reschedule") ? { intent: "RESCHEDULE_APPOINTMENT" } : lower.includes("price") || lower.includes("rate") ? { intent: "PRICES" } : local.isSalonRelated ? { intent: "BOOK_APPOINTMENT" } : { intent: "GENERAL_QUESTION" }), ...local };
   const env = loadEnv();
   if (!env.OPENAI_API_KEY) return fallback;
   try {
@@ -49,14 +56,14 @@ export async function extractReceptionistIntent(text: string): Promise<AiRecepti
         temperature: 0,
         response_format: { type: "json_object" },
         messages: [
-          { role: "system", content: `Extract salon WhatsApp receptionist intent and entities. Today is ${new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" })} in Asia/Kolkata. Return only compact JSON with intent, service, date, time. Use YYYY-MM-DD date and HH:mm 24-hour time. Convert phrases like tomorrow, day after tomorrow, 3pm, evening. Never invent price, staff, availability, or status.` },
+          { role: "system", content: `You are a multilingual salon WhatsApp receptionist parser. Understand English, Hindi, Hinglish, Urdu, Punjabi-style roman text, and mixed language. Today is ${new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" })} in Asia/Kolkata. Return only compact JSON with: intent, service, date, time, language, isSalonRelated, reply. Use intent BOOK_APPOINTMENT, CANCEL_APPOINTMENT, RESCHEDULE_APPOINTMENT, CHECK_APPOINTMENT, SERVICES, PRICES, HUMAN_SUPPORT, or GENERAL_QUESTION. Use YYYY-MM-DD date and HH:mm 24-hour time. Convert phrases like kal/tomorrow, parso/day after tomorrow, raat ko 11 baje, shaam 5 baje, subah 10 baje. Map baal kaatna / hair cut to Haircut. isSalonRelated must be false for unrelated personal statements like "kal mein ghar jaunga". reply must be in the same language/script as the user and only used for clarification/unrelated messages. Never invent price, staff, availability, or booking status.` },
           { role: "user", content: text.slice(0, 500) }
         ]
       })
     });
     const payload = (await response.json()) as { choices?: Array<{ message?: { content?: string } }> };
     const parsed = JSON.parse(payload.choices?.[0]?.message?.content || "{}") as Partial<AiReceptionistResult>;
-    return { ...fallback, ...parsed, intent: parsed.intent || fallback.intent, date: parsed.date || fallback.date, time: normalizeTime(parsed.time) || fallback.time } as AiReceptionistResult;
+    return { ...fallback, ...parsed, intent: parsed.intent || fallback.intent, date: parsed.date || fallback.date, time: normalizeTime(parsed.time) || fallback.time, service: parsed.service || fallback.service, language: parsed.language || fallback.language, isSalonRelated: parsed.isSalonRelated ?? fallback.isSalonRelated } as AiReceptionistResult;
   } catch {
     return fallback;
   }
