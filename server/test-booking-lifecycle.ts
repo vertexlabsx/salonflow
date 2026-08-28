@@ -1,4 +1,5 @@
 import "dotenv/config";
+import { createHmac } from "node:crypto";
 import mongoose from "mongoose";
 import { createApp } from "./src/app";
 import { AppointmentModel } from "./src/models/appointment.model";
@@ -55,9 +56,15 @@ async function sendMsg(app: ReturnType<typeof createApp>, body: string) {
       }]
     }]
   });
+  const sign = process.env.WA_WEBHOOK_SECRET
+    ? createHmac("sha256", process.env.WA_WEBHOOK_SECRET).update(payload, "utf8").digest("hex")
+    : null;
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  if (sign) headers["x-hub-signature-256"] = `sha256=${sign}`;
+  else headers["x-test-webhook"] = "true";
   const res = await fetch("http://127.0.0.1:4000/api/v1/whatsapp/webhook", {
     method: "POST",
-    headers: { "Content-Type": "application/json", "x-test-webhook": "true" },
+    headers,
     body: payload
   });
   const json = (await res.json()) as { data?: { action?: string; reply?: string } };
@@ -102,10 +109,15 @@ function assert(condition: boolean, message: string): void {
 }
 
 async function main() {
-  const app = createApp();
-  await mongoose.connect(process.env.MONGODB_URI!);
-  const server = app.listen(4000, "127.0.0.1", () => console.log("Server on http://127.0.0.1:4000"));
-  await new Promise((r) => setTimeout(r, 1000));
+  const external = !!process.env.WA_WEBHOOK_SECRET;
+  let server: ReturnType<ReturnType<typeof createApp>["listen"]> | undefined;
+  if (!external) {
+    createApp().listen(4000, "127.0.0.1", () => console.log("Server on http://127.0.0.1:4000"));
+    await new Promise((r) => setTimeout(r, 1000));
+  }
+  const mongoUri = process.env.MONGODB_URI;
+  if (!mongoUri) throw new Error("MONGODB_URI required");
+  await mongoose.connect(mongoUri);
 
   await cleanupTestData();
   console.log("Seeded tenant:", salonId, "branch:", branchId);
@@ -232,7 +244,7 @@ async function main() {
 
   console.log("\n================ DONE: all checks passed ================");
   await cleanupTestData();
-  server.close();
+  if (server) server.close();
   await mongoose.disconnect();
 }
 
