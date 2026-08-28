@@ -5,6 +5,10 @@ dist/
 .env.*
 *.env
 *.log
+*.key
+*.key.pub
+*.pem
+*.ppk
 coverage/
 playwright-report/
 test-results/

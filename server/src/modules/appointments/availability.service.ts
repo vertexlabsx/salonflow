@@ -1,4 +1,5 @@
 import { Types } from "mongoose";
+import { AppointmentSlotLockModel } from "../../models/appointment-slot-lock.model";
 import { AppointmentModel } from "../../models/appointment.model";
 import { BranchModel } from "../../models/branch.model";
 import { LeaveModel } from "../../models/leave.model";
@@ -6,6 +7,7 @@ import { ScheduleModel } from "../../models/schedule.model";
 import { ServiceModel } from "../../models/service.model";
 import { UserModel } from "../../models/user.model";
 import { ApiError } from "../../shared/http";
+import { zonedWeekday } from "../../shared/business-date";
 
 const BOOKING_BLOCKING_STATUSES = ["pending", "booked", "confirmed", "arrived", "in_service"];
 
@@ -49,7 +51,7 @@ export async function findAvailableStaff(input: AvailabilityInput): Promise<Avai
   const branch = await BranchModel.findOne({ _id: input.branchId, salonId: input.salonId, status: "active" });
   if (!branch) throw ApiError.notFound("Branch was not found.");
   const endAt = new Date(input.startAt.getTime() + service.durationMinutes * 60_000);
-  const weekday = Number(new Intl.DateTimeFormat("en-US", { timeZone: branch.timezone, weekday: "short" }).format(input.startAt) && input.startAt.getDay());
+  const weekday = zonedWeekday(branch.timezone, dateStringInTz(input.startAt, branch.timezone));
   const dayHours = branch.hours.find((h) => h.weekday === weekday);
   if (!dayHours || dayHours.closed) throw ApiError.conflict("The branch is closed on this date.");
   const startMinutes = localMinutes(input.startAt, branch.timezone);
@@ -67,7 +69,7 @@ export async function findAvailableStaff(input: AvailabilityInput): Promise<Avai
   const loads = await Promise.all(
     staff.map(async (user) => {
       const staffId = user.staffId || String(user._id);
-      const [schedule, leave, overlap, dayLoad] = await Promise.all([
+      const [schedule, leave, overlap, lockOverlap, dayLoad] = await Promise.all([
         ScheduleModel.findOne({ salonId: input.salonId, branchId: input.branchId, staffId, scheduleDate: date, status: { $ne: "cancelled" } }),
         LeaveModel.findOne({ salonId: input.salonId, staffId, status: { $in: ["pending", "approved"] }, startDate: { $lte: date }, endDate: { $gte: date } }),
         AppointmentModel.findOne({
@@ -78,9 +80,15 @@ export async function findAvailableStaff(input: AvailabilityInput): Promise<Avai
           startAt: { $lt: endAt },
           endAt: { $gt: input.startAt }
         }),
+        AppointmentSlotLockModel.findOne({
+          salonId: input.salonId,
+          staffId,
+          ...(input.excludeAppointmentId ? { appointmentId: { $ne: input.excludeAppointmentId } } : {}),
+          slotAt: { $gte: input.startAt, $lt: endAt }
+        }),
         AppointmentModel.countDocuments({ salonId: input.salonId, staffId, startAt: { $gte: new Date(input.startAt.getTime() - 12 * 60 * 60_000), $lte: new Date(input.startAt.getTime() + 12 * 60 * 60_000) } })
       ]);
-      if (!schedule || leave || overlap) return null;
+      if (!schedule || leave || overlap || lockOverlap) return null;
       const shiftStart = minutes(schedule.startTime);
       const shiftEnd = minutes(schedule.endTime);
       if (startMinutes < shiftStart || endMinutes > shiftEnd) return null;

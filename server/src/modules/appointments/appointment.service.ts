@@ -162,3 +162,100 @@ export async function transitionAppointment(salonId: string, id: string, status:
   }
   return toStaffAppointment(updated);
 }
+
+export interface CustomerBookingChange {
+  salonId: string;
+  appointmentId: string;
+  branchId: string;
+  staffId: string;
+  serviceIds: string[];
+  serviceNames: string[];
+  durationMinutes: number;
+  value: number;
+  startAt: Date;
+  endAt: Date;
+}
+
+/** Customer-initiated cancellation. Releases slot locks so the slot reopens for others. */
+export async function cancelAppointmentForCustomer(salonId: string, appointmentId: string, customerId?: string): Promise<StaffAppointmentDto> {
+  const updated = await withTransaction(async (session) => {
+    const appointment = await AppointmentModel.findOneAndUpdate(
+      { _id: appointmentId, salonId, status: { $in: BOOKING_BLOCKING_STATUSES } },
+      { $set: { status: "cancelled" }, $inc: { version: 1 } },
+      { new: true, session }
+    );
+    if (!appointment) throw ApiError.notFound("Appointment was not found.");
+    await AppointmentSlotLockModel.deleteMany({ salonId, appointmentId }).session(session);
+    if (customerId) {
+      await CustomerModel.updateOne({ _id: customerId, salonId }, { $set: { interactionStatus: "cancelled" } }).session(session);
+    }
+    return appointment;
+  });
+  publishRealtimeEvent(salonId, "appointment.status_changed", { id: String(updated._id), branchId: updated.branchId, staffId: updated.staffId, startAt: updated.startAt.toISOString(), endAt: updated.endAt.toISOString(), status: updated.status });
+  void notifyStaffByStaffId(salonId, updated.staffId, {
+    title: "Appointment cancelled",
+    body: `${updated.customerName} cancelled ${updated.serviceNames.join(", ")}`,
+    tag: `appointment-${String(updated._id)}`,
+    data: { appointmentId: String(updated._id), type: "appointment.status_changed", status: updated.status }
+  });
+  return toStaffAppointment(updated);
+}
+
+/** Customer-initiated reschedule or modify: swaps services/staff/branch/time while keeping the appointment identity. */
+export async function rescheduleAppointmentForCustomer(input: CustomerBookingChange): Promise<StaffAppointmentDto> {
+  const updated = await withTransaction(async (session) => {
+    const overlap = await AppointmentModel.findOne({
+      salonId: input.salonId,
+      staffId: input.staffId,
+      _id: { $ne: input.appointmentId },
+      status: { $in: BOOKING_BLOCKING_STATUSES },
+      startAt: { $lt: input.endAt },
+      endAt: { $gt: input.startAt }
+    }).session(session);
+    if (overlap) {
+      throw ApiError.conflict("Requested time is not available.", {
+        conflicts: [{ id: String(overlap._id), startAt: overlap.startAt.toISOString(), endAt: overlap.endAt.toISOString(), staffId: overlap.staffId }]
+      });
+    }
+    const appointment = await AppointmentModel.findOneAndUpdate(
+      { _id: input.appointmentId, salonId: input.salonId },
+      {
+        $set: {
+          branchId: input.branchId,
+          staffId: input.staffId,
+          serviceIds: input.serviceIds,
+          serviceNames: input.serviceNames,
+          durationMinutes: input.durationMinutes,
+          value: input.value,
+          startAt: input.startAt,
+          endAt: input.endAt,
+          status: "confirmed"
+        },
+        $inc: { version: 1 }
+      },
+      { new: true, session }
+    );
+    if (!appointment) throw ApiError.notFound("Appointment was not found.");
+    try {
+      await AppointmentSlotLockModel.deleteMany({ salonId: input.salonId, appointmentId: input.appointmentId }).session(session);
+      await AppointmentSlotLockModel.create(
+        slotInstants(input.startAt, input.endAt).map((slotAt) => ({ salonId: input.salonId, branchId: input.branchId, staffId: input.staffId, appointmentId: input.appointmentId, slotAt })),
+        { session, ordered: true }
+      );
+    } catch (error) {
+      if (isDuplicateKey(error)) {
+        throw ApiError.conflict("Requested time is not available.", { conflicts: [{ startAt: input.startAt.toISOString(), endAt: input.endAt.toISOString(), staffId: input.staffId }] });
+      }
+      throw error;
+    }
+    return appointment;
+  });
+  publishRealtimeEvent(input.salonId, "appointment.changed", { id: String(updated._id), branchId: updated.branchId, staffId: updated.staffId, startAt: updated.startAt.toISOString(), endAt: updated.endAt.toISOString(), status: updated.status });
+  void notifyStaffByStaffId(input.salonId, updated.staffId, {
+    title: "Appointment updated",
+    body: `${updated.customerName} — ${updated.serviceNames.join(", ")} on ${updated.startAt.toLocaleString("en-IN", { timeZone: "Asia/Kolkata" })}`,
+    tag: `appointment-${String(updated._id)}`,
+    data: { appointmentId: String(updated._id), type: "appointment.changed", status: updated.status }
+  });
+  return toStaffAppointment(updated);
+}
