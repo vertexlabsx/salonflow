@@ -4,7 +4,7 @@
 // e.g. "https://aura-salon-api.fly.dev/api/v1".
 export const environment = {
   production: true,
-  apiBaseUrl: "https://salonflow-0o9u.onrender.com/api/v1",
+  apiBaseUrl: "https://129.159.16.165.sslip.io/api/v1",
   metaAppId: "1739408257311822",
   metaConfigId: "2140964753518474"
 };

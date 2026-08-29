@@ -6,7 +6,7 @@
 name = "SalonFlow WhatsApp Automation"
 handle = "salonflow-whatsapp-automation"
 client_id = "SHOPIFY_API_KEY_HERE"
-application_url = "https://salonflow-0o9u.onrender.com"
+application_url = "https://129.159.16.165.sslip.io"
 embedded = false
 
 [access_scopes]
@@ -20,7 +20,7 @@ scopes = "read_customers,read_orders,read_products,read_checkouts,write_webhooks
 
 [auth]
 redirect_urls = [
-  "https://salonflow-0o9u.onrender.com/api/v1/shopify-automation/shopify/callback"
+  "https://129.159.16.165.sslip.io/api/v1/shopify-automation/shopify/callback"
 ]
 
 [webhooks]
@@ -28,4 +28,4 @@ api_version = "2025-07"
 
   [[webhooks.subscriptions]]
   topics = ["orders/create", "orders/paid", "orders/fulfilled", "orders/cancelled", "checkouts/create"]
-  uri = "https://salonflow-0o9u.onrender.com/shopify/webhooks"
+  uri = "https://129.159.16.165.sslip.io/shopify/webhooks"
