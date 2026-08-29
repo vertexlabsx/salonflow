@@ -5,6 +5,7 @@ import { connectMongo, disconnectMongo } from "./config/mongo";
 import { createApp } from "./app";
 import { logger } from "./shared/logger";
 import { startShopifyAutomationScheduler } from "./jobs/shopify-automation";
+import { startWhatsAppReminderScheduler } from "./jobs/whatsapp-reminders";
 import { ShopifyUserModel } from "./models/shopify-user.model";
 
 async function ensureShopifyUsers(): Promise<void> {
@@ -49,10 +50,12 @@ async function main(): Promise<void> {
     logger.info(`Aura Staff server listening on port ${env.PORT}`, { env: env.NODE_ENV });
   });
   const shopifyAutomationTimer = startShopifyAutomationScheduler();
+  const reminderSchedulerTimer = startWhatsAppReminderScheduler();
 
   const shutdown = (signal: string) => {
     logger.info(`${signal} received — shutting down`);
     clearInterval(shopifyAutomationTimer);
+    clearInterval(reminderSchedulerTimer);
     server.close(() => {
       disconnectMongo()
         .catch((error) => logger.error("MongoDB disconnect failed", { error: String(error) }))

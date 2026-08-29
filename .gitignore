@@ -22,3 +22,9 @@ apk-output/
 www/
 
 .vercel
+
+# Render env-var export (contains real secrets — never commit)
+render-env-vars.json
+# One-off local repair script / captured test output
+server/fix-db.ts
+server/run-final.txt

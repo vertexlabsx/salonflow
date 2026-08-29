@@ -24,10 +24,8 @@ function dateKey(date: Date): string {
 }
 
 function addDays(days: number): Date {
-  const date = new Date();
-  date.setDate(date.getDate() + days);
-  date.setHours(12, 0, 0, 0);
-  return date;
+  const parts = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Kolkata", year: "numeric", month: "2-digit", day: "2-digit" }).formatToParts(new Date());
+  return new Date(Date.UTC(Number(parts.find((p) => p.type === "year")!.value), Number(parts.find((p) => p.type === "month")!.value) - 1, Number(parts.find((p) => p.type === "day")!.value) + days, 12, 0));
 }
 
 function slotInstants(startAt: Date, endAt: Date): Date[] {
@@ -37,7 +35,7 @@ function slotInstants(startAt: Date, endAt: Date): Date[] {
 }
 
 let msgSeq = 0;
-async function sendMsg(app: ReturnType<typeof createApp>, body: string) {
+async function sendMsg(body: string) {
   msgSeq += 1;
   const payload = JSON.stringify({
     entry: [{
@@ -162,34 +160,34 @@ async function main() {
   for (const rec of debugAll) console.log("  DEBUG rec:", rec.status, rec.startAt.toISOString(), rec.endAt.toISOString());
 
   console.log("\n================ MENU ================");
-  const m = await sendMsg(app, "menu");
+  const m = await sendMsg("menu");
   assert(m.action === "menu", "menu action");
 
   console.log("\n================ VIEW BOOKINGS + MANAGE ================");
-  const vb = await sendMsg(app, "2");
+  const vb = await sendMsg("2");
   assert(vb.action === "view_bookings", "view bookings action");
-  const mg = await sendMsg(app, "1");
+  const mg = await sendMsg("1");
   assert(mg.action === "manage_booking", "manage booking action");
 
   console.log("\n================ CANCEL #1 (via manage submenu) ================");
-  const c1 = await sendMsg(app, "3");
+  const c1 = await sendMsg("3");
   assert(c1.action === "needs_cancel_confirm" || c1.action === "confirm_cancel", "cancel confirm asked");
-  const c1f = await sendMsg(app, "confirm");
+  const c1f = await sendMsg("confirm");
   assert(c1f.action === "appointment_cancelled", "cancelled action");
   let doc = await AppointmentModel.findById(upcomingConfirmed._id).lean();
   assert(doc && doc.status === "cancelled", "first appointment is cancelled");
   assert((await AppointmentSlotLockModel.countDocuments({ appointmentId: String(upcomingConfirmed._id) })) === 0, "cancelled appointment locks released");
 
   console.log("\n================ RESCHEDULE ================");
-  const r0 = await sendMsg(app, "menu");
+  const r0 = await sendMsg("menu");
   assert(r0.action === "menu", "menu");
-  const r1 = await sendMsg(app, "4");
+  const r1 = await sendMsg("4");
   assert(r1.action === "select_reschedule_booking", "reschedule list");
-  const r2 = await sendMsg(app, "1");
+  const r2 = await sendMsg("1");
   assert(r2.action === "reschedule_started", "reschedule started");
-  const r3 = await sendMsg(app, dateB);
+  const r3 = await sendMsg(dateB);
   assert(r3.action === "reschedule_slots", "reschedule slots shown");
-  const r4 = await sendMsg(app, "1");
+  const r4 = await sendMsg("1");
   assert(r4.action === "appointment_rescheduled", "rescheduled");
   doc = await AppointmentModel.findById(upcomingBooked._id).lean();
   assert(!!doc, "rescheduled appointment exists");
@@ -198,41 +196,41 @@ async function main() {
   assert((await AppointmentSlotLockModel.countDocuments({ appointmentId: String(upcomingBooked._id) })) > 0, "rescheduled appointment has new locks");
 
   console.log("\n================ MODIFY (change date) ================");
-  const x0 = await sendMsg(app, "menu");
-  const x1 = await sendMsg(app, "5");
+  const x0 = await sendMsg("menu");
+  const x1 = await sendMsg("5");
   assert(x1.action === "select_modify_booking", "modify list");
-  const x2 = await sendMsg(app, "1");
+  const x2 = await sendMsg("1");
   assert(x2.action === "modify_started", "modify started");
-  const x3 = await sendMsg(app, "4");
+  const x3 = await sendMsg("4");
   assert(x3.action === "modify_date", "modify date asked");
-  const x4 = await sendMsg(app, dateA);
+  const x4 = await sendMsg(dateA);
   assert(x4.action === "modify_slots", "modify slots shown");
-  const x5 = await sendMsg(app, "1");
+  const x5 = await sendMsg("1");
   assert(x5.action === "confirm_modify", "modify confirm shown");
-  const x6 = await sendMsg(app, "confirm");
+  const x6 = await sendMsg("confirm");
   assert(x6.action === "appointment_updated", "modify applied (appointment_updated action)");
   doc = await AppointmentModel.findById(upcomingBooked._id).lean();
   assert(!!doc && dateKey(new Date(doc.startAt)) === dateA, `modify moved booking to ${dateA}`);
 
   console.log("\n================ HISTORY + REBOOK ================");
-  const h0 = await sendMsg(app, "menu");
-  const h1 = await sendMsg(app, "3");
+  const h0 = await sendMsg("menu");
+  const h1 = await sendMsg("3");
   assert(h1.action === "view_history", "history list");
-  const h2 = await sendMsg(app, "rebook 1");
+  const h2 = await sendMsg("rebook 1");
   assert(h2.action === "rebook_staff" || h2.action === "rebook_date", "rebook started");
   const preRebookCount = await AppointmentModel.countDocuments({ salonId, customerId });
   let rebookState = "staff";
   if (h2.action === "rebook_staff") {
-    const h3 = await sendMsg(app, staffName);
+    const h3 = await sendMsg(staffName);
     assert(h3.action === "rebook_date", "rebook date asked");
     rebookState = "date";
   }
   const dateForRebook = rebookState === "date" ? dateA : dateA;
-  const h4 = await sendMsg(app, dateForRebook);
+  const h4 = await sendMsg(dateForRebook);
   assert(h4.action === "modify_slots" || h4.action === "rebook_slots", "rebook slots shown");
-  const h5 = await sendMsg(app, "1");
+  const h5 = await sendMsg("1");
   assert(h5.action === "rebook_confirm", "rebook confirm shown");
-  const h6 = await sendMsg(app, "confirm");
+  const h6 = await sendMsg("confirm");
   assert(h6.action === "appointment_created", "rebook created");
   const postRebookCount = await AppointmentModel.countDocuments({ salonId, customerId });
   assert(postRebookCount === preRebookCount + 1, "rebook created a NEW appointment");

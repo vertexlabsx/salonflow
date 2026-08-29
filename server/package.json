@@ -17,7 +17,9 @@
     "whatsapp:retry": "tsx src/jobs/whatsapp-retry.ts",
     "shopify:automation": "tsx src/jobs/shopify-automation.ts",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "e2e": "tsx test-whatsapp-e2e.ts",
+    "strict:regression": "npm run build && tsx test-whatsapp-e2e.ts"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",

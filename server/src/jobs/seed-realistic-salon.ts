@@ -31,10 +31,8 @@ function dateKey(date: Date) {
 }
 
 function addDays(days: number, hour = 10, minute = 0) {
-  const date = new Date();
-  date.setDate(date.getDate() + days);
-  date.setHours(hour, minute, 0, 0);
-  return date;
+  const parts = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Kolkata", year: "numeric", month: "2-digit", day: "2-digit" }).formatToParts(new Date());
+  return new Date(Date.UTC(Number(parts.find((p) => p.type === "year")!.value), Number(parts.find((p) => p.type === "month")!.value) - 1, Number(parts.find((p) => p.type === "day")!.value) + days, hour, minute));
 }
 
 function minutes(time: string) {

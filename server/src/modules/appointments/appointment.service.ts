@@ -201,8 +201,8 @@ export async function cancelAppointmentForCustomer(salonId: string, appointmentI
   return toStaffAppointment(updated);
 }
 
-/** Customer-initiated reschedule or modify: swaps services/staff/branch/time while keeping the appointment identity. */
-export async function rescheduleAppointmentForCustomer(input: CustomerBookingChange): Promise<StaffAppointmentDto> {
+/** Customer-initiated MODIFY: swaps services/staff/branch/time while keeping the appointment identity (single active appointment). */
+export async function updateAppointmentForCustomer(input: CustomerBookingChange): Promise<StaffAppointmentDto> {
   const updated = await withTransaction(async (session) => {
     const overlap = await AppointmentModel.findOne({
       salonId: input.salonId,
@@ -258,4 +258,92 @@ export async function rescheduleAppointmentForCustomer(input: CustomerBookingCha
     data: { appointmentId: String(updated._id), type: "appointment.changed", status: updated.status }
   });
   return toStaffAppointment(updated);
+}
+
+/**
+ * Customer-initiated RESCHEDULE: creates a NEW appointment (status confirmed,
+ * rescheduledFromId = old.id) and marks the OLD appointment as "rescheduled"
+ * (rescheduledToId = new.id). There is never more than one active/confirmed
+ * appointment for the pair, and the old record stays in history pointing at
+ * the new one.
+ */
+export async function rescheduleAppointmentForCustomer(input: CustomerBookingChange): Promise<StaffAppointmentDto> {
+  const result = await withTransaction(async (session) => {
+    const original = await AppointmentModel.findOne({ _id: input.appointmentId, salonId: input.salonId }).session(session);
+    if (!original) throw ApiError.notFound("Appointment was not found.");
+    const overlap = await AppointmentModel.findOne({
+      salonId: input.salonId,
+      staffId: input.staffId,
+      _id: { $ne: input.appointmentId },
+      status: { $in: BOOKING_BLOCKING_STATUSES },
+      startAt: { $lt: input.endAt },
+      endAt: { $gt: input.startAt }
+    }).session(session);
+    if (overlap) {
+      throw ApiError.conflict("Requested time is not available.", {
+        conflicts: [{ id: String(overlap._id), startAt: overlap.startAt.toISOString(), endAt: overlap.endAt.toISOString(), staffId: overlap.staffId }]
+      });
+    }
+    const newId = new Types.ObjectId();
+    try {
+      await AppointmentSlotLockModel.create(
+        slotInstants(input.startAt, input.endAt).map((slotAt) => ({ salonId: input.salonId, branchId: input.branchId, staffId: input.staffId, appointmentId: String(newId), slotAt })),
+        { session, ordered: true }
+      );
+    } catch (error) {
+      if (isDuplicateKey(error)) {
+        throw ApiError.conflict("Requested time is not available.", { conflicts: [{ startAt: input.startAt.toISOString(), endAt: input.endAt.toISOString(), staffId: input.staffId }] });
+      }
+      throw error;
+    }
+    const rows = await AppointmentModel.create(
+      [
+        {
+          _id: newId,
+          salonId: input.salonId,
+          branchId: input.branchId,
+          staffId: input.staffId,
+          customerId: original.customerId,
+          customerName: original.customerName,
+          serviceIds: input.serviceIds,
+          serviceNames: input.serviceNames,
+          durationMinutes: input.durationMinutes,
+          value: input.value,
+          startAt: input.startAt,
+          endAt: input.endAt,
+          status: "confirmed",
+          source: original.source || "whatsapp",
+          rescheduledFromId: String(original._id)
+        }
+      ],
+      { session }
+    );
+    if (original.status !== "rescheduled") {
+      original.status = "rescheduled";
+      original.rescheduledToId = String(newId);
+      original.version += 1;
+      await original.save({ session });
+      await AppointmentSlotLockModel.deleteMany({ salonId: input.salonId, appointmentId: String(original._id) }).session(session);
+    }
+    return { next: rows[0]!, previous: original };
+  });
+
+  const next = result.next;
+  publishRealtimeEvent(input.salonId, "appointment.created", { id: String(next._id), branchId: next.branchId, staffId: next.staffId, startAt: next.startAt.toISOString(), endAt: next.endAt.toISOString(), status: next.status, source: next.source });
+  void notifyStaffByStaffId(input.salonId, next.staffId, {
+    title: "New appointment (reschedule)",
+    body: `${next.customerName} — ${next.serviceNames.join(", ")} on ${next.startAt.toLocaleString("en-IN", { timeZone: "Asia/Kolkata" })}`,
+    tag: `appointment-${String(next._id)}`,
+    data: { appointmentId: String(next._id), type: "appointment.created", status: next.status, rescheduledFromId: String(result.previous._id) }
+  });
+  publishRealtimeEvent(input.salonId, "appointment.status_changed", { id: String(result.previous._id), branchId: result.previous.branchId, staffId: result.previous.staffId, startAt: result.previous.startAt.toISOString(), endAt: result.previous.endAt.toISOString(), status: "rescheduled", rescheduledToId: String(next._id) });
+  if (String(result.previous.staffId) !== String(next.staffId)) {
+    void notifyStaffByStaffId(input.salonId, String(result.previous.staffId), {
+      title: "Appointment rescheduled",
+      body: `${result.previous.customerName} moved this booking to another slot/staff`,
+      tag: `appointment-${String(result.previous._id)}`,
+      data: { appointmentId: String(result.previous._id), type: "appointment.status_changed", status: "rescheduled" }
+    });
+  }
+  return toStaffAppointment(next);
 }

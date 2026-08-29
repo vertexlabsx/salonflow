@@ -1,7 +1,7 @@
 import mongoose, { model, Schema } from "mongoose";
 import type { Model, Types } from "mongoose";
 
-export type AppointmentStatus = "pending" | "booked" | "confirmed" | "arrived" | "in_service" | "completed" | "cancelled" | "no_show" | "expired";
+export type AppointmentStatus = "pending" | "booked" | "confirmed" | "arrived" | "in_service" | "completed" | "cancelled" | "no_show" | "expired" | "rescheduled";
 
 export interface Appointment {
   salonId: string;
@@ -26,9 +26,14 @@ export interface Appointment {
   paymentProviderId?: string;
   paymentReference?: string;
   holdExpiresAt?: Date | null;
+  /** Set on the OLD appointment when a customer reschedules: points to the new appointment id. */
+  rescheduledToId?: string | null;
+  /** Set on the NEW appointment created by a customer reschedule: points to the original appointment id. */
+  rescheduledFromId?: string | null;
   version: number;
   whatsappConfirmationSentAt?: Date | null;
   whatsappReminderSentAt?: Date | null;
+  reminderOptIn?: boolean;
   createdAt?: Date;
   updatedAt?: Date;
 }
@@ -48,7 +53,7 @@ const appointmentSchema = new Schema<Appointment>(
     value: { type: Number, required: true, min: 0 },
     startAt: { type: Date, required: true },
     endAt: { type: Date, required: true },
-    status: { type: String, enum: ["pending", "booked", "confirmed", "arrived", "in_service", "completed", "cancelled", "no_show", "expired"], default: "booked" },
+    status: { type: String, enum: ["pending", "booked", "confirmed", "arrived", "in_service", "completed", "cancelled", "no_show", "expired", "rescheduled"], default: "booked" },
     chair: { type: String, maxlength: 60 },
     source: { type: String, maxlength: 60, default: "crm" },
     paymentStatus: { type: String, enum: ["not_required", "pending", "paid", "failed"], default: "not_required" },
@@ -58,9 +63,12 @@ const appointmentSchema = new Schema<Appointment>(
     paymentProviderId: { type: String, maxlength: 160, default: "" },
     paymentReference: { type: String, maxlength: 200, default: "" },
     holdExpiresAt: { type: Date, default: null },
+    rescheduledToId: { type: String, default: null },
+    rescheduledFromId: { type: String, default: null },
     version: { type: Number, default: 1 },
     whatsappConfirmationSentAt: { type: Date, default: null },
-    whatsappReminderSentAt: { type: Date, default: null }
+    whatsappReminderSentAt: { type: Date, default: null },
+    reminderOptIn: { type: Boolean, default: false }
   },
   { timestamps: true, minimize: false }
 );

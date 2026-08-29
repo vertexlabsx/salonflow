@@ -27,6 +27,10 @@ export interface WhatsAppBookingSession {
   staffId: string | null;
   holdAppointmentId: string | null;
   customerName: string;
+  consecutiveFailures: number;
+  lastAlternates: string;
+  earliestOffer: string;
+  pendingReminder: boolean;
   expiresAt: Date;
   createdAt?: Date;
   updatedAt?: Date;
@@ -56,6 +60,10 @@ const whatsAppBookingSessionSchema = new Schema<WhatsAppBookingSession>(
     staffId: { type: String, default: null },
     holdAppointmentId: { type: String, default: null },
     customerName: { type: String, maxlength: 160, default: "" },
+    consecutiveFailures: { type: Number, default: 0 },
+    lastAlternates: { type: String, default: "" },
+    earliestOffer: { type: String, default: "" },
+    pendingReminder: { type: Boolean, default: false },
     expiresAt: { type: Date, required: true },
     managementAction: { type: String, default: null },
     modifyField: { type: String, default: null },
