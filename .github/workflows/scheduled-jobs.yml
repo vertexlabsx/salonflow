@@ -1,0 +1,70 @@
+# Background notification workers for the pilot deployment.
+#
+# The API host (Fly/Render) has no cron; these jobs only need MongoDB access,
+# so GitHub Actions runs them on schedule against the production Atlas cluster.
+# Add these repository secrets:
+#   PROD_MONGODB_URI        — the Atlas connection string
+#   PROD_JWT_ACCESS_SECRET  — any 32+ char value (env schema requires it)
+#   PROD_JWT_REFRESH_SECRET
+#   PROD_CSRF_SECRET
+
+name: scheduled-jobs
+
+on:
+  schedule:
+    - cron: "*/5 * * * *" # reminders + WhatsApp retry (retry has its own backoff, safe to run often)
+    - cron: "30 21 * * *" # daily cleanup at 03:00 IST
+  workflow_dispatch: {}
+
+permissions: {}
+
+concurrency:
+  group: scheduled-jobs
+  cancel-in-progress: false
+
+env:
+  MONGODB_URI: ${{ secrets.PROD_MONGODB_URI }}
+  JWT_ACCESS_SECRET: ${{ secrets.PROD_JWT_ACCESS_SECRET }}
+  JWT_REFRESH_SECRET: ${{ secrets.PROD_JWT_REFRESH_SECRET }}
+  CSRF_SECRET: ${{ secrets.PROD_CSRF_SECRET }}
+  WHATSAPP_PROVIDER: mock
+
+jobs:
+  reminders-and-retry:
+    if: github.event.schedule == '*/5 * * * *' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: server/package-lock.json
+      - name: Install dependencies
+        run: npm ci
+        working-directory: server
+      - name: Appointment reminders
+        run: npx tsx src/jobs/appointment-reminders.ts
+        working-directory: server
+      - name: WhatsApp retry pass
+        run: npx tsx src/jobs/whatsapp-retry.ts
+        working-directory: server
+
+  cleanup:
+    if: github.event.schedule == '30 21 * * *'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: server/package-lock.json
+      - name: Install dependencies
+        run: npm ci
+        working-directory: server
+      - name: Data retention cleanup
+        run: npx tsx src/jobs/cleanup.ts
+        working-directory: server
