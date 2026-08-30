@@ -20,7 +20,7 @@ const STAFF_HINT_SESSION_KEY = "auraStaffHintSeen";
       <aside class="staff-sidebar" [class.open]="menuOpen()" [attr.role]="menuOpen() ? 'dialog' : null" [attr.aria-modal]="menuOpen() ? 'true' : null" [attr.aria-label]="menuOpen() ? 'Staff navigation' : null" [attr.inert]="notificationsOpen() || commandOpen() ? '' : null" tabindex="-1" #menuDialog (keydown)="menuOpen() && trapFocus($event, menuDialog)">
         <button type="button" class="drawer-close" (click)="closeMenu()" aria-label="Close menu">Close</button>
         <div class="brand-card">
-          <span class="brand-kicker">Aura Shine</span>
+          <span class="brand-kicker">Solastio</span>
           <strong>{{ preferences().workspace.workspaceName }}</strong>
           <small>{{ roleLabel() }} workspace</small>
         </div>
@@ -78,6 +78,7 @@ const STAFF_HINT_SESSION_KEY = "auraStaffHintSeen";
             <a routerLink="/staff/appointments" [class.active]="isRouteActive('/staff/appointments')"><svg viewBox="0 0 24 24" aria-hidden="true"><path [attr.d]="iconFor('Appointments')"></path></svg><span>Appointments</span></a>
             <a routerLink="/staff/business" [class.active]="isRouteActive('/staff/business')"><svg viewBox="0 0 24 24" aria-hidden="true"><path [attr.d]="iconFor('Business')"></path></svg><span>Business</span></a>
           }
+          @if (staff.hasPermission('read:clients')) { <a routerLink="/staff/clients" [class.active]="isRouteActive('/staff/clients')"><svg viewBox="0 0 24 24" aria-hidden="true"><path [attr.d]="iconFor('Clients')"></path></svg><span>Clients</span></a> }
           @if (staff.hasAnyPermission(['allow:staff-checkin-checkout', 'read:staff', 'write:staff'])) { <a routerLink="/staff/attendance" [class.active]="isRouteActive('/staff/attendance')"><svg viewBox="0 0 24 24" aria-hidden="true"><path [attr.d]="iconFor('Attendance')"></path></svg><span>Attendance</span></a> }
           @if (staff.hasPermission('read:staff')) { <a routerLink="/staff/tasks" [class.active]="isRouteActive('/staff/tasks')"><svg viewBox="0 0 24 24" aria-hidden="true"><path [attr.d]="iconFor('Tasks')"></path></svg><span>Tasks</span></a> }
        </nav>
@@ -131,19 +132,19 @@ const STAFF_HINT_SESSION_KEY = "auraStaffHintSeen";
     </section>
   `,
   styles: [`
-    .staff-app-shell { min-height: 100vh; display: grid; grid-template-columns: 272px minmax(0, 1fr); background: var(--staff-background); color: var(--staff-text); }
-    .staff-sidebar { position: sticky; top: 0; height: 100vh; overflow: auto; padding: 16px; border-right: 1px solid var(--staff-border); background: var(--staff-surface-glass); backdrop-filter: blur(18px); }
-    .brand-card { padding: 8px 10px; border: 1px solid var(--staff-border-accent); border-radius: 13px; color: var(--staff-text); background: var(--staff-primary-light); }
+    .staff-app-shell { min-height: 100vh; display: grid; grid-template-columns: 286px minmax(0, 1fr); background: radial-gradient(circle at 0 0,color-mix(in srgb,var(--staff-primary) 10%,transparent),transparent 26%), var(--staff-background); color: var(--staff-text); }
+    .staff-sidebar { position: sticky; top: 0; height: 100vh; overflow: auto; padding: 18px; border-right: 1px solid var(--staff-border); background: linear-gradient(180deg,var(--staff-surface-glass),color-mix(in srgb,var(--staff-surface-secondary) 72%,transparent)); backdrop-filter: blur(22px); box-shadow: 18px 0 44px rgba(42,20,51,.06); }
+    .brand-card { position:relative;overflow:hidden;padding: 16px; border: 1px solid color-mix(in srgb,var(--staff-primary) 24%,var(--staff-border)); border-radius: 22px; color: var(--staff-text); background: radial-gradient(circle at 90% 0,color-mix(in srgb,var(--staff-border-accent) 36%,transparent),transparent 36%),linear-gradient(135deg,var(--staff-primary-light),var(--staff-surface)); box-shadow:var(--staff-shadow); }
     .brand-card span { display: block; color: var(--staff-primary-hover); font-size: .55rem; font-weight: 800; letter-spacing: .1em; text-transform: uppercase; }
-    .brand-card strong { display: block; margin-top: 2px; font-size: 1rem; line-height: 1.1; }
+    .brand-card strong { display: block; margin-top: 4px; font-family:Georgia,"Times New Roman",serif;font-size: 1.35rem; font-weight:500;line-height: 1.05;letter-spacing:-.03em; }
     .brand-card small { display: block; margin-top: 2px; color: var(--staff-text-secondary); font-size: .6rem; font-weight: 650; line-height: 1.15; text-transform: capitalize; }
     .menu-button, .drawer-close { display: none; }
     .drawer-backdrop { display: block; position: fixed; inset: 0; z-index: 29; border: 0; opacity: 0; pointer-events: none; background: var(--staff-overlay); backdrop-filter: blur(2px); transition: opacity .18s ease; }
     .drawer-backdrop.open { opacity: 1; pointer-events: auto; }
     .menu-button span { display: block; width: 18px; height: 2px; border-radius: 999px; background: var(--staff-text); }
-    .user-card { display: grid; grid-template-columns: 42px 1fr; gap: 10px; align-items: center; margin-top: 12px; padding: 10px; border: 1px solid var(--staff-border); border-radius: 18px; background: var(--staff-surface); color: var(--staff-text); text-decoration: none; cursor: pointer; }
+    .user-card { display: grid; grid-template-columns: 44px 1fr; gap: 10px; align-items: center; margin-top: 14px; padding: 11px; border: 1px solid color-mix(in srgb,var(--staff-primary) 12%,var(--staff-border)); border-radius: 20px; background: linear-gradient(180deg,var(--staff-surface),var(--staff-surface-secondary)); color: var(--staff-text); text-decoration: none; cursor: pointer; box-shadow:var(--staff-shadow); }
     .user-card:hover, .user-card:focus-visible { border-color: var(--staff-primary); background: var(--staff-primary-light); }
-    .user-card b, .profile-avatar { display: grid; place-items: center; width: 42px; height: 42px; border-radius: 15px; background: var(--staff-primary); color: var(--staff-on-primary); }
+    .user-card b, .profile-avatar { display: grid; place-items: center; width: 42px; height: 42px; border-radius: 15px; background: linear-gradient(135deg,var(--staff-primary),var(--staff-primary-hover)); color: var(--staff-on-primary); box-shadow:0 10px 22px color-mix(in srgb,var(--staff-primary) 24%,transparent); }
     .user-card strong, .user-card small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .user-card small { color: var(--staff-text-secondary); font-weight: 600; }
     .recent-card { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 2px 6px; margin-top: 8px; padding: 6px 8px; border: 1px solid var(--staff-border); border-radius: 12px; background: var(--staff-surface-secondary); }
@@ -151,14 +152,14 @@ const STAFF_HINT_SESSION_KEY = "auraStaffHintSeen";
     .nav-group { margin: 12px 2px 4px; color: var(--staff-text-secondary); font-size: .66rem; font-weight: 800; letter-spacing: .12em; text-transform: uppercase; }
     .recent-card a { display:block;min-width:0;min-height:26px;overflow:hidden;padding:5px 2px;color:var(--staff-text);font-size:.68rem;font-weight:650;text-decoration:none;text-overflow:ellipsis;white-space:nowrap; }
     nav { display: grid; gap: 5px; margin-top: 14px; }
-    nav a { display: grid; grid-template-columns: 34px 1fr; gap: 10px; align-items: center; min-height:48px;padding: 8px 10px; border: 1px solid transparent; border-radius: 16px; color: var(--staff-text-secondary); font-weight: 700; text-decoration: none; }
+    nav a { display: grid; grid-template-columns: 34px 1fr; gap: 10px; align-items: center; min-height:48px;padding: 8px 10px; border: 1px solid transparent; border-radius: 17px; color: var(--staff-text-secondary); font-weight: 760; text-decoration: none; }
     nav a span { display: grid; place-items: center; width: 32px; height: 32px; border-radius: 12px; background: var(--staff-surface-secondary); color: var(--staff-text-secondary); font-size: .7rem; font-weight: 800; }
     svg { width: 17px; height: 17px; fill: currentColor; }
-    nav a.active, nav a:hover { border-color: var(--staff-border-accent); background: var(--staff-primary-light); color: var(--staff-primary-hover); }
+    nav a.active, nav a:hover { border-color: color-mix(in srgb,var(--staff-primary) 28%,var(--staff-border)); background: linear-gradient(135deg,var(--staff-primary-light),color-mix(in srgb,var(--staff-border-accent) 18%,var(--staff-primary-light))); color: var(--staff-primary-hover); box-shadow:0 10px 22px rgba(42,20,51,.07); }
     nav a.active span { background: var(--staff-primary); color: var(--staff-on-primary); }
     .nav-logout { width: 100%; min-height:46px;margin-top: 12px; padding: 11px 13px; border: 1px solid var(--staff-error-border); border-radius: 16px; background: var(--staff-error-surface); color: var(--staff-error-text); font-weight: 750; text-align: left; }
     .staff-main-shell { min-width: 0; display: grid; grid-template-rows: auto minmax(0, 1fr); height: 100vh; overflow: hidden; }
-    .staff-topbar { position: relative; display: flex; justify-content: space-between; align-items: center; gap: 10px; min-height:var(--staff-header-height);padding: 3px 16px; border-bottom: 1px solid var(--staff-border); background: var(--staff-surface-glass); backdrop-filter: blur(16px); }
+    .staff-topbar { position: relative; display: flex; justify-content: space-between; align-items: center; gap: 10px; min-height:var(--staff-header-height);padding: 8px 18px; border-bottom: 1px solid color-mix(in srgb,var(--staff-primary) 12%,var(--staff-border)); background: color-mix(in srgb,var(--staff-surface-glass) 94%,transparent); backdrop-filter: blur(22px); box-shadow:0 10px 28px rgba(42,20,51,.05); }
     .staff-identity { display: flex; align-items:center; min-width: 0; max-width:min(420px,48vw); gap: 10px; color:inherit; text-decoration:none; }
     .staff-identity>div { display:grid;gap:1px;min-width:0; }
     .staff-identity span { overflow: hidden; color: var(--staff-text-secondary); font-size: .72rem; font-weight: 650; letter-spacing: 0; text-overflow: ellipsis; white-space: nowrap; }
@@ -167,7 +168,7 @@ const STAFF_HINT_SESSION_KEY = "auraStaffHintSeen";
     .staff-topbar strong { color: var(--staff-text); }
     .topbar-actions { display: flex; align-items: center; justify-content: flex-end; gap: 10px; min-width: 0; flex-wrap: wrap; }
     .topbar-actions span { color: var(--staff-text-secondary); font-weight: 650; }
-    .search-button, .chat-button, .bell-button { border: 1px solid var(--staff-border); background:var(--staff-surface-secondary);color:var(--staff-text-secondary);font-weight:700;box-shadow:none; }
+    .search-button, .chat-button, .bell-button { border: 1px solid color-mix(in srgb,var(--staff-primary) 14%,var(--staff-border)); background:var(--staff-surface);color:var(--staff-text-secondary);font-weight:750;box-shadow:0 8px 18px rgba(42,20,51,.05); }
     .search-button { display: grid;grid-template-columns:auto 1fr auto;align-items:center;gap:9px;width:min(330px,28vw);height:44px;padding:0 12px;border-radius:16px;text-align:left; }
     .search-button span { overflow:hidden;font-size:.78rem;text-overflow:ellipsis;white-space:nowrap; }
     .search-button kbd { padding:3px 6px;border:1px solid var(--staff-border);border-radius:7px;background:var(--staff-surface);color:var(--staff-text-secondary);font-size:.64rem; }
@@ -187,7 +188,7 @@ const STAFF_HINT_SESSION_KEY = "auraStaffHintSeen";
     .net-status, .queue-status { padding: 7px 10px; border-radius: 999px; background: var(--staff-success-surface); color: var(--staff-success-text) !important; }
     .net-status.offline { background: var(--staff-error-surface); color: var(--staff-error-text) !important; }
     .queue-status { background: var(--staff-primary-light); color: var(--staff-primary-hover) !important; }
-    .staff-content { min-width: 0; overflow: auto; padding: 24px; background: var(--staff-background); }
+    .staff-content { min-width: 0; overflow: auto; padding: 28px; background: transparent; }
     .staff-policy-hint { display:flex;align-items:center;justify-content:space-between;gap:8px;margin: 0 0 12px; padding: 9px 12px; border: 1px solid var(--staff-border-accent); border-radius: 12px; background: var(--staff-primary-light); color: var(--staff-primary-hover); font-size: .8rem; font-weight: 650; }
     .staff-policy-hint span{min-width:0}.staff-policy-hint button{display:grid;place-items:center;flex:0 0 26px;width:26px;height:26px;padding:0;border:0;border-radius:8px;background:transparent;color:inherit;font-size:1rem;line-height:1;cursor:pointer}.staff-policy-hint button:hover{background:color-mix(in srgb,var(--staff-primary) 12%,transparent)}
     .staff-app-shell.staff-compact .staff-content { padding: 12px; }
@@ -236,8 +237,8 @@ const STAFF_HINT_SESSION_KEY = "auraStaffHintSeen";
      @media (max-width: 900px) {
        .staff-app-shell { --staff-header-height: calc(54px + env(safe-area-inset-top)); display: block; min-height: 100dvh; padding-bottom: env(safe-area-inset-bottom); }
        .staff-main-shell { display: block; height: 100dvh; min-height: 100dvh; overflow-y: auto; overflow-x: hidden; scroll-padding-top: var(--staff-header-height); -webkit-overflow-scrolling: touch; }
-        .staff-topbar { position: sticky; top: 0; z-index: 20; min-height: var(--staff-header-height); padding: calc(3px + env(safe-area-inset-top)) 2px 3px 12px; gap: 2px; }
-      .menu-button { display: inline-flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px; flex: 0 0 auto; width: 48px; height: 48px; margin: 0 2px 0 -10px; padding: 0; border: 0; border-radius: 14px; background: transparent; color: var(--staff-text); font-size: .78rem; font-weight: 750; box-shadow: none; }
+        .staff-topbar { position: sticky; top: 0; z-index: 20; min-height: var(--staff-header-height); padding: calc(7px + env(safe-area-inset-top)) 8px 7px 12px; gap: 4px; }
+      .menu-button { display: inline-flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px; flex: 0 0 auto; width: 46px; height: 46px; margin: 0 2px 0 -8px; padding: 0; border: 1px solid color-mix(in srgb,var(--staff-primary) 12%,var(--staff-border)); border-radius: 16px; background: var(--staff-surface); color: var(--staff-text); font-size: .78rem; font-weight: 750; box-shadow: 0 8px 18px rgba(42,20,51,.05); }
       .staff-topbar > div:nth-child(2) { min-width: 0; flex: 1 1 auto; }
        .staff-identity { flex: 1 1 auto; width:0; max-width:none; gap: 10px; overflow: hidden; }
       .profile-avatar { width: 38px; height: 38px; background: color-mix(in srgb, var(--staff-primary) 76%, transparent); }
@@ -255,20 +256,20 @@ const STAFF_HINT_SESSION_KEY = "auraStaffHintSeen";
       .bell-icon { width: 19px; height: 19px; }
        .staff-content { overflow: visible; padding: 10px 0 var(--staff-bottom-clearance); }
        .staff-policy-hint { margin: 0 10px 8px; padding: 7px 10px; font-size: .72rem; line-height: 1.3; }
-      .notification-drawer { top: 0; right: 0; bottom: 0; left: auto; width: 72vw; min-width: 280px; max-width: 360px; height: 100dvh; padding: calc(14px + env(safe-area-inset-top)) calc(14px + env(safe-area-inset-right)) calc(14px + env(safe-area-inset-bottom)) calc(14px + env(safe-area-inset-left)); border-left: 1px solid var(--staff-border); border-radius: 22px 0 0 22px; box-shadow: -18px 0 40px rgba(31, 41, 55, .14); }
+       .notification-drawer { top: 0; right: 0; bottom: 0; left: auto; width: 72vw; min-width: 280px; max-width: 360px; height: 100dvh; padding: calc(14px + env(safe-area-inset-top)) calc(14px + env(safe-area-inset-right)) calc(14px + env(safe-area-inset-bottom)) calc(14px + env(safe-area-inset-left)); border-left: 1px solid var(--staff-border); border-radius: 26px 0 0 26px; box-shadow: -22px 0 54px rgba(42,20,51,.2); }
       .notification-drawer .drawer-title { position: sticky; top: 0; z-index: 2; border: 1px solid var(--staff-border); border-radius: 16px; background: var(--staff-surface-secondary); box-shadow: 0 6px 16px rgba(31, 41, 55, .08); }
-       .mobile-bottom-nav { position: fixed; left: 50%; bottom: calc(var(--staff-mobile-nav-offset) + env(safe-area-inset-bottom)); z-index: 27; display: grid; grid-template-columns: repeat(auto-fit, minmax(56px, 1fr)); width: min(calc(100vw - 20px), 430px); min-height: var(--staff-mobile-nav-height); padding: 6px; gap: 3px; transform: translateX(-50%); border: 1px solid var(--staff-border); border-radius: 22px; background: var(--staff-surface-glass); box-shadow: var(--staff-shadow-elevated); backdrop-filter: blur(18px); }
+        .mobile-bottom-nav { position: fixed; left: 50%; bottom: calc(var(--staff-mobile-nav-offset) + env(safe-area-inset-bottom)); z-index: 27; display: grid; grid-template-columns: repeat(auto-fit, minmax(56px, 1fr)); width: min(calc(100vw - 20px), 430px); min-height: var(--staff-mobile-nav-height); padding: 7px; gap: 3px; transform: translateX(-50%); border: 1px solid color-mix(in srgb,var(--staff-primary) 18%,var(--staff-border)); border-radius: 26px; background: linear-gradient(135deg,color-mix(in srgb,var(--staff-surface-glass) 96%,transparent),color-mix(in srgb,var(--staff-surface-secondary) 88%,transparent)); box-shadow: var(--staff-shadow-elevated); backdrop-filter: blur(22px); }
        .mobile-bottom-nav:has(> a:nth-child(5)) { grid-template-columns: .85fr 1.2fr 1fr 1.15fr .8fr; gap: 1px; }
         .mobile-bottom-nav a { position:relative;display: grid; grid-template-columns: 1fr; grid-template-rows: 23px auto; place-items: center; align-content: center; gap: 2px; min-width: 0; padding: 6px 3px; border: 0; border-radius: 16px; color: var(--staff-text-secondary); font-size: .62rem; font-weight: 700; line-height: 1; text-decoration: none; transition:transform var(--staff-motion-fast) var(--staff-motion-ease),opacity var(--staff-motion-fast) var(--staff-motion-ease); } .mobile-bottom-nav a span, .mobile-bottom-nav a.active span { display: block; max-width: 100%; width: auto; height: auto; padding: 0; border: 0; border-radius: 0; background: transparent; color: inherit; font-size: inherit; font-weight: inherit; letter-spacing: 0; text-transform: none; white-space: nowrap; }
        .mobile-bottom-nav:has(> a:nth-child(5)) a:nth-child(2) span { font-size: .57rem; letter-spacing: -.015em; }
        .mobile-bottom-nav a.active::after { position:absolute;top:2px;width:16px;height:2px;border-radius:999px;background:var(--staff-primary);content:""; }
       .mobile-bottom-nav a svg { display: block; width: 20px; height: 20px; margin: 0; fill: currentColor; }
-        .mobile-bottom-nav a.active { color: var(--staff-primary-hover); background: transparent; }
-        .mobile-bottom-nav a.active svg { box-sizing:content-box;padding:2px;border-radius:7px;background:var(--staff-primary-light); }
+        .mobile-bottom-nav a.active { color: var(--staff-primary-hover); background: var(--staff-primary-light); }
+        .mobile-bottom-nav a.active svg { box-sizing:content-box;padding:2px;border-radius:9px;background:linear-gradient(135deg,var(--staff-primary),var(--staff-primary-hover));color:var(--staff-on-primary); }
         .mobile-bottom-nav a:focus-visible { outline: 3px solid var(--staff-focus-ring); outline-offset: 2px; border-radius: 14px; }
-      .drawer-backdrop { display: block; position: fixed; inset: 0; z-index: 29; border: 0; opacity: 0; pointer-events: none; background: rgba(31,41,55,.28); backdrop-filter: blur(2px); transition: opacity .18s ease; }
+      .drawer-backdrop { display: block; position: fixed; inset: 0; z-index: 29; border: 0; opacity: 0; pointer-events: none; background: var(--staff-overlay); backdrop-filter: blur(3px); transition: opacity .18s ease; }
       .drawer-backdrop.open { opacity: 1; pointer-events: auto; }
-      .staff-sidebar { position: fixed; left: 0; top: 0; bottom: 0; z-index: 30; width: 50vw; min-width: 170px; max-width: 260px; box-sizing: border-box; height: 100dvh; overflow: auto; padding: calc(14px + env(safe-area-inset-top)) calc(14px + env(safe-area-inset-right)) calc(14px + env(safe-area-inset-bottom)) calc(14px + env(safe-area-inset-left)); border-right: 1px solid var(--staff-border); border-radius: 0 22px 22px 0; transform: translateX(-104%); transition: transform .2s ease; box-shadow: 18px 0 40px rgba(31, 41, 55, .14); }
+      .staff-sidebar { position: fixed; left: 0; top: 0; bottom: 0; z-index: 30; width: 68vw; min-width: 250px; max-width: 320px; box-sizing: border-box; height: 100dvh; overflow: auto; padding: calc(14px + env(safe-area-inset-top)) calc(14px + env(safe-area-inset-right)) calc(14px + env(safe-area-inset-bottom)) calc(14px + env(safe-area-inset-left)); border-right: 1px solid var(--staff-border); border-radius: 0 28px 28px 0; transform: translateX(-104%); transition: transform .2s ease; box-shadow: 22px 0 54px rgba(42,20,51,.2); }
       .staff-sidebar.open { transform: translateX(0); }
       .drawer-close { position: sticky; top: 0; z-index: 3; display: block; width: 100%; min-height: 48px; margin-bottom: 10px; padding: 9px 12px; border: 1px solid var(--staff-border); border-radius: 16px; background: var(--staff-surface-secondary); color: var(--staff-text); font-weight: 750; text-align: left; box-shadow: 0 6px 16px rgba(31, 41, 55, .08); }
       .brand-card { display: block; }
@@ -313,7 +314,7 @@ export class StaffLayoutPage implements OnInit, OnDestroy {
   readonly staffHintVisible = signal(false);
   readonly os = signal<StaffEnterpriseOs | null>(null);
   readonly preferences = signal<StaffWorkspacePreferences>({
-    workspace: { workspaceName: "Aura Shine Staff Portal" },
+    workspace: { workspaceName: "Solastio Staff Portal" },
     localization: { timezone: "Asia/Kolkata", locale: "en-IN" },
     dateTime: { dateFormat: "DD/MM/YYYY", timeFormat: "12h", businessDayStartHour: 0, weekStartsOn: "Monday" },
     interface: { compactMode: false },
@@ -334,6 +335,7 @@ export class StaffLayoutPage implements OnInit, OnDestroy {
     { label: "Dashboard", path: "/staff/dashboard", iconPath: "M3 13h8V3H3v10zm0 8h8v-6H3v6zm10 0h8V11h-8v10zm0-18v6h8V3h-8z", group: "Home", permission: "read:appointments" },
     { label: "Roster", path: "/staff/roster", iconPath: "M4 4h16v4H4V4zm0 6h7v10H4V10zm9 0h7v10h-7V10z", group: "Work" },
     { label: "Calendar", path: "/staff/calendar", iconPath: "M19 3h-1V1h-2v2H8V1H6v2H5a2 2 0 0 0-2 2v16h18V5a2 2 0 0 0-2-2zm0 16H5V9h14v10z", group: "Work", permission: "read:appointments" },
+    { label: "Clients", path: "/staff/clients", iconPath: "M16 11c1.7 0 3-1.3 3-3s-1.3-3-3-3-3 1.3-3 3 1.3 3 3 3zM8 12c2.2 0 4-1.8 4-4S10.2 4 8 4 4 5.8 4 8s1.8 4 4 4zm8 2c-2 0-6 1-6 3v2h12v-2c0-2-4-3-6-3zM8 14c-2.7 0-8 1.3-8 4v1h8v-2c0-1 .5-2 1.3-2.8-.4-.1-.8-.2-1.3-.2z", group: "Work", permission: "read:clients" },
     { label: "Performance", path: "/staff/performance", iconPath: "M3 17h3v4H3v-4zm5-6h3v10H8V11zm5 3h3v7h-3v-7zm5-9h3v16h-3V5z", group: "Intelligence", permission: "read:staff" },
     { label: "Leaderboard", path: "/staff/leaderboard", iconPath: "M7 21h10v-2H7v2zM5 3h14v4a7 7 0 0 1-6 6.9V17h-2v-3.1A7 7 0 0 1 5 7V3zm2 2v2a5 5 0 0 0 10 0V5H7z", group: "Intelligence", permission: "read:staff" },
     { label: "Reports", path: "/staff/reports", iconPath: "M5 3h11l3 3v15H5V3zm10 1.5V7h2.5L15 4.5zM8 11h8v2H8v-2zm0 4h8v2H8v-2z", group: "Intelligence", permission: "read:staff" },
@@ -347,6 +349,7 @@ export class StaffLayoutPage implements OnInit, OnDestroy {
     Appointments: "M7 2v2H5a2 2 0 0 0-2 2v14h18V6a2 2 0 0 0-2-2h-2V2h-2v2H9V2H7zm12 8H5V7h14v3z",
     Attendance: "M12 12a5 5 0 1 0-5-5 5 5 0 0 0 5 5zm0 2c-4 0-8 2-8 5v1h16v-1c0-3-4-5-8-5z",
     Business: "M3 21V3h8v4h10v14H3zm3-3h2v-3H6v3zm0-6h2V9H6v3zm7 6h2v-3h-2v3zm0-6h2V9h-2v3zm5 6h1v-3h-1v3zm0-6h1V9h-1v3z",
+    Clients: "M16 11c1.7 0 3-1.3 3-3s-1.3-3-3-3-3 1.3-3 3 1.3 3 3 3zM8 12c2.2 0 4-1.8 4-4S10.2 4 8 4 4 5.8 4 8s1.8 4 4 4zm8 2c-2 0-6 1-6 3v2h12v-2c0-2-4-3-6-3zM8 14c-2.7 0-8 1.3-8 4v1h8v-2c0-1 .5-2 1.3-2.8-.4-.1-.8-.2-1.3-.2z",
     Tasks: "M9 16.2 4.8 12l-1.4 1.4L9 19 21 7l-1.4-1.4L9 16.2z"
   };
 
@@ -366,7 +369,7 @@ export class StaffLayoutPage implements OnInit, OnDestroy {
   });
 
   readonly currentUrl = signal(this.router.url);
-  readonly quickSuggestions = signal(["Appointments", "Business", "Attendance", "Tasks", "Profile", "Chat"]);
+  readonly quickSuggestions = signal(["Appointments", "Clients", "Business", "Attendance", "Tasks", "Profile", "Chat"]);
 
   applyCommandSuggestion(text: string) {
     this.query.set(text);
@@ -457,6 +460,9 @@ export class StaffLayoutPage implements OnInit, OnDestroy {
     if (this.staff.hasPermission("read:appointments")) {
       paths.push("/staff/dashboard", "/staff/appointments", "/staff/business");
     }
+    if (this.staff.hasPermission("read:clients")) {
+      paths.push("/staff/clients");
+    }
     if (this.staff.hasAnyPermission(["allow:staff-checkin-checkout", "read:staff", "write:staff"])) {
       paths.push("/staff/attendance");
     }
@@ -494,7 +500,7 @@ export class StaffLayoutPage implements OnInit, OnDestroy {
   }
 
   firstName(): string {
-    return String(this.staff.user()?.name || "Aura Staff").trim().split(/\s+/)[0] || "Aura Staff";
+    return String(this.staff.user()?.name || "Solastio Staff").trim().split(/\s+/)[0] || "Solastio Staff";
   }
 
   greetingLabel(): string {
@@ -537,7 +543,7 @@ export class StaffLayoutPage implements OnInit, OnDestroy {
     document.documentElement.dataset["staffTheme"] = next;
     document.documentElement.style.colorScheme = next;
     localStorage.setItem("auraStaffTheme", next);
-    document.querySelector<HTMLMetaElement>('meta[name="theme-color"]')?.setAttribute("content", next === "dark" ? "#111B21" : "#00A884");
+    document.querySelector<HTMLMetaElement>('meta[name="theme-color"]')?.setAttribute("content", next === "dark" ? "#2A1433" : "#7B2F62");
   }
 
   unreadCount(): number {

@@ -18,7 +18,7 @@ type Context = NonNullable<Request["context"]>;
 
 export async function workspacePreferences(context: Context): Promise<unknown> {
   return {
-    workspace: { workspaceName: context.salonId === "tenant_aura" ? "Aura Shine Salon & Wellness" : context.salonId },
+    workspace: { workspaceName: context.salonId === "tenant_aura" ? "Solastio Studio - Flagship" : context.salonId },
     localization: { timezone: loadEnv().SALON_TIMEZONE || "Asia/Kolkata", locale: "en-IN" },
     dateTime: { dateFormat: "DD MMM YYYY", timeFormat: "hh:mm A", businessDayStartHour: 6, weekStartsOn: "MONDAY" },
     interface: { compactMode: false },

@@ -12,7 +12,7 @@ const initialTheme = savedTheme === "dark" || savedTheme === "light"
   : matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
 document.documentElement.dataset["staffTheme"] = initialTheme;
 document.documentElement.style.colorScheme = initialTheme;
-document.querySelector<HTMLMetaElement>('meta[name="theme-color"]')?.setAttribute("content", initialTheme === "dark" ? "#111B21" : "#00A884");
+document.querySelector<HTMLMetaElement>('meta[name="theme-color"]')?.setAttribute("content", initialTheme === "dark" ? "#2A1433" : "#7B2F62");
 
 bootstrapApplication(AppComponent, {
   providers: [

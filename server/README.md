@@ -1,5 +1,5 @@
 ---
-title: Aura Staff Server
+title: Solastio Server
 emoji: 💈
 colorFrom: indigo
 colorTo: purple
@@ -8,9 +8,9 @@ app_port: 4000
 pinned: false
 ---
 
-# Aura Staff Server
+# Solastio Server
 
-Node/Express backend for Aura Staff App.
+Node/Express backend for Solastio Salon & Beauty OS.
 
 ## Hugging Face Space
 

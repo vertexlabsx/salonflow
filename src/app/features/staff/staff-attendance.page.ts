@@ -9,7 +9,7 @@ import { StaffPageStateComponent } from "./staff-page-state.component";
   imports: [DatePipe, StaffPageStateComponent],
   template: `
     <section class="page attendance-page">
-      <header class="page-head attendance-head"><div><h1>Attendance</h1><p>Your shift, attendance timeline, and monthly summary.</p></div><span class="date-chip">{{ today()?.date | date:'EEE, d MMM' }}</span></header>
+      <header class="page-head attendance-head"><div><h1>Attendance</h1><p>Your shift, attendance timeline, and monthly summary.</p></div><span class="date-chip">{{ today().date | date:'EEE, d MMM' }}</span></header>
       @if (!canUseAttendance()) { <section staffPageState class="notice">You do not have permission to use attendance controls.</section> }
       @if (message()) { <section staffPageState class="notice success">{{ message() }}</section> }
       @if (localError()) { <section staffPageState class="notice">{{ localError() }}</section> }

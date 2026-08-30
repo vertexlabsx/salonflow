@@ -1,5 +1,5 @@
 /**
- * Complete route definitions for the Aura Staff App.
+ * Complete route definitions for Solastio.
  *
  * Each route specifies:
  *   path       — URL path
@@ -64,6 +64,14 @@ export const STAFF_ROUTES: StaffRoute[] = [
     label: "Queue",
     public: false,
     requires: "read:appointments",
+    hasTable: true,
+  },
+  {
+    path: "/staff/clients",
+    label: "Clients",
+    public: false,
+    requires: "read:clients",
+    hasForm: true,
     hasTable: true,
   },
   {

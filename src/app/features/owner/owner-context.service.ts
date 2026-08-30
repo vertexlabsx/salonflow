@@ -25,7 +25,7 @@ const PERIOD_LABELS: Record<OwnerPeriod, string> = {
 };
 
 const DEFAULT_SETTINGS: OwnerGeneralSettings = {
-  workspace: { workspaceName: "Aura", defaultLandingPage: "dashboard", fastPosEnabled: true },
+  workspace: { workspaceName: "Solastio", defaultLandingPage: "dashboard", fastPosEnabled: true },
   localization: { country: "India", language: "English", timezone: "Asia/Kolkata", currency: "INR", locale: "en-IN" },
   branchBehavior: { rememberLastBranch: true, requireBranchSelection: true, allowBranchSwitch: true },
   dateTime: { dateFormat: "DD/MM/YYYY", timeFormat: "12h", businessDayStartHour: 0, weekStartsOn: "Monday" },
@@ -53,7 +53,7 @@ export class OwnerContextService {
 
   readonly selectedBranch = computed(() => this.branches().find((branch) => branch.id === this.selectedBranchId()) || null);
   readonly branchLabel = computed(() => this.selectedBranch()?.name || "All Branches");
-  readonly workspaceName = computed(() => this.settings().workspace.workspaceName || "Aura");
+  readonly workspaceName = computed(() => this.settings().workspace.workspaceName || "Solastio");
   readonly allowBranchSwitch = computed(() => this.settings().branchBehavior.allowBranchSwitch);
   readonly compactMode = computed(() => this.settings().interface.compactMode);
   readonly showModuleBadges = computed(() => this.settings().interface.showModuleBadges);
@@ -107,7 +107,7 @@ export class OwnerContextService {
     this.settings.set(structuredClone(settings));
     this.settingsLoaded.set(true);
     document.documentElement.dataset["ownerCompactMode"] = settings.interface.compactMode ? "true" : "false";
-    document.title = `${settings.workspace.workspaceName || "Aura"} | Owner`;
+    document.title = `${settings.workspace.workspaceName || "Solastio"} | Owner`;
     if (!settings.branchBehavior.rememberLastBranch) this.writeStorage(this.storageKey("branch"), "");
   }
 

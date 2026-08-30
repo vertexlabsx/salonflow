@@ -4,10 +4,13 @@ import type { Express } from "express";
 import { createTestWorld, destroyTestWorld } from "./helpers/world";
 import { TENANT, BRANCH_ID, cleanupCollections, seedAuthFixtures, loginStaff, createUser, type StaffSession } from "./helpers/auth-fixtures";
 import { AppointmentModel } from "../src/models/appointment.model";
+import { CustomerModel } from "../src/models/customer.model";
+import { InvoiceModel } from "../src/models/invoice.model";
 import { businessDateIn, zonedDayRange } from "../src/shared/business-date";
 
 let app: Express;
 let staff: StaffSession;
+let clientviewer: StaffSession;
 let nobody: StaffSession;
 
 /**
@@ -107,6 +110,8 @@ beforeEach(async () => {
   await cleanupCollections();
   await seedAuthFixtures();
   staff = await loginStaff(app, "reception", "staff@123");
+  await createUser({ loginId: "clientviewer", name: "Client Desk", staffId: "staff_clientviewer", staffAppPermissions: ["read:appointments", "read:clients"] });
+  clientviewer = await loginStaff(app, "clientviewer", "secret@123");
   await createUser({ loginId: "norole", name: "No Perms", staffId: "staff_norole", staffAppPermissions: [] });
   nobody = await loginStaff(app, "norole", "secret@123");
 });
@@ -301,5 +306,122 @@ describe("GET /api/v1/staff-self/dashboard", () => {
 
     const response = await supertest(app).get("/api/v1/staff-self/dashboard").set("x-auth-token", staff.accessToken);
     expect(JSON.stringify(response.body.data.appointments)).not.toContain("Other Branch");
+  });
+});
+
+describe("GET /api/v1/staff-os/clients/:id", () => {
+  async function seedClientHistory(): Promise<{ customerId: string }> {
+    const customer = await CustomerModel.create({
+      salonId: TENANT,
+      branchId: BRANCH_ID,
+      name: "Client History Tester",
+      email: "history@solastio.test",
+      normalizedPhone: "919999111111",
+      tags: ["regular"],
+      notes: "Prefers mornings.",
+      source: "crm"
+    });
+    const startAt = appointmentTimes(600);
+    await AppointmentModel.create({
+      salonId: TENANT,
+      branchId: BRANCH_ID,
+      staffId: "staff_seed_reception",
+      customerId: String(customer._id),
+      serviceIds: ["svc_haircut", "svc_spa"],
+      serviceNames: ["Haircut", "Hair Spa"],
+      durationMinutes: 60,
+      value: 170_000,
+      ...startAt,
+      status: "completed",
+      chair: "Chair 1",
+      source: "crm"
+    });
+    await InvoiceModel.create({
+      salonId: TENANT,
+      branchId: BRANCH_ID,
+      customerId: String(customer._id),
+      invoiceNumber: `INV-H${Date.now()}`,
+      status: "issued",
+      paymentStatus: "partial",
+      currency: "INR",
+      lines: [{ description: "Haircut + Hair Spa", quantity: 1, unitAmountPaise: 170_000, taxRateBps: 1800, totalPaise: 200_600 }],
+      subtotalPaise: 170_000,
+      taxPaise: 30_600,
+      grandTotalPaise: 200_600,
+      paidAmountPaise: 100_000,
+      dueAmountPaise: 100_600,
+      issuedAt: new Date(),
+      voidReason: ""
+    });
+    return { customerId: String(customer._id) };
+  }
+
+  it("returns the client contract with appointments and purchases", async () => {
+    const { customerId } = await seedClientHistory();
+    const response = await supertest(app).get(`/api/v1/staff-os/clients/${customerId}`).set("x-auth-token", clientviewer.accessToken);
+
+    expect(response.status).toBe(200);
+    expect(response.body.success).toBe(true);
+    const data = response.body.data;
+
+    expect(data.client).toMatchObject({
+      id: customerId,
+      name: "Client History Tester",
+      phone: "919999111111",
+      email: "history@solastio.test",
+      branchId: BRANCH_ID,
+      branchName: "Main Branch",
+      tags: ["regular"],
+      notes: "Prefers mornings.",
+      visitCount: 1
+    });
+    expect(data.client.outstandingPaise).toBe(100_600);
+
+    expect(data.appointments).toHaveLength(1);
+    expect(data.appointments[0]).toMatchObject({
+      staffId: "staff_seed_reception",
+      staffName: "Front Desk Reception",
+      serviceIds: ["svc_haircut", "svc_spa"],
+      serviceNames: ["Haircut", "Hair Spa"],
+      status: "completed",
+      spendPaise: 170_000
+    });
+    expect(data.appointments[0].startAt).toBeTruthy();
+
+    expect(data.purchases).toHaveLength(1);
+    expect(data.purchases[0]).toMatchObject({
+      invoiceNumber: expect.stringMatching(/^INV-H/),
+      totalPaise: 200_600,
+      paidPaise: 100_000,
+      balancePaise: 100_600,
+      status: "partial"
+    });
+    expect(data.purchases[0].createdAt).toBeTruthy();
+  });
+
+  it("requires the read:clients permission", async () => {
+    const { customerId } = await seedClientHistory();
+    const response = await supertest(app).get(`/api/v1/staff-os/clients/${customerId}`).set("x-auth-token", nobody.accessToken);
+    expect(response.status).toBe(403);
+  });
+
+  it("rejects missing and malformed client ids", async () => {
+    const malformed = await supertest(app).get("/api/v1/staff-os/clients/not-an-id").set("x-auth-token", clientviewer.accessToken);
+    expect(malformed.status).toBe(404);
+
+    const missing = await supertest(app).get("/api/v1/staff-os/clients/507f1f77bcf86cd799439011").set("x-auth-token", clientviewer.accessToken);
+    expect(missing.status).toBe(404);
+  });
+
+  it("refuses clients outside the caller's branch access", async () => {
+    const customer = await CustomerModel.create({
+      salonId: TENANT,
+      branchId: "tenant_aura_otherbranch",
+      name: "Other Branch Client",
+      normalizedPhone: "919999222222",
+      source: "crm"
+    });
+    const response = await supertest(app).get(`/api/v1/staff-os/clients/${customer._id}`).set("x-auth-token", clientviewer.accessToken);
+    expect(response.status).toBe(403);
   });
 });

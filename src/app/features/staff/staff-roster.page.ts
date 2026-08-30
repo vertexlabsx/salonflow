@@ -7,7 +7,7 @@ import { StaffPageStateComponent } from "./staff-page-state.component";
   standalone: true,
   imports: [StaffPageStateComponent],
   template: `
-    <section class="page">
+    <section class="page roster-page">
       <header class="page-head">
         <div>
           <p class="eyebrow">Roster</p>

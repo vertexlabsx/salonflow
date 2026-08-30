@@ -2,7 +2,7 @@ import type { CapacitorConfig } from "@capacitor/cli";
 
 const config: CapacitorConfig = {
   appId: "com.aura.staff",
-  appName: "Aura Staff",
+  appName: "Solastio",
   webDir: "www/browser",
   server: {
     androidScheme: "https"

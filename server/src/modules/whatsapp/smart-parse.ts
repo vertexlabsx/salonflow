@@ -129,8 +129,8 @@ export function parseTimePreference(value: string): { time?: string; after?: num
 
   const betweenRange = /(?:^|\s)between\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\s+(?:and|-)\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)\b/.exec(lower);
   if (betweenRange) {
-    const hour1 = normalizeMeridiem(Number(betweenRange[1]), betweenRange[3] || "");
-    const hour2 = normalizeMeridiem(Number(betweenRange[4]), betweenRange[6] || "");
+    const hour1 = normalizeMeridiem(Number(betweenRange[1]), betweenRange[3] || betweenRange[6] || "");
+    const hour2 = normalizeMeridiem(Number(betweenRange[4]), betweenRange[6] || betweenRange[3] || "");
     const minute1 = Number(betweenRange[2] || "0");
     const minute2 = Number(betweenRange[5] || "0");
     if (hour1 >= 0 && hour1 < 24 && hour2 >= 0 && hour2 < 24 && minute1 < 60 && minute2 < 60 && hour2 > hour1) {

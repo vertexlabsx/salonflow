@@ -7,7 +7,7 @@ import { StaffPageStateComponent } from "./staff-page-state.component";
   standalone: true,
   imports: [DatePipe, StaffPageStateComponent],
   template: `
-    <section class="page">
+    <section class="page notifications-page">
       <header class="page-head"><div><p class="eyebrow">Notifications</p><h1>Notifications</h1><p>Staff alerts and connected system notices.</p></div></header>
       @if (!canReadNotifications()) { <section staffPageState class="notice">You do not have permission to view notifications.</section> }
       @if (loading()) { <section staffPageState class="state" [loading]="true">Loading notifications...</section> }

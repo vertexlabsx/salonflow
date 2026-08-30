@@ -56,7 +56,7 @@ if (isolatedWebDir && isolatedAssetsDir) {
         from(file(isolatedWebDir))
         into(file("${isolatedAssetsDir}/public"))
         doLast {
-            file("${isolatedAssetsDir}/capacitor.config.json").text = '{"appId":"com.aura.staff","appName":"Aura Staff","webDir":"www/browser","server":{"androidScheme":"https"},"plugins":{"PushNotifications":{"presentationOptions":["badge","sound","alert"]},"CapacitorHttp":{"enabled":true}}}'
+            file("${isolatedAssetsDir}/capacitor.config.json").text = '{"appId":"com.aura.staff","appName":"Solastio","webDir":"www/browser","server":{"androidScheme":"https"},"plugins":{"PushNotifications":{"presentationOptions":["badge","sound","alert"]},"CapacitorHttp":{"enabled":true}}}'
             file("${isolatedAssetsDir}/public/cordova.js").text = ''
             file("${isolatedAssetsDir}/public/cordova_plugins.js").text = ''
         }

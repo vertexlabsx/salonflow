@@ -51,7 +51,7 @@ async function main(): Promise<void> {
     COOKIE_SECURE: false,
     COOKIE_SAMESITE: "lax",
     SEED_SALON_ID: "tenant_aura",
-    SEED_SALON_NAME: "Aura Shine Salon & Wellness",
+    SEED_SALON_NAME: "Solastio Studio - Flagship",
     SALON_TIMEZONE: "Asia/Kolkata",
     SEED_OWNER_LOGIN: "owner",
     SEED_OWNER_PASSWORD: "owner@123",
@@ -78,6 +78,9 @@ async function main(): Promise<void> {
     RAZORPAY_WEBHOOK_SECRET: undefined,
     OPENAI_API_KEY: undefined,
     OPENAI_MODEL: "gpt-4o-mini",
+    WHATSAPP_CONCIERGE_ENABLED: false,
+    WHATSAPP_CONCIERGE_MAX_TURNS: 4,
+    WHATSAPP_CONCIERGE_MODEL: undefined,
     WEB_PUSH_PUBLIC_KEY: undefined,
     WEB_PUSH_PRIVATE_KEY: undefined,
     META_GRAPH_API_VERSION: "v21.0"

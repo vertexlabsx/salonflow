@@ -2,11 +2,11 @@
 
 ## Architecture
 
-SalonFlow uses one backend and one Meta webhook endpoint for all salons. Each salon owns its own WhatsApp Business Account/phone number connection.
+Solastio uses one backend and one Meta webhook endpoint for all salons. Each salon owns its own WhatsApp Business Account/phone number connection.
 
 ```text
 Owner Dashboard -> Settings/WhatsApp -> Embedded Signup -> Meta authorization
-  -> SalonFlow callback -> WhatsAppConnection(salonId, wabaId, phoneNumberId)
+  -> Solastio callback -> WhatsAppConnection(salonId, wabaId, phoneNumberId)
   -> Meta webhook -> phoneNumberId lookup -> salonId -> booking engine
   -> createAppointment() -> Staff/Owner apps see the same appointment
 ```

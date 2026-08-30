@@ -15,7 +15,7 @@ export const BRANCH_ID = `${TENANT}_main`;
 export async function seedAuthFixtures(): Promise<void> {
   await SalonModel.create({
     _id: TENANT,
-    name: "Aura Shine Salon & Wellness",
+    name: "Solastio Studio - Flagship",
     timezone: "Asia/Kolkata",
     currency: "INR",
     status: "active",

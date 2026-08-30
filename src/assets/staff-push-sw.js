@@ -1,7 +1,7 @@
 self.addEventListener("push", (event) => {
   let payload = {};
   try { payload = event.data ? event.data.json() : {}; } catch { payload = {}; }
-  event.waitUntil(self.registration.showNotification(payload.title || "Aura Staff", {
+  event.waitUntil(self.registration.showNotification(payload.title || "Solastio", {
     body: payload.body || "You have a new notification.",
     icon: payload.icon || "/assets/icons/icon.svg",
     badge: payload.badge || "/assets/icons/icon.svg",

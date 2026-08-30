@@ -8,7 +8,7 @@ import { StaffPermissionBadgesComponent } from "./staff-permission-badges.compon
   standalone: true,
   imports: [StaffPageStateComponent, StaffPermissionBadgesComponent],
   template: `
-    <section class="page">
+    <section class="page settings-page">
       <header class="page-head">
         <div>
           <p class="eyebrow">Settings</p>

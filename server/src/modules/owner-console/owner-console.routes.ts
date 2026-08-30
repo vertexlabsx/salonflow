@@ -38,6 +38,16 @@ function operationsPage(pageNumber: number, pageSize: number, total: number) {
   return { page: pageNumber, pageSize, total, totalPages, hasMore: pageNumber < totalPages };
 }
 
+function escapeRegex(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function iso(value: Date | string | null | undefined): string {
+  if (!value) return "";
+  const date = value instanceof Date ? value : new Date(value);
+  return Number.isNaN(date.getTime()) ? "" : date.toISOString();
+}
+
 function toBranchAdministration(branch: { _id: string; name: string; timezone: string; status: string; createdAt?: Date; updatedAt?: Date }) {
   return {
     id: branch._id,
@@ -62,7 +72,7 @@ function defaultSettings(branchId: string) {
   return {
     branchId,
     settings: {
-      workspace: { workspaceName: "Aura Salon", defaultLandingPage: "dashboard", fastPosEnabled: true },
+      workspace: { workspaceName: "Solastio Studio", defaultLandingPage: "dashboard", fastPosEnabled: true },
       localization: { country: "IN", language: "en", timezone, currency: "INR", locale: "en-IN" },
       branchBehavior: { rememberLastBranch: true, requireBranchSelection: false, allowBranchSwitch: true },
       dateTime: { dateFormat: "dd MMM yyyy", timeFormat: "12h", businessDayStartHour: 10, weekStartsOn: "monday" },
@@ -310,21 +320,100 @@ ownerConsoleRouter.post("/appointments/:id/status", requirePermissions(WRITE), a
 }));
 
 ownerConsoleRouter.get("/operations/clients", requirePermissions(READ), asyncHandler(async (req, res) => {
-  const query = z.object({ page: z.coerce.number().int().min(1).default(1), pageSize: z.coerce.number().int().min(1).max(100).default(25), search: z.string().optional(), branchId: z.string().default("all") }).parse(req.query);
+  const query = z.object({ page: z.coerce.number().int().min(1).default(1), pageSize: z.coerce.number().int().min(1).max(100).default(25), search: z.string().optional(), branchId: z.string().default("all"), relationship: z.string().optional(), outstanding: z.string().optional(), lastVisit: z.string().optional(), from: z.string().optional(), to: z.string().optional() }).parse(req.query);
   const filter: Record<string, unknown> = { salonId: req.context!.salonId };
   if (query.branchId !== "all") filter.branchId = query.branchId;
-  if (query.search) filter.$or = [{ name: new RegExp(query.search, "i") }, { normalizedPhone: new RegExp(query.search.replace(/\D/g, "")) }];
-  const [total, docs, branches] = await Promise.all([CustomerModel.countDocuments(filter), CustomerModel.find(filter).sort({ updatedAt: -1 }).skip((query.page - 1) * query.pageSize).limit(query.pageSize), BranchModel.find({ salonId: req.context!.salonId })]);
+  if (query.search) {
+    const search = escapeRegex(query.search.trim());
+    const phone = query.search.replace(/\D/g, "");
+    filter.$or = [{ name: new RegExp(search, "i") }, { email: new RegExp(search, "i") }, ...(phone ? [{ normalizedPhone: new RegExp(escapeRegex(phone)) }] : [])];
+  }
+  const [customers, branches, appointmentAgg, invoiceAgg] = await Promise.all([
+    CustomerModel.find(filter).sort({ updatedAt: -1 }).limit(1000),
+    BranchModel.find({ salonId: req.context!.salonId }),
+    AppointmentModel.aggregate<{ _id: string; visitCount: number; lastVisitAt: Date | null; totalAppointmentValuePaise: number; noShowCount: number; rescheduleCount: number }>([
+      { $match: { salonId: req.context!.salonId, customerId: { $ne: "" } } },
+      { $group: { _id: "$customerId", visitCount: { $sum: 1 }, lastVisitAt: { $max: "$startAt" }, totalAppointmentValuePaise: { $sum: "$value" }, noShowCount: { $sum: { $cond: [{ $eq: ["$status", "no_show"] }, 1, 0] } }, rescheduleCount: { $sum: { $cond: [{ $eq: ["$status", "rescheduled"] }, 1, 0] } } } }
+    ]),
+    InvoiceModel.aggregate<{ _id: string; totalSpendPaise: number; outstandingPaise: number; purchaseCount: number }>([
+      { $match: { salonId: req.context!.salonId, customerId: { $ne: "" }, status: { $ne: "void" } } },
+      { $group: { _id: "$customerId", totalSpendPaise: { $sum: "$grandTotalPaise" }, outstandingPaise: { $sum: "$dueAmountPaise" }, purchaseCount: { $sum: 1 } } }
+    ])
+  ]);
   const branchNames = new Map(branches.map((b) => [b._id, b.name]));
-  ok(res, { items: docs.map((c) => ({ id: String(c._id), name: c.name || c.normalizedPhone, phone: c.normalizedPhone, email: "", branchId: c.branchId, branchName: branchNames.get(c.branchId) || c.branchId, status: c.interactionStatus, visitCount: 0, totalSpendPaise: 0, lastVisitAt: c.updatedAt?.toISOString() || "", walletBalancePaise: 0, loyaltyPoints: 0, membershipId: "", outstandingPaise: 0, createdAt: c.createdAt?.toISOString() || "", updatedAt: c.updatedAt?.toISOString() || "" })), page: operationsPage(query.page, query.pageSize, total), metadata: { timezone, partial: false, unavailableSources: [] } });
+  const appointmentsByClient = new Map(appointmentAgg.map((row) => [row._id, row]));
+  const invoicesByClient = new Map(invoiceAgg.map((row) => [row._id, row]));
+  const from = query.from ? new Date(query.from) : null;
+  const to = query.to ? new Date(query.to) : null;
+  const rows = customers.map((c) => {
+    const id = String(c._id);
+    const appts = appointmentsByClient.get(id);
+    const invoices = invoicesByClient.get(id);
+    const visitCount = appts?.visitCount || c.visitCount || 0;
+    const lastVisitAt = appts?.lastVisitAt || c.lastBookedAt || null;
+    return { id, name: c.name || c.normalizedPhone, phone: c.normalizedPhone, email: c.email || "", branchId: c.branchId, branchName: branchNames.get(c.branchId) || c.branchId, status: c.interactionStatus, visitCount, totalSpendPaise: invoices?.totalSpendPaise || appts?.totalAppointmentValuePaise || 0, lastVisitAt: iso(lastVisitAt), walletBalancePaise: c.walletBalancePaise || 0, loyaltyPoints: c.loyaltyPoints || 0, membershipId: c.membershipId || "", membershipPlanName: c.membershipPlanName || "", packageName: c.packageName || "", subscriptionName: c.subscriptionName || "", outstandingPaise: invoices?.outstandingPaise || 0, createdAt: iso(c.createdAt), updatedAt: iso(c.updatedAt) };
+  }).filter((row) => {
+    if (query.relationship === "new" && row.visitCount > 1) return false;
+    if (query.relationship === "returning" && row.visitCount < 2) return false;
+    if (query.outstanding === "yes" && row.outstandingPaise <= 0) return false;
+    if (query.lastVisit === "never" && row.lastVisitAt) return false;
+    if (query.lastVisit === "range") {
+      if (!row.lastVisitAt || !from || !to) return false;
+      const last = new Date(row.lastVisitAt);
+      if (last < from || last > to) return false;
+    }
+    return true;
+  });
+  const total = rows.length;
+  const pageRows = rows.slice((query.page - 1) * query.pageSize, query.page * query.pageSize);
+  ok(res, { items: pageRows, page: operationsPage(query.page, query.pageSize, total), metadata: { timezone, partial: false, unavailableSources: [] } });
 }));
 
 ownerConsoleRouter.get("/operations/clients/:id", requirePermissions(READ), asyncHandler(async (req, res) => {
+  if (!Types.ObjectId.isValid(req.params.id)) throw ApiError.notFound("Client not found.");
   const c = await CustomerModel.findOne({ _id: req.params.id, salonId: req.context!.salonId });
   if (!c) throw ApiError.notFound("Client not found.");
-  const appointments = await AppointmentModel.find({ salonId: req.context!.salonId, customerId: String(c._id) }).sort({ startAt: -1 }).limit(25);
-  const client = { id: String(c._id), name: c.name || c.normalizedPhone, phone: c.normalizedPhone, email: "", branchId: c.branchId, branchName: c.branchId, status: c.interactionStatus, visitCount: appointments.length, totalSpendPaise: appointments.reduce((sum, a) => sum + a.value, 0), lastVisitAt: appointments[0]?.startAt.toISOString() || "", walletBalancePaise: 0, loyaltyPoints: 0, membershipId: "", outstandingPaise: 0, createdAt: c.createdAt?.toISOString() || "", updatedAt: c.updatedAt?.toISOString() || "", gender: "", birthday: "", anniversary: "", tags: [], notes: "" };
-  ok(res, { client, appointments: appointments.map((a) => ({ id: String(a._id), branchId: a.branchId, branchName: a.branchId, startAt: a.startAt.toISOString(), endAt: a.endAt.toISOString(), status: a.status, serviceIds: a.serviceIds, notes: a.serviceNames.join(", "), createdAt: a.createdAt?.toISOString() || "" })), purchases: [], membership: null, metadata: { timezone, partial: false, unavailableSources: [], branchRelationship: [c.branchId] } });
+  const branchFilter = String(req.query.branchId || "all");
+  const scoped = branchFilter !== "all" ? { branchId: branchFilter } : {};
+  const [appointments, invoices, branches] = await Promise.all([
+    AppointmentModel.find({ salonId: req.context!.salonId, customerId: String(c._id), ...scoped }).sort({ startAt: -1 }).limit(200),
+    InvoiceModel.find({ salonId: req.context!.salonId, customerId: String(c._id), status: { $ne: "void" }, ...scoped }).sort({ createdAt: -1 }).limit(200),
+    BranchModel.find({ salonId: req.context!.salonId })
+  ]);
+  const branchNames = new Map(branches.map((b) => [b._id, b.name]));
+  const staffIds = [...new Set(appointments.map((a) => a.staffId).filter(Boolean))];
+  const staff = await UserModel.find({ salonId: req.context!.salonId, staffId: { $in: staffIds } });
+  const staffNames = new Map(staff.map((u) => [u.staffId || String(u._id), u.name]));
+  const totalSpendPaise = invoices.reduce((sum, i) => sum + i.grandTotalPaise, 0) || appointments.reduce((sum, a) => sum + a.value, 0);
+  const outstandingPaise = invoices.reduce((sum, i) => sum + i.dueAmountPaise, 0);
+  const client = { id: String(c._id), name: c.name || c.normalizedPhone, phone: c.normalizedPhone, email: c.email || "", branchId: c.branchId, branchName: branchNames.get(c.branchId) || c.branchId, status: c.interactionStatus, visitCount: appointments.length || c.visitCount || 0, totalSpendPaise, lastVisitAt: iso(appointments[0]?.startAt || c.lastBookedAt), walletBalancePaise: c.walletBalancePaise || 0, loyaltyPoints: c.loyaltyPoints || 0, membershipId: c.membershipId || "", membershipPlanName: c.membershipPlanName || "", packageName: c.packageName || "", packageCreditsRemaining: c.packageCreditsRemaining || 0, subscriptionName: c.subscriptionName || "", subscriptionStatus: c.subscriptionStatus || "", outstandingPaise, createdAt: iso(c.createdAt), updatedAt: iso(c.updatedAt), gender: c.gender || "", birthday: c.birthday || "", anniversary: c.anniversary || "", tags: c.tags || [], notes: c.notes || "", address: c.address || "" };
+  ok(res, {
+    client,
+    appointments: appointments.map((a) => ({ id: String(a._id), branchId: a.branchId, branchName: branchNames.get(a.branchId) || a.branchId, startAt: iso(a.startAt), endAt: iso(a.endAt), status: a.status, serviceIds: a.serviceIds, notes: a.serviceNames.join(", "), staffId: a.staffId, staffName: staffNames.get(a.staffId) || a.staffId, spendPaise: a.value, createdAt: iso(a.createdAt) })),
+    purchases: invoices.map((i) => ({ id: String(i._id), branchId: i.branchId, branchName: branchNames.get(i.branchId) || i.branchId, items: i.lines, totalPaise: i.grandTotalPaise, paidPaise: i.paidAmountPaise, balancePaise: i.dueAmountPaise, status: i.paymentStatus, createdAt: iso(i.createdAt), invoiceId: String(i._id), invoiceNumber: i.invoiceNumber })),
+    membership: c.membershipPlanName ? { id: c.membershipId || String(c._id), planName: c.membershipPlanName, planCredits: c.membershipCredits || 0, creditsRemaining: c.membershipCreditsRemaining || 0, validityDate: c.membershipValidUntil || "", status: c.membershipStatus || "active", branchId: c.branchId } : null,
+    metadata: { timezone, partial: false, unavailableSources: [], branchRelationship: [...new Set([c.branchId, ...appointments.map((a) => a.branchId), ...invoices.map((i) => i.branchId)])] }
+  });
+}));
+
+ownerConsoleRouter.post("/operations/clients", requirePermissions(WRITE), asyncHandler(async (req, res) => {
+  const benefitSchema = { walletBalancePaise: z.coerce.number().int().min(0).optional(), loyaltyPoints: z.coerce.number().int().min(0).optional(), membershipPlanName: z.string().trim().max(120).optional(), membershipCredits: z.coerce.number().int().min(0).optional(), membershipCreditsRemaining: z.coerce.number().int().min(0).optional(), membershipValidUntil: z.string().trim().max(10).optional(), membershipStatus: z.string().trim().max(40).optional(), packageName: z.string().trim().max(120).optional(), packageCreditsRemaining: z.coerce.number().int().min(0).optional(), subscriptionName: z.string().trim().max(120).optional(), subscriptionStatus: z.string().trim().max(40).optional() };
+  const body = z.object({ branchId: z.string().min(1), name: z.string().trim().min(1).max(160), phone: z.string().trim().min(5), email: z.string().trim().email().or(z.literal("")).optional(), gender: z.string().trim().max(40).optional(), birthday: z.string().trim().max(10).optional(), anniversary: z.string().trim().max(10).optional(), tags: z.array(z.string().trim().max(40)).max(30).optional(), notes: z.string().trim().max(2000).optional(), address: z.string().trim().max(500).optional(), ...benefitSchema }).parse(req.body ?? {});
+  const normalizedPhone = body.phone.replace(/\D/g, "");
+  const customer = await CustomerModel.findOneAndUpdate({ salonId: req.context!.salonId, normalizedPhone }, { $setOnInsert: { source: "owner" }, $set: { branchId: body.branchId, name: body.name, email: body.email || "", gender: body.gender || "", birthday: body.birthday || "", anniversary: body.anniversary || "", tags: body.tags || [], notes: body.notes || "", address: body.address || "", walletBalancePaise: body.walletBalancePaise || 0, loyaltyPoints: body.loyaltyPoints || 0, membershipPlanName: body.membershipPlanName || "", membershipCredits: body.membershipCredits || 0, membershipCreditsRemaining: body.membershipCreditsRemaining || 0, membershipValidUntil: body.membershipValidUntil || "", membershipStatus: body.membershipStatus || "", packageName: body.packageName || "", packageCreditsRemaining: body.packageCreditsRemaining || 0, subscriptionName: body.subscriptionName || "", subscriptionStatus: body.subscriptionStatus || "", interactionStatus: "active" } }, { upsert: true, new: true });
+  await audit(req, "client.create", "customer", String(customer._id), { branchId: body.branchId });
+  ok(res, { id: String(customer._id) }, 201);
+}));
+
+ownerConsoleRouter.patch("/operations/clients/:id", requirePermissions(WRITE), asyncHandler(async (req, res) => {
+  if (!Types.ObjectId.isValid(req.params.id)) throw ApiError.notFound("Client not found.");
+  const benefitSchema = { walletBalancePaise: z.coerce.number().int().min(0).optional(), loyaltyPoints: z.coerce.number().int().min(0).optional(), membershipPlanName: z.string().trim().max(120).optional(), membershipCredits: z.coerce.number().int().min(0).optional(), membershipCreditsRemaining: z.coerce.number().int().min(0).optional(), membershipValidUntil: z.string().trim().max(10).optional(), membershipStatus: z.string().trim().max(40).optional(), packageName: z.string().trim().max(120).optional(), packageCreditsRemaining: z.coerce.number().int().min(0).optional(), subscriptionName: z.string().trim().max(120).optional(), subscriptionStatus: z.string().trim().max(40).optional() };
+  const body = z.object({ name: z.string().trim().min(1).max(160).optional(), email: z.string().trim().email().or(z.literal("")).optional(), gender: z.string().trim().max(40).optional(), birthday: z.string().trim().max(10).optional(), anniversary: z.string().trim().max(10).optional(), tags: z.array(z.string().trim().max(40)).max(30).optional(), notes: z.string().trim().max(2000).optional(), address: z.string().trim().max(500).optional(), ...benefitSchema }).parse(req.body ?? {});
+  const update = Object.fromEntries(Object.entries(body).filter(([, value]) => value !== undefined));
+  const c = await CustomerModel.findOneAndUpdate({ _id: req.params.id, salonId: req.context!.salonId }, { $set: update }, { new: true });
+  if (!c) throw ApiError.notFound("Client not found.");
+  await audit(req, "client.update", "customer", String(c._id), { fields: Object.keys(update) });
+  ok(res, { id: String(c._id), updatedAt: iso(c.updatedAt) });
 }));
 
 ownerConsoleRouter.patch("/operations/clients/:id/opt-out", requirePermissions(WRITE), asyncHandler(async (req, res) => {
@@ -576,8 +665,12 @@ ownerConsoleRouter.patch("/administration/branches/:id/status", requirePermissio
 
 async function accessResponse(salonId: string) {
   const [branches, users] = await Promise.all([BranchModel.find({ salonId }).sort({ name: 1 }), UserModel.find({ salonId }).sort({ name: 1 })]);
-  const permissionGroups = [{ key: "appointments", label: "Appointments", items: ["read:appointments", "create:appointments", "update:appointments"].map((key) => ({ key, label: key, resource: "appointments", action: key.split(":")[0], sensitive: false })) }];
-  const roles = ["owner", "admin", "receptionist", "stylist"].map((role) => ({ role, name: role[0]!.toUpperCase() + role.slice(1), description: "Default access role", isSystem: true, status: "active", permissionKeys: ["read:appointments", "create:appointments", "update:appointments"], editable: role !== "owner", configuredKeys: [], inheritedKeys: [], effectiveKeys: ["read:appointments", "create:appointments", "update:appointments"], allowKeys: [], denyKeys: [], policyMode: "inherited" as const, policySource: "default", editablePolicy: role !== "owner", kind: "system" as const, assignedUserCount: users.filter((u) => u.role === role).length, activeAssignedUserCount: users.filter((u) => u.role === role && u.status === "active").length }));
+  const defaultPermissions = ["read:appointments", "create:appointments", "update:appointments", "read:clients"];
+  const permissionGroups = [
+    { key: "appointments", label: "Appointments", items: ["read:appointments", "create:appointments", "update:appointments"].map((key) => ({ key, label: key, resource: "appointments", action: key.split(":")[0], sensitive: false })) },
+    { key: "clients", label: "Clients", items: ["read:clients"].map((key) => ({ key, label: key, resource: "clients", action: key.split(":")[0], sensitive: true })) }
+  ];
+  const roles = ["owner", "admin", "receptionist", "stylist"].map((role) => ({ role, name: role[0]!.toUpperCase() + role.slice(1), description: "Default access role", isSystem: true, status: "active", permissionKeys: defaultPermissions, editable: role !== "owner", configuredKeys: [], inheritedKeys: [], effectiveKeys: defaultPermissions, allowKeys: [], denyKeys: [], policyMode: "inherited" as const, policySource: "default", editablePolicy: role !== "owner", kind: "system" as const, assignedUserCount: users.filter((u) => u.role === role).length, activeAssignedUserCount: users.filter((u) => u.role === role && u.status === "active").length }));
   return { branches: branches.map(toBranchAdministration), roles, users: users.map((u) => ({ id: String(u._id), name: u.name, loginId: u.loginId, email: u.email || "", role: u.role, branchIds: u.branchIds.length ? u.branchIds : [u.branchId], status: u.status, isLocked: false, permissionVersion: 1, lastLoginAt: "", activeSessions: 0, staffId: u.staffId })), permissionGroups, capabilities: { createRole: true, editCustomRole: true, editBuiltinStaffAppPolicy: false, restoreRoleDefaults: true, duplicateRole: true, setCustomRoleStatus: true, createUser: true, updateUser: true, disableUser: true }, safeguards: { lastActiveOwner: true, ownerEssentialAccess: true, assignmentsLimitedToOwnerBranches: true, permissionVersionInvalidation: true } };
 }
 
@@ -592,7 +685,7 @@ ownerConsoleRouter.post("/administration/users", requirePermissions(WRITE), asyn
   const body = userWriteSchema.parse(req.body ?? {});
   const loginIdNormalized = body.loginId.trim().toLowerCase();
   const passwordHash = await bcrypt.hash(body.password || `Temp-${Date.now()}-${loginIdNormalized}`, 12);
-  const user = await UserModel.create({ salonId: req.context!.salonId, loginId: body.loginId, loginIdNormalized, email: body.email || undefined, name: body.name, passwordHash, role: body.role, roleDisplayName: body.role, staffId: body.role === "owner" ? undefined : `${loginIdNormalized}_staff`, branchId: body.branchIds[0], branchIds: body.branchIds, staffAppPermissions: ["read:appointments", "create:appointments", "update:appointments"], crmPermissions: ["read:appointments", "create:appointments", "update:appointments"], status: body.status, totpEnabled: false, webauthnCredentials: [], refreshTokens: [] });
+  const user = await UserModel.create({ salonId: req.context!.salonId, loginId: body.loginId, loginIdNormalized, email: body.email || undefined, name: body.name, passwordHash, role: body.role, roleDisplayName: body.role, staffId: body.role === "owner" ? undefined : `${loginIdNormalized}_staff`, branchId: body.branchIds[0], branchIds: body.branchIds, staffAppPermissions: ["read:appointments", "create:appointments", "update:appointments", "read:clients"], crmPermissions: ["read:appointments", "create:appointments", "update:appointments", "read:clients"], status: body.status, totpEnabled: false, webauthnCredentials: [], refreshTokens: [] });
   await audit(req, "user.create", "user", String(user._id), { role: body.role });
   ok(res, { user: userDto(user), access: await accessResponse(req.context!.salonId) }, 201);
 }));

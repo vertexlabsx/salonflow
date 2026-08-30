@@ -1,7 +1,7 @@
 import { defineConfig, devices } from "@playwright/test";
 
 /**
- * Aura Staff App — Playwright E2E & Mobile Viewport Test Suite
+ * Solastio — Playwright E2E & Mobile Viewport Test Suite
  *
  * Tests responsive layout, touch targets, console errors, network resilience,
  * screenshot regression, and orientation behavior across 10 device profiles.

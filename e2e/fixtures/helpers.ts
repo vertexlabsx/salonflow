@@ -1,5 +1,5 @@
 /**
- * Shared test utilities for the Aura Staff App E2E suite.
+ * Shared test utilities for the Solastio E2E suite.
  *
  * Pure functions — no Playwright imports except Page type.
  * Used by every spec file.

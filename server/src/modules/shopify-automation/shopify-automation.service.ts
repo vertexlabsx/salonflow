@@ -80,7 +80,7 @@ export async function overview(salonId: string) {
     WhatsAppOutboundModel.countDocuments({ salonId, status: "failed" }),
     ShopifyEventModel.find({ salonId }).sort({ createdAt: -1 }).limit(8).lean()
   ]);
-  return { store: store ? { shop: store.shop, storeName: store.storeName, status: store.status, lastSyncAt: store.lastSyncAt, connectedAt: store.connectedAt } : null, whatsapp: { status: "uses SalonFlow WhatsApp", sentToday, delivered, read, failed }, metrics: { activeFlows: flows.filter((f) => f.status === "active").length, abandonedCarts: recentEvents.filter((e) => e.topic.startsWith("checkouts/")).length, recoveredCarts: 0, ordersProcessed: recentEvents.filter((e) => e.topic.startsWith("orders/")).length, marketingMessagesSent: sentToday }, recentActivity: recentEvents.map((e) => ({ time: e.createdAt, title: e.topic, detail: `Shopify event ${e.externalEventId}` })) };
+  return { store: store ? { shop: store.shop, storeName: store.storeName, status: store.status, lastSyncAt: store.lastSyncAt, connectedAt: store.connectedAt } : null, whatsapp: { status: "uses Solastio WhatsApp", sentToday, delivered, read, failed }, metrics: { activeFlows: flows.filter((f) => f.status === "active").length, abandonedCarts: recentEvents.filter((e) => e.topic.startsWith("checkouts/")).length, recoveredCarts: 0, ordersProcessed: recentEvents.filter((e) => e.topic.startsWith("orders/")).length, marketingMessagesSent: sentToday }, recentActivity: recentEvents.map((e) => ({ time: e.createdAt, title: e.topic, detail: `Shopify event ${e.externalEventId}` })) };
 }
 
 export async function exchangeShopifyCode(salonId: string, userId: string, shopInput: string, code: string) {

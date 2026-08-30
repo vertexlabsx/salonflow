@@ -35,7 +35,7 @@ export async function upsertMetaConnection(input: {
   webhookSubscribed: boolean;
 }) {
   const existingOtherSalon = await WhatsAppConnectionModel.findOne({ phoneNumberId: input.phoneNumberId, salonId: { $ne: input.salonId } });
-  if (existingOtherSalon) throw ApiError.conflict("This WhatsApp phone number is already connected to another SalonFlow workspace.");
+  if (existingOtherSalon) throw ApiError.conflict("This WhatsApp phone number is already connected to another Solastio workspace.");
   const doc = await WhatsAppConnectionModel.findOneAndUpdate(
     { salonId: input.salonId, phoneNumberId: input.phoneNumberId },
     {

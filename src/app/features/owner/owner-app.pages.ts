@@ -59,9 +59,9 @@ const PAGE_CONFIG: Record<OwnerModule, OwnerPageConfig> = {
   template: `
     <main class="owner-login">
       <section class="owner-login-story" aria-labelledby="owner-login-heading">
-        <a class="owner-mark" href="/owner/login" aria-label="Aura Owner home"><span>A</span><strong>Aura</strong></a>
+        <a class="owner-mark" href="/owner/login" aria-label="Solastio Owner home"><span>S</span><strong>Solastio</strong></a>
         <div><p class="owner-kicker">Private owner workspace</p><h1 id="owner-login-heading">See the whole business.<br><em>Act on what matters.</em></h1><p>Owner-only access to existing operational, people, financial and governance intelligence.</p></div>
-        <small>Protected by Aura role controls</small>
+        <small>Protected by Solastio role controls</small>
       </section>
       <section class="owner-login-panel">
         <form (ngSubmit)="login()" aria-label="Owner sign in">
@@ -100,7 +100,7 @@ export class OwnerLoginPage implements OnInit {
   template: `
     <section class="owner-shell" [class.owner-compact]="context.compactMode()">
       <aside class="owner-sidebar owner-desktop-sidebar" [class.is-collapsed]="sidebarCollapsed()" [attr.inert]="overlay() ? '' : null" aria-label="Owner navigation">
-        <div class="owner-brand"><span>A</span><div><strong>{{ context.workspaceName() }}</strong><small>Owner office</small></div></div>
+        <div class="owner-brand"><span>S</span><div><strong>{{ context.workspaceName() }}</strong><small>Owner office</small></div></div>
         <button class="owner-collapse" type="button" (click)="toggleSidebar()" [attr.aria-label]="sidebarCollapsed() ? 'Expand owner sidebar' : 'Collapse owner sidebar'" [attr.aria-expanded]="!sidebarCollapsed()"></button>
         <nav aria-label="Owner sections">
           @for (group of navGroups(); track group) {
@@ -443,7 +443,7 @@ export class OwnerWorkspacePage implements OnInit, OnDestroy {
       this.context.markSuccessfulRefresh();
       if (failures.length) this.partialMessage.set(`${failures.join(", ")} ${failures.length === 1 ? "is" : "are"} temporarily unavailable. Available owner data remains visible.`);
     } else {
-      this.data.set({}); this.blockingError.set("Aura could not load this owner workspace. Check the connection and try again.");
+      this.data.set({}); this.blockingError.set("Solastio could not load this owner workspace. Check the connection and try again.");
     }
     this.loading.set(false);
   }
@@ -472,8 +472,8 @@ export class OwnerWorkspacePage implements OnInit, OnDestroy {
 
   rowKey(row: OwnerRecord, index: number): string { return String(row["id"] || row["userId"] || row["staffId"] || index); }
   rowInitial(row: OwnerRecord): string { return this.rowTitle(row).trim().charAt(0).toUpperCase() || "A"; }
-  rowTitle(row: OwnerRecord): string { return String(row["title"] || row["name"] || row["staffName"] || row["fullName"] || row["clientName"] || row["invoiceNumber"] || row["conversationTitle"] || row["email"] || row["mobile"] || row["id"] || "Aura record"); }
-  rowDescription(row: OwnerRecord): string { return String(row["description"] || row["reason"] || row["message"] || row["serviceName"] || (Array.isArray(row["serviceNames"]) ? row["serviceNames"].join(", ") : "") || row["department"] || row["designation"] || row["role"] || row["type"] || row["channel"] || "Saved Aura record"); }
+  rowTitle(row: OwnerRecord): string { return String(row["title"] || row["name"] || row["staffName"] || row["fullName"] || row["clientName"] || row["invoiceNumber"] || row["conversationTitle"] || row["email"] || row["mobile"] || row["id"] || "Solastio record"); }
+  rowDescription(row: OwnerRecord): string { return String(row["description"] || row["reason"] || row["message"] || row["serviceName"] || (Array.isArray(row["serviceNames"]) ? row["serviceNames"].join(", ") : "") || row["department"] || row["designation"] || row["role"] || row["type"] || row["channel"] || "Saved Solastio record"); }
   rowMeta(row: OwnerRecord): string { const date = row["createdAt"] || row["updatedAt"] || row["businessDate"] || row["periodEnd"]; const branch = row["branchName"] || row["branchId"]; return [branch, date ? this.shortDate(date) : ""].filter(Boolean).join(" · ") || "Current tenant scope"; }
   rowStatus(row: OwnerRecord): string { return String(row["status"] || row["severity"] || row["riskLevel"] || row["role"] || "recorded").replaceAll("_", " "); }
   statusTone(row: OwnerRecord): string { const status = this.rowStatus(row).toLowerCase(); return /critical|high|denied|failed|locked|overdue/.test(status) ? "danger" : /pending|warning|review|open/.test(status) ? "warning" : "neutral"; }

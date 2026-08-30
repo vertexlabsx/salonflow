@@ -1,28 +1,28 @@
 :host {
-  --owner-bg: #f8fafc;
+  --owner-bg: #fbf7f9;
   --owner-panel: #ffffff;
-  --owner-panel-2: #f1f5f9;
+  --owner-panel-2: #f7eef3;
   --owner-panel-raised: #ffffff;
   --owner-line: #e2e8f0;
   --owner-line-strong: #cbd5e1;
-  --owner-text: #0f172a;
-  --owner-muted: #64748b;
-  --owner-faint: #94a3b8;
-  --owner-accent: #059669;
-  --owner-accent-strong: #047857;
-  --owner-accent-soft: #ecfdf5;
+  --owner-text: #2a1433;
+  --owner-muted: #7b647f;
+  --owner-faint: #a691aa;
+  --owner-accent: #7b2f62;
+  --owner-accent-strong: #4d1f48;
+  --owner-accent-soft: #f8e8ee;
   --owner-danger: #ef4444;
   --owner-warning: #d97706;
-  --owner-success: #10b981;
-  --owner-focus: rgba(16, 185, 129, 0.35);
-  --owner-shadow: 0 12px 32px rgba(15, 23, 42, 0.06);
-  --owner-shadow-high: 0 24px 64px rgba(15, 23, 42, 0.14);
+  --owner-success: #7b2f62;
+  --owner-focus: rgba(232, 180, 160, 0.42);
+  --owner-shadow: 0 16px 38px rgba(42, 20, 51, 0.08);
+  --owner-shadow-high: 0 28px 76px rgba(42, 20, 51, 0.2);
   --owner-radius: 16px;
   color: var(--owner-text);
   background: var(--owner-bg);
   font-family: Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
 }
-:host-context(html[data-owner-theme="dark"]){--owner-bg:#0b0f17;--owner-panel:#111827;--owner-panel-2:#1f2937;--owner-panel-raised:#1f2937;--owner-line:#1f2937;--owner-line-strong:#374151;--owner-text:#f9fafb;--owner-muted:#9ca3af;--owner-faint:#6b7280;--owner-accent:#10b981;--owner-accent-strong:#34d399;--owner-accent-soft:rgba(16,185,129,0.14);--owner-danger:#f87171;--owner-warning:#fbbf24;--owner-success:#34d399;--owner-focus:rgba(52,211,153,.45);--owner-shadow:0 16px 48px rgba(0,0,0,.4);--owner-shadow-high:0 32px 96px rgba(0,0,0,.6)}
+:host-context(html[data-owner-theme="dark"]){--owner-bg:#140b18;--owner-panel:#211127;--owner-panel-2:#2a1433;--owner-panel-raised:#32193d;--owner-line:#3b2345;--owner-line-strong:#53315d;--owner-text:#fff7fb;--owner-muted:#c9afc9;--owner-faint:#9e839f;--owner-accent:#e8b4a0;--owner-accent-strong:#ffd4c4;--owner-accent-soft:rgba(232,180,160,.14);--owner-danger:#fb7185;--owner-warning:#f6bf82;--owner-success:#e8b4a0;--owner-focus:rgba(232,180,160,.45);--owner-shadow:0 16px 48px rgba(0,0,0,.42);--owner-shadow-high:0 32px 96px rgba(0,0,0,.62)}
 :host :focus-visible{outline:3px solid var(--owner-focus);outline-offset:2px}:host button,:host a,:host input,:host select,:host textarea{font:inherit}:host button{cursor:pointer}:host button:disabled{cursor:not-allowed}
 .owner-shell{display:grid;grid-template-columns:264px minmax(0,1fr);min-width:0;min-height:100dvh;overflow:clip;background:var(--owner-bg);color:var(--owner-text)}.owner-shell:has(.owner-sidebar.is-collapsed){grid-template-columns:76px minmax(0,1fr)}.owner-main{min-width:0;height:100dvh;overflow:auto;background:var(--owner-bg)}
 .owner-shell.owner-compact .owner-desktop-sidebar{padding-top:12px}.owner-shell.owner-compact .owner-sidebar nav{margin-top:8px}.owner-shell.owner-compact .owner-sidebar nav>p{margin-top:9px}.owner-shell.owner-compact .owner-sidebar nav a,.owner-shell.owner-compact .owner-nav-unavailable{min-height:36px}.owner-shell.owner-compact .owner-topbar{min-height:64px}.owner-shell.owner-compact .owner-content{padding-block:20px}

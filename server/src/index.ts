@@ -47,7 +47,7 @@ async function main(): Promise<void> {
   server.keepAliveTimeout = 65_000;
 
   server.listen(env.PORT, "0.0.0.0", () => {
-    logger.info(`Aura Staff server listening on port ${env.PORT}`, { env: env.NODE_ENV });
+    logger.info(`Solastio server listening on port ${env.PORT}`, { env: env.NODE_ENV });
   });
   const shopifyAutomationTimer = startShopifyAutomationScheduler();
   const reminderSchedulerTimer = startWhatsAppReminderScheduler();

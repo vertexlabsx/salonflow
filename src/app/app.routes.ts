@@ -84,6 +84,7 @@ export const routes: Routes = [
       { path: "appointments", canActivate: [staffPermissionGuard], data: { permissions: "read:appointments" }, loadComponent: () => import("./features/staff/staff-appointments.page").then((m) => m.StaffAppointmentsPage) },
       { path: "business", canActivate: [staffPermissionGuard], data: { permissions: "read:appointments" }, loadComponent: () => import("./features/staff/staff-business.page").then((m) => m.StaffBusinessPage) },
       { path: "queue", canActivate: [staffPermissionGuard], data: { permissions: "read:appointments" }, loadComponent: () => import("./features/staff/staff-queue.page").then((m) => m.StaffQueuePage) },
+      { path: "clients", canActivate: [staffPermissionGuard], data: { permissions: "read:clients" }, loadComponent: () => import("./features/staff/staff-clients.page").then((m) => m.StaffClientsPage) },
       { path: "tasks", canActivate: [staffPermissionGuard], data: { permissions: "read:staff" }, loadComponent: () => import("./features/staff/staff-tasks.page").then((m) => m.StaffTasksPage) },
       { path: "attendance", canActivate: [staffPermissionGuard], data: { anyPermissions: ["allow:staff-checkin-checkout", "read:staff", "write:staff"] }, loadComponent: () => import("./features/staff/staff-attendance.page").then((m) => m.StaffAttendancePage) },
       { path: "roster", loadComponent: () => import("./features/staff/staff-roster.page").then((m) => m.StaffRosterPage) },

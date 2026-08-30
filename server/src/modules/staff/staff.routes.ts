@@ -1,5 +1,6 @@
 import { Router } from "express";
 import { z } from "zod";
+import { Types } from "mongoose";
 import { ApiError, asyncHandler, ok } from "../../shared/http";
 import { requireAuth } from "../../middleware/auth.middleware";
 import { requirePermissions } from "../../middleware/rbac";
@@ -33,8 +34,14 @@ import {
   workspacePreferences
 } from "./staff-self.service";
 import { enterpriseOs } from "./enterprise-os.service";
+import { CustomerModel } from "../../models/customer.model";
+import { AppointmentModel } from "../../models/appointment.model";
+import { InvoiceModel } from "../../models/invoice.model";
+import { BranchModel } from "../../models/branch.model";
+import { UserModel } from "../../models/user.model";
 
 const READ_PERMISSION = "read:appointments";
+const READ_CLIENTS_PERMISSION = "read:clients";
 const CHECKIN_PERMISSION = "allow:staff-checkin-checkout";
 
 const leaveSchema = z.object({
@@ -51,6 +58,39 @@ const taskPatchSchema = z.object({
 
 export const staffOsRouter = Router();
 staffOsRouter.use(requireAuth);
+
+staffOsRouter.get(
+  "/clients/:id",
+  requirePermissions(READ_CLIENTS_PERMISSION),
+  asyncHandler(async (req, res) => {
+    const id = z.string().trim().min(1).parse(req.params.id);
+    if (!Types.ObjectId.isValid(id)) throw ApiError.notFound("Client not found.");
+    const customer = await CustomerModel.findOne({ _id: id, salonId: req.context!.salonId });
+    if (!customer) throw ApiError.notFound("Client not found.");
+    const allowedBranches = new Set(req.context!.branchIds.length ? req.context!.branchIds : [req.context!.branchId]);
+    if (!allowedBranches.has(customer.branchId)) throw ApiError.forbidden("Client is outside your branch access.");
+    const [appointments, invoices, branches] = await Promise.all([
+      AppointmentModel.find({ salonId: req.context!.salonId, customerId: String(customer._id), branchId: { $in: [...allowedBranches] } }).sort({ startAt: -1 }).limit(50),
+      InvoiceModel.find({ salonId: req.context!.salonId, customerId: String(customer._id), branchId: { $in: [...allowedBranches] }, status: { $ne: "void" } }).sort({ createdAt: -1 }).limit(50),
+      BranchModel.find({ salonId: req.context!.salonId, _id: { $in: [...allowedBranches] } })
+    ]);
+    const branchNames = new Map(branches.map((branch) => [branch._id, branch.name]));
+    const staffIds = [...new Set(appointments.map((appointment) => appointment.staffId).filter(Boolean))];
+    const staff = await UserModel.find({ salonId: req.context!.salonId, staffId: { $in: staffIds } });
+    const staffNames = new Map(staff.map((user) => [user.staffId || String(user._id), user.name]));
+    ok(res, {
+      client: {
+        id: String(customer._id), name: customer.name || customer.normalizedPhone, phone: customer.normalizedPhone,
+        email: customer.email || "", branchId: customer.branchId, branchName: branchNames.get(customer.branchId) || customer.branchId,
+        tags: customer.tags || [], notes: customer.notes || "", visitCount: appointments.length,
+        totalSpendPaise: invoices.reduce((sum, invoice) => sum + invoice.grandTotalPaise, 0) || appointments.reduce((sum, appointment) => sum + appointment.value, 0),
+        outstandingPaise: invoices.reduce((sum, invoice) => sum + invoice.dueAmountPaise, 0)
+      },
+      appointments: appointments.map((appointment) => ({ id: String(appointment._id), branchId: appointment.branchId, branchName: branchNames.get(appointment.branchId) || appointment.branchId, staffId: appointment.staffId, staffName: staffNames.get(appointment.staffId) || appointment.staffId, serviceIds: appointment.serviceIds, serviceNames: appointment.serviceNames, status: appointment.status, startAt: appointment.startAt.toISOString(), endAt: appointment.endAt.toISOString(), spendPaise: appointment.value })),
+      purchases: invoices.map((invoice) => ({ id: String(invoice._id), invoiceNumber: invoice.invoiceNumber, branchId: invoice.branchId, branchName: branchNames.get(invoice.branchId) || invoice.branchId, totalPaise: invoice.grandTotalPaise, paidPaise: invoice.paidAmountPaise, balancePaise: invoice.dueAmountPaise, status: invoice.paymentStatus, createdAt: invoice.createdAt?.toISOString() || "" }))
+    });
+  })
+);
 
 staffOsRouter.get(
   "/mobile/today",

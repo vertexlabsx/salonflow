@@ -31,7 +31,7 @@ const envSchema = z.object({
     .transform((value) => ["1", "true", "yes"].includes(value.toLowerCase())),
 
   SEED_SALON_ID: z.string().default("tenant_aura"),
-  SEED_SALON_NAME: z.string().default("Aura Shine Salon & Wellness"),
+  SEED_SALON_NAME: z.string().default("Solastio Studio - Flagship"),
   SALON_TIMEZONE: z.string().default("Asia/Kolkata"),
   SEED_OWNER_LOGIN: z.string().default("owner"),
   SEED_OWNER_PASSWORD: z.string().default("owner@123"),
@@ -56,6 +56,12 @@ const envSchema = z.object({
   WHATSAPP_BOOKING_FLOW_ID: z.string().optional(),
   WHATSAPP_FLOW_PRIVATE_KEY: z.string().optional(),
   WHATSAPP_FLOW_PRIVATE_KEY_PATH: z.string().optional(),
+  WHATSAPP_CONCIERGE_ENABLED: z
+    .string()
+    .default("false")
+    .transform((value) => ["1", "true", "yes"].includes(value.toLowerCase())),
+  WHATSAPP_CONCIERGE_MAX_TURNS: z.coerce.number().int().min(0).max(20).default(4),
+  WHATSAPP_CONCIERGE_MODEL: z.string().optional(),
   SHOPIFY_API_KEY: z.string().optional(),
   SHOPIFY_API_SECRET: z.string().optional(),
   SHOPIFY_SCOPES: z.string().default("read_customers,read_orders,read_products,read_checkouts,write_webhooks"),

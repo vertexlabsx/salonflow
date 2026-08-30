@@ -59,7 +59,7 @@ describe("POST /api/v1/auth/login", () => {
     expect(data.user.branchId).toBe(`${TENANT}_main`);
     expect(Array.isArray(data.user.branchIds)).toBe(true);
     expect(data.user.permissions).toContain("read:appointments");
-    expect(data.tenant).toEqual({ id: TENANT, name: "Aura Shine Salon & Wellness" });
+    expect(data.tenant).toEqual({ id: TENANT, name: "Solastio Studio - Flagship" });
   });
 
   it("supports email-based login identifiers", async () => {

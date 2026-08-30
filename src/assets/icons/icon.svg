@@ -1,4 +1,17 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Aura Staff">
-  <rect width="64" height="64" rx="18" fill="#241625"/>
-  <path d="M32 11 37.5 26.5 53 32l-15.5 5.5L32 53l-5.5-15.5L11 32l15.5-5.5Z" fill="#f6c8bd"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Solastio">
+  <defs>
+    <linearGradient id="solastio-bg" x1="10" y1="8" x2="54" y2="58" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#2A1433"/>
+      <stop offset="1" stop-color="#4A1F42"/>
+    </linearGradient>
+    <linearGradient id="solastio-mark" x1="18" y1="14" x2="48" y2="50" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FFE1D1"/>
+      <stop offset="1" stop-color="#E8B4A0"/>
+    </linearGradient>
+  </defs>
+  <rect width="64" height="64" rx="18" fill="url(#solastio-bg)"/>
+  <path d="M32 11c7.7 8 11.6 14.8 11.6 20.5S38.4 42 32 42 20.4 37.2 20.4 31.5 24.3 19 32 11Z" fill="url(#solastio-mark)"/>
+  <path d="M18 33.5c7.2-.7 12.4.5 15.6 3.7 3.1 3.1 3.5 7.8 1.2 14.1-6.9-.7-12-2.8-15.1-6.1-3.2-3.4-3.8-7.3-1.7-11.7Z" fill="#F5C8B9" opacity=".9"/>
+  <path d="M46 33.5c-7.2-.7-12.4.5-15.6 3.7-3.1 3.1-3.5 7.8-1.2 14.1 6.9-.7 12-2.8 15.1-6.1 3.2-3.4 3.8-7.3 1.7-11.7Z" fill="#E8B4A0" opacity=".88"/>
+  <circle cx="32" cy="31.5" r="5.6" fill="#2A1433" opacity=".22"/>
 </svg>

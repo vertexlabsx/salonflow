@@ -66,8 +66,8 @@ describe("staff dashboard permission-first view model", () => {
     const attended = { ...today, attendance: [{ id: "attendance-1", businessDate: today.date, clockInAt: "2026-07-14T03:30:00.000Z", clockOutAt: "", status: "clocked_in", source: "staff-app", overtimeMinutes: 0, grossMinutes: 0, totalBreakMinutes: 0, totalWorkedMinutes: 0, scheduledShiftMinutes: 540, overtimeCalculationStatus: "pending", overtimeReviewReason: "", overtimePolicyVersion: "1" }] };
     const vm = buildStaffDashboardViewModel(input(["read:appointments", "update:appointments", "allow:staff-checkin-checkout"], { dashboard: activeDashboard, today: attended }));
     expect(vm.work.mode).toBe("active");
-    expect(vm.hero).toMatchObject({ title: "You’re clocked in", detail: expect.stringContaining("Clocked in at"), shift: "09:00–18:00" });
-    expect(vm.hero.actions).toMatchObject([{ id: "queue", route: "/staff/queue", primary: true }, { id: "attendance-details", route: "/staff/attendance" }]);
+    expect(vm.hero).toMatchObject({ title: "You're clocked in", detail: expect.stringContaining("Clocked in at"), shift: "09:00–18:00" });
+    expect(vm.hero.actions).toMatchObject([{ id: "clock-out", kind: "clock", primary: true }, { id: "attendance-details", route: "/staff/attendance" }]);
     expect(vm.work.actions).toEqual([{ id: "open-appointment", label: "Open appointment", route: "/staff/appointments", primary: true }]);
   });
 
@@ -85,7 +85,7 @@ describe("staff dashboard permission-first view model", () => {
     const noAppointments = { ...dashboard, todayAppointments: [], liveAppointments: [], summary: { ...dashboard.summary, todayAppointments: 0 } };
     const onBreak = buildStaffDashboardViewModel(input(["read:appointments", "allow:staff-checkin-checkout"], { dashboard: noAppointments, today: { ...today, attendance: [openAttendance], activeBreak: { id: "break-1", status: "active" }, tasks: [] } }));
     const completed = buildStaffDashboardViewModel(input(["read:appointments", "allow:staff-checkin-checkout"], { dashboard: noAppointments, today: { ...today, schedules: [{ ...today.schedules[0], status: "completed" }], attendance: [{ ...openAttendance, clockOutAt: "2026-07-14T12:30:00.000Z", status: "clocked_out" }], tasks: [] } }));
-    expect(onBreak.hero.title).toBe("You’re clocked in");
+    expect(onBreak.hero.title).toBe("You're clocked in");
     expect(onBreak.hero.actions[0]).toMatchObject({ kind: "end-break", label: "End break" });
     expect(completed.hero.title).toBe("Your shift is complete");
     expect(completed.hero.actions.some((action) => action.kind === "clock")).toBe(false);
@@ -95,7 +95,7 @@ describe("staff dashboard permission-first view model", () => {
     const distant = { ...appointment, startAt: "2026-07-14T15:00:00.000Z", endAt: "2026-07-14T16:00:00.000Z" };
     const attended = { ...today, attendance: [{ id: "attendance-1", businessDate: today.date, clockInAt: "2026-07-14T03:30:00.000Z", clockOutAt: "", status: "clocked_in", source: "staff-app", overtimeMinutes: 0, grossMinutes: 0, totalBreakMinutes: 0, totalWorkedMinutes: 0, scheduledShiftMinutes: 540, overtimeCalculationStatus: "pending", overtimeReviewReason: "", overtimePolicyVersion: "1" }] };
     const vm = buildStaffDashboardViewModel(input(["read:appointments", "read:staff"], { dashboard: { ...dashboard, todayAppointments: [distant], appointments: [distant] }, today: attended }));
-    expect(vm.hero).toMatchObject({ title: "You’re clocked in", actions: [{ id: "next", route: "/staff/appointments", primary: true }, { id: "attendance-details" }] });
+    expect(vm.hero).toMatchObject({ title: "You're clocked in", actions: [{ id: "attendance-details", route: "/staff/attendance" }] });
   });
 
   it("shows upcoming assigned work with timing and permission-safe actions", () => {

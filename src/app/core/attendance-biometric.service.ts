@@ -56,7 +56,7 @@ export class AttendanceBiometricService {
   isSupportedPlatform(): boolean { return Capacitor.isNativePlatform() && Capacitor.getPlatform() === "android"; }
 
   unsupportedMessage(): string {
-    return "Secure attendance is available only in the Android Aura Staff app. This punch was not recorded or queued.";
+    return "Secure attendance is available only in the Android Solastio app. This punch was not recorded or queued.";
   }
 
   installationIdentity(): Promise<AttendanceInstallationIdentity> {

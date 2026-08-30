@@ -9,7 +9,7 @@ import { StaffPageStateComponent } from "./staff-page-state.component";
   standalone: true,
   imports: [DatePipe, FormsModule, StaffPageStateComponent],
   template: `
-    <section class="page">
+    <section class="page leaves-page">
       <header class="page-head"><div><p class="eyebrow">Leaves</p><h1>Leave management</h1><p>Balances, history and request form.</p></div></header>
       @if (!canReadLeaves()) { <section staffPageState class="notice">You do not have permission to view leave data.</section> }
       @if (message()) { <section staffPageState class="notice success">{{ message() }}</section> }

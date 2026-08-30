@@ -1,11 +1,11 @@
 {
-  "name": "Aura Staff OS",
-  "short_name": "Aura Staff",
-  "description": "Online staff workspace for Aura salons. Pages load instantly and work offline with your last synced data.",
+  "name": "Solastio Salon & Beauty OS",
+  "short_name": "Solastio",
+  "description": "Online salon and beauty workspace for owners and staff. Pages load instantly and work offline with your last synced data.",
   "start_url": "/staff/login",
   "display": "standalone",
-  "background_color": "#f0f2f5",
-  "theme_color": "#00a884",
+  "background_color": "#f8f3f5",
+  "theme_color": "#2a1433",
   "orientation": "portrait-primary",
   "categories": ["business", "productivity"],
   "icons": [

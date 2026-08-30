@@ -1,5 +1,5 @@
 /**
- * Authentication helper for the Aura Staff App E2E tests.
+ * Authentication helper for the Solastio E2E tests.
  *
  * Two credential sets:
  *   Staff — STAFF_TENANT / STAFF_USER / STAFF_PASS
@@ -68,7 +68,7 @@ export async function apiLoginStaff(context: BrowserContext): Promise<boolean> {
         loginId: STAFF_CREDENTIALS.loginId,
         email: STAFF_CREDENTIALS.loginId.includes("@") ? STAFF_CREDENTIALS.loginId : undefined,
         password: STAFF_CREDENTIALS.password,
-        device: { type: "staff-app", name: "Aura Staff App", platform: "web" },
+        device: { type: "staff-app", name: "Solastio Staff", platform: "web" },
       },
     });
 
@@ -104,7 +104,7 @@ export async function apiLoginOwner(context: BrowserContext): Promise<boolean> {
         email: OWNER_CREDENTIALS.loginId,
         loginId: OWNER_CREDENTIALS.loginId,
         password: OWNER_CREDENTIALS.password,
-        device: { type: "owner-app", name: "Aura Owner", platform: "web" },
+        device: { type: "owner-app", name: "Solastio Owner", platform: "web" },
       },
     });
 

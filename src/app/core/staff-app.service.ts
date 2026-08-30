@@ -227,6 +227,12 @@ export type StaffBusinessQuery = {
   sort?: "asc" | "desc";
 };
 
+export type StaffClientHistory = {
+  client: { id: string; name: string; phone: string; email: string; branchId: string; branchName: string; tags: string[]; notes: string; visitCount: number; totalSpendPaise: number; outstandingPaise: number };
+  appointments: Array<{ id: string; branchId: string; branchName: string; staffId: string; staffName: string; serviceIds: string[]; serviceNames: string[]; status: string; startAt: string; endAt: string; spendPaise: number }>;
+  purchases: Array<{ id: string; invoiceNumber: string; branchId: string; branchName: string; totalPaise: number; paidPaise: number; balancePaise: number; status: string; createdAt: string }>;
+};
+
 export type StaffBusinessSummary = {
   appointments: number;
   completedServices: number;
@@ -459,9 +465,7 @@ type StaffLoginResponse = {
 };
 
 type StoredStaffSession = {
-  accessToken: string;
-  refreshToken?: string;
-  user: StaffUser;
+  user?: Partial<StaffUser>;
   tenantId: string;
 };
 
@@ -537,11 +541,9 @@ export class StaffAppService {
       const parsed: unknown = JSON.parse(raw);
       if (!parsed || typeof parsed !== "object") return;
       const stored = parsed as Partial<StoredStaffSession>;
-      if (typeof stored.accessToken === "string" && stored.user && typeof stored.user === "object" && (stored.user as StaffUser).staffId) {
-        this.accessTokenValue = stored.accessToken;
+      if (stored.user && typeof stored.user === "object") {
         this.tenantIdValue = stored.tenantId || this.readBiometricHint()?.tenantId || "tenant_aura";
         this.sessionIdValue = crypto.randomUUID();
-        this.user.set(this.normalizeUser(stored.user as StaffUser));
       }
     } catch { /* best-effort */ }
   }
@@ -553,15 +555,13 @@ export class StaffAppService {
   async tryRestoreSession(): Promise<boolean> {
     if (this.isAuthenticated()) return true;
     const stored = await this.readStoredSession();
-    if (stored?.accessToken && stored?.user?.staffId) {
-      this.accessTokenValue = stored.accessToken;
+    if (stored) {
       this.tenantIdValue = stored.tenantId || this.readBiometricHint()?.tenantId || "tenant_aura";
       this.sessionIdValue = crypto.randomUUID();
       this.profile.set(null);
-      this.user.set(this.normalizeUser(stored.user));
       void this.writeStoredSession(stored);
-      void this.refreshSession().catch(() => undefined);
-      return true;
+      await this.refreshSession().catch(() => undefined);
+      return this.isAuthenticated();
     }
     return this.isAuthenticated();
   }
@@ -628,7 +628,7 @@ export class StaffAppService {
         email: loginId.includes("@") ? loginId : undefined,
         password: payload.password,
         branchId: payload.branchId?.trim() || undefined,
-        device: { type: "staff-app", name: "Aura Staff App", platform: Capacitor.getPlatform() }
+        device: { type: "staff-app", name: "Solastio Staff", platform: Capacitor.getPlatform() }
       };
       let session: StaffLoginResponse;
       if (Capacitor.isNativePlatform()) {
@@ -798,6 +798,10 @@ export class StaffAppService {
     const key = `today:${date}`;
     if (fresh) this.responseCache.delete(key);
     return this.cachedGet<StaffToday>(key, 10_000, () => this.get<StaffToday>("/staff-os/mobile/today", { date }));
+  }
+
+  clientHistory(clientId: string): Promise<StaffClientHistory> {
+    return this.get<StaffClientHistory>(`/staff-os/clients/${encodeURIComponent(clientId)}`);
   }
 
   async attendanceHistory(days = 30): Promise<StaffAttendance[]> {
@@ -1044,7 +1048,7 @@ export class StaffAppService {
     }
     if (!this.hasSavedSession()) throw new Error("Login once before enabling biometric unlock.");
     if (!this.biometricSupported()) throw new Error("Biometric unlock is not supported on this device.");
-    const begin = await this.authPost<WebAuthnBegin>("/auth/webauthn/register/begin", { label: "Aura Staff App" }, true);
+    const begin = await this.authPost<WebAuthnBegin>("/auth/webauthn/register/begin", { label: "Solastio Staff" }, true);
     const credential = await navigator.credentials.create({ publicKey: this.decodeCreationOptions(begin.publicKey as PublicKeyCredentialCreationOptions) });
     if (!(credential instanceof PublicKeyCredential)) throw new Error("Passkey setup was cancelled.");
     await this.authPost("/auth/webauthn/register/finish", {
@@ -1285,7 +1289,7 @@ export class StaffAppService {
     this.sessionIdValue = crypto.randomUUID();
     this.profile.set(null);
     this.user.set(this.normalizeUser(session.user));
-    void this.writeStoredSession({ accessToken: session.accessToken, refreshToken: session.refreshToken, user: this.user()!, tenantId });
+    void this.writeStoredSession({ user: this.user()!, tenantId });
   }
 
   private async withRefreshRetry<T>(request: () => Promise<T>): Promise<T> {
@@ -1309,8 +1313,7 @@ export class StaffAppService {
           url: `${this.baseUrl}/auth/refresh`,
           headers: { "Content-Type": "application/json" },
           data: {
-            ...(stored?.refreshToken ? { refreshToken: stored.refreshToken } : {}),
-            device: { type: "staff-app", name: "Aura Staff App", platform: Capacitor.getPlatform() }
+            device: { type: "staff-app", name: "Solastio Staff", platform: Capacitor.getPlatform() }
           }
         });
         status = response.status || 0;
@@ -1332,7 +1335,7 @@ export class StaffAppService {
           this.sessionIdValue ||= crypto.randomUUID();
         }
         if (refreshedUser?.staffId) {
-          void this.writeStoredSession({ accessToken: session.accessToken, refreshToken: (session as StaffLoginResponse).refreshToken, user: refreshedUser, tenantId: this.tenantIdValue });
+          void this.writeStoredSession({ user: refreshedUser, tenantId: this.tenantIdValue });
         }
       } catch (error) {
         // Do NOT clear local session state on background refresh error or 401 response.
@@ -1593,18 +1596,17 @@ export class StaffAppService {
       const parsed: unknown = JSON.parse(value);
       if (!parsed || typeof parsed !== "object") return null;
       const stored = parsed as Partial<StoredStaffSession>;
-      if (typeof stored.accessToken !== "string" || !stored.user || typeof stored.user !== "object") return null;
+      if (stored.user && typeof stored.user !== "object") return null;
       return {
-        accessToken: stored.accessToken,
-        refreshToken: typeof stored.refreshToken === "string" ? stored.refreshToken : undefined,
-        user: stored.user as StaffUser,
+        user: stored.user,
         tenantId: typeof stored.tenantId === "string" ? stored.tenantId : ""
       };
     } catch { return null; }
   }
 
   private async writeStoredSession(session: StoredStaffSession): Promise<void> {
-    const raw = JSON.stringify(session);
+    const hint = session.user ? { id: session.user.id, loginId: session.user.loginId, name: session.user.name, role: session.user.role } : undefined;
+    const raw = JSON.stringify({ tenantId: session.tenantId, ...(hint ? { user: hint } : {}) });
     try {
       localStorage.setItem(STAFF_SESSION_KEY, raw);
     } catch { /* persistence is best-effort */ }

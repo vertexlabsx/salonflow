@@ -1,16 +1,16 @@
-# Shopify App configuration for SalonFlow WhatsApp Automation
+# Shopify App configuration for Solastio WhatsApp Automation
 # This file is used by Shopify CLI for app configuration management.
-# The actual production application runs on the existing SalonFlow backend.
+# The actual production application runs on the existing Solastio backend.
 # Docs: https://shopify.dev/docs/apps/tools/cli/configuration
 
-name = "SalonFlow WhatsApp Automation"
+name = "Solastio WhatsApp Automation"
 handle = "salonflow-whatsapp-automation"
 client_id = "SHOPIFY_API_KEY_HERE"
 application_url = "https://129.159.16.165.sslip.io"
 embedded = false
 
 [access_scopes]
-# Scopes required for the SalonFlow automation features:
+# Scopes required for the Solastio automation features:
 #   read_customers  – sync customer data and marketing consent
 #   read_orders     – process order events via webhooks
 #   read_products   – product data for template variables

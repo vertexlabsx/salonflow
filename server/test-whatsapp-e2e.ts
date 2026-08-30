@@ -10,12 +10,13 @@ import { WhatsAppOutboundModel } from "./src/models/whatsapp-outbound.model";
 import { BranchModel } from "./src/models/branch.model";
 import { ServiceModel } from "./src/models/service.model";
 import { ScheduleModel } from "./src/models/schedule.model";
+import { LeaveModel } from "./src/models/leave.model";
 import { UserModel } from "./src/models/user.model";
 import { createAppointment, transitionAppointment } from "./src/modules/appointments/appointment.service";
 import { closestName, filterBookingsByHints, parseNaturalDate, parseTimePreference, pickBestSlot } from "./src/modules/whatsapp/smart-parse";
 import { subscribeRealtime } from "./src/modules/realtime/realtime.service";
 import { runDueReminderNudges } from "./src/jobs/whatsapp-reminders";
-import { zonedTimeToUtc } from "./src/shared/business-date";
+import { zonedTimeToUtc, zonedWeekday } from "./src/shared/business-date";
 import { ApiError } from "./src/shared/http";
 
 /**
@@ -105,7 +106,15 @@ async function sendListReply(id: string, title: string, from: string = PHONE) {
   return data;
 }
 
+/** True when the staff is on approved/pending leave for the whole date, mirroring
+ *  the availability rules the router enforces. Slot scans must skip such dates. */
+async function staffOnLeave(staffId: string, date: string): Promise<boolean> {
+  const leave = await LeaveModel.findOne({ salonId, staffId, status: { $in: ["pending", "approved"] }, startDate: { $lte: date }, endDate: { $gte: date } }).lean();
+  return !!leave;
+}
+
 async function findFreeStart(staffId: string, date: string, duration: number): Promise<Date | null> {
+  if (await staffOnLeave(staffId, date)) return null;
   for (const label of SLOT_LABELS) {
     const [h, m] = label.split(":").map(Number);
     const startAt = zonedTimeToUtc("Asia/Kolkata", date, h || 0, m || 0);
@@ -117,6 +126,37 @@ async function findFreeStart(staffId: string, date: string, duration: number): P
     return startAt;
   }
   return null;
+}
+
+/** Mirrors the router's suggestedSlots exactly (15-min grid, branch hours,
+ *  staff schedule incl. weekly-offs, leave, appointments and slot locks). */
+async function findEarliestFree(staffId: string, date: string, duration: number): Promise<Date | null> {
+  if (await staffOnLeave(staffId, date)) return null;
+  const branch = await BranchModel.findOne({ _id: branchId, salonId }).lean();
+  const dayHours = branch?.hours.find((h) => h.weekday === zonedWeekday("Asia/Kolkata", date));
+  if (!dayHours || dayHours.closed) return null;
+  const [oh, om] = dayHours.open.split(":").map(Number);
+  const [ch, cm] = dayHours.close.split(":").map(Number);
+  const open = (oh || 0) * 60 + (om || 0);
+  const close = (ch || 0) * 60 + (cm || 0);
+  const schedule = await ScheduleModel.findOne({ salonId, branchId, staffId, scheduleDate: date, status: { $ne: "cancelled" } }).lean();
+  if (!schedule || schedule.shiftType === "weekly_off" || schedule.startTime === "00:00") return null;
+  const interval = 15;
+  for (let slotMinute = open; slotMinute + duration <= close; slotMinute += interval) {
+    const startAt = zonedTimeToUtc("Asia/Kolkata", date, Math.floor(slotMinute / 60), slotMinute % 60);
+    const endAt = new Date(startAt.getTime() + duration * 60_000);
+    const [scheduleStart, scheduleEnd] = [toMinutes(schedule.startTime), toMinutes(schedule.endTime)];
+    const within = slotMinute >= scheduleStart && slotMinute + duration <= scheduleEnd;
+    const overlap = await AppointmentModel.findOne({ salonId, staffId, status: { $in: BLOCKING }, startAt: { $lt: endAt }, endAt: { $gt: startAt } });
+    const lock = await AppointmentSlotLockModel.findOne({ salonId, staffId, slotAt: { $gte: startAt, $lt: endAt } });
+    if (within && !overlap && !lock) return startAt;
+  }
+  return null;
+}
+
+function toMinutes(value: string): number {
+  const [h, m] = value.split(":").map(Number);
+  return (h || 0) * 60 + (m || 0);
 }
 
 async function createTestAppointment(customerId: string, staffId: string, serviceId: string, serviceName: string, durationMinutes: number, value: number, date: string, status: string): Promise<AppointmentDocument> {
@@ -179,11 +219,23 @@ async function main() {
     { $limit: 5 }
   ])) as Array<{ _id: string; dates: string[] }>;
   assert(allStaff.length > 0, "a staff with two future scheduled dates exists");
-  const staffId = allStaff[0]._id;
-  const scheduleDates = allStaff[0].dates.sort();
-  assert(scheduleDates.length >= 2, "staff has at least two future scheduled dates");
-  const dateA = scheduleDates[0];
-  const dateB = scheduleDates[1];
+  let staffId = "";
+  let scheduleDates: string[] = [];
+  let dateA = "";
+  let dateB = "";
+  for (const cand of allStaff) {
+    const dates = cand.dates.slice().sort();
+    const d0 = dates[0];
+    const d1 = dates[1] || "";
+    if (!d0 || !d1) continue;
+    if (await staffOnLeave(cand._id, d1)) continue;
+    staffId = cand._id;
+    scheduleDates = dates;
+    dateA = d0;
+    dateB = d1;
+    break;
+  }
+  assert(!!staffId && !!dateA && !!dateB, "a staff with two future scheduled dates that are not fully covered by leave exists");
   console.log("Chosen staff:", staffId, "dates:", dateA, dateB);
 
   const service = await ServiceModel.findOne({ salonId, status: "active", branchIds: branchId, eligibleStaffIds: staffId, durationMinutes: 30 }).sort({ durationMinutes: 1 }).lean();
@@ -793,21 +845,16 @@ async function main() {
   const service2 = await ServiceModel.findOne({ salonId, status: "active", branchIds: branchId, eligibleStaffIds: staffId, durationMinutes: 30, _id: { $ne: service!._id } }).sort({ name: 1 }).lean();
   assert(!!service2, "S13 a second 30-min service for the chosen staff exists to combine");
   assert(service2!.name !== service!.name, "S13 the two services to combine are distinct");
-  const s13Phrase = daysFromToday(dateB) <= 1 ? "tomorrow" : `in ${Math.max(1, daysFromToday(dateB))} days`;
+  let s13Date = "";
   let s13Free: Date | null = null;
-  for (const label of SLOT_LABELS) {
-    const [hh, mm] = label.split(":").map(Number);
-    const cand = zonedTimeToUtc("Asia/Kolkata", dateB, hh || 0, mm || 0);
-    const candEnd = new Date(cand.getTime() + 60 * 60_000);
-    if (candEnd.getTime() > zonedTimeToUtc("Asia/Kolkata", dateB, 20, 0).getTime()) break;
-    const overlap = await AppointmentModel.findOne({ salonId, staffId, status: { $in: BLOCKING }, startAt: { $lt: candEnd }, endAt: { $gt: cand } });
-    if (overlap) continue;
-    const lock = await AppointmentSlotLockModel.findOne({ salonId, staffId, slotAt: { $gte: cand, $lt: candEnd } });
-    if (lock) continue;
-    s13Free = cand;
-    break;
+  for (const d of scheduleDates) {
+    if (daysFromToday(d) < 1) continue;
+    if (await staffOnLeave(staffId, d)) continue;
+    const cand = await findFreeStart(staffId, d, 60);
+    if (cand) { s13Date = d; s13Free = cand; break; }
   }
-  assert(!!s13Free, "S13 a free 60-minute slot within branch hours exists on the chosen staff date");
+  assert(!!s13Date && !!s13Free, "S13 a free 60-minute slot exists on a scheduled, non-leave staff date");
+  const s13Phrase = daysFromToday(s13Date) <= 1 ? "tomorrow" : `in ${Math.max(1, daysFromToday(s13Date))} days`;
   const s13TimeLabel = new Intl.DateTimeFormat("en-GB", { timeZone: "Asia/Kolkata", hour: "2-digit", minute: "2-digit", hour12: false }).format(s13Free!).replace("24:", "00:");
   const s13 = await sendMsg(`book a ${service!.name} and ${service2!.name} ${s13Phrase} at ${s13TimeLabel} with ${staffName}`, sPhone2);
   assert(s13.action === "booking_proposal", "S13 multi-service one-message booking proposes once: " + s13.action);
@@ -827,6 +874,7 @@ async function main() {
   let s14Date = "";
   for (const d of scheduleDates) {
     if (daysFromToday(d) < 1) continue;
+    if (await staffOnLeave(staffId, d)) continue;
     if (await findFreeStart(staffId, d, 30)) { s14Date = d; break; }
   }
   assert(!!s14Date, "S14 a free future date exists for a flexible one-message booking");
@@ -834,7 +882,12 @@ async function main() {
   const s14Flex = await sendMsg(`book a ${service!.name} ${s14Phrase} anytime`, sPhone2);
   assert(s14Flex.action === "booking_proposal", "S14 flexible 'anytime' booking proposes the earliest slot: " + s14Flex.action);
   const s14s0 = await WhatsAppBookingSessionModel.findOne({ salonId, waPhone: sPhone2 }).lean();
-  assert(s14s0?.state === "confirm_hold" && String(s14s0.staffId ?? "") === String(staffId) && (s14s0.date || "") === s14Date, "S14 flex proposal fills staff and date");
+  assert(s14s0?.state === "confirm_hold" && (s14s0.date || "") === s14Date, "S14 flex proposal fills date and stages a hold");
+  const s14Eligible = (service!.eligibleStaffIds || []).map(String).filter((id) => id);
+  assert(s14Eligible.includes(String(s14s0?.staffId ?? "")), "S14 flex proposal staff is eligible for the service");
+  const s14ExpectedStart = await findEarliestFree(String(s14s0!.staffId), s14Date, 30);
+  assert(!!s14ExpectedStart && new Date(String(s14s0!.startAt)).getTime() === s14ExpectedStart.getTime(), "S14 flex proposal stages the earliest real free slot for the chosen staff");
+  assert((s14s0 as any)?.serviceIds?.length === 1 && Number(s14s0?.durationMinutes) === 30, "S14 flex proposal carries the flexed service and duration");
   assert(!(await AppointmentModel.findOne({ salonId, staffId, status: { $in: BLOCKING }, startAt: s14s0?.startAt })), "S14 flex proposal does not mutate DB before confirm");
   const s14Confirm = await sendMsg("confirm", sPhone2);
   assert(s14Confirm.action === "appointment_created", "S14 flex booking confirms in one step: " + s14Confirm.action);

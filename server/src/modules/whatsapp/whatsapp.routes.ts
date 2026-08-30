@@ -27,7 +27,9 @@ import { AppointmentSlotLockModel } from "../../models/appointment-slot-lock.mod
 import { OwnerSettingsModel } from "../../models/owner-settings.model";
 import { createRazorpayPaymentLink, verifyRazorpayWebhook } from "../payments/razorpay.service";
 import { extractReceptionistIntent } from "./ai-receptionist.service";
+import { conciergeChat } from "./concierge.service";
 import { closestName as fuzzyClosestName, filterBookingsByHints, filterSlotsByPreference, hintLabel, normalizedNameKey, parseNaturalDate, parseTimePreference, pickBestSlot } from "./smart-parse";
+import { resolveBranchIntent, resolveServiceIntents, resolveStaffIntent, serviceSynonymQuery } from "./catalog-intent";
 
 export const whatsappRouter = Router();
 export const metaWebhookRouter = Router();
@@ -150,12 +152,32 @@ const BOOKING_KEYWORDS = ["hi", "hello", "book", "book appointment", "appointmen
 const WHATSAPP_PAGE_SIZE = 9;
 const BOOKING_BLOCKING_STATUSES = ["pending", "booked", "confirmed", "arrived", "in_service"];
 
+/** Words that signal a salon service request even without "book". Drives the
+ *  one-message booking gate and the management->booking escape hatch. */
+const SALON_SERVICE_SIGNAL = /book|hair|spa|skin|nail|beard|colour|color|service|facial|cleanup|manicure|pedicure|wax|massage|makeup|thread|bleach|mehendi|henna|walnut|baal|kaat|kat|salon|price|rate/;
+
 function normalizePhone(phone: string): string {
   return phone.replace(/\D/g, "");
 }
 
 function sessionExpiry(): Date {
   return new Date(Date.now() + 30 * 60_000);
+}
+
+/** Tracks a confirmed booking on the customer for memory features ("same as
+ *  last time", favourite staff/services). Only called after a booking is
+ *  actually created/confirmed — never for speculative holds. */
+async function recordCustomerBooking(salonId: string, normalizedPhone: string, appointment: { staffId?: string | null; serviceIds: string[]; startAt: Date }): Promise<void> {
+  const push: Record<string, unknown> = { favoriteServiceIds: { $each: appointment.serviceIds.map(String).slice(0, 20), $slice: 30 } };
+  if (appointment.staffId) push.preferredStaffIds = { $each: [String(appointment.staffId)], $slice: 8 };
+  await CustomerModel.updateOne(
+    { salonId, normalizedPhone },
+    {
+      $inc: { visitCount: 1 },
+      $set: { lastBookedAt: appointment.startAt, interactionStatus: "booked" },
+      $push: push
+    }
+  );
 }
 
 async function defaultBranchId(salonId: string): Promise<string> {
@@ -218,7 +240,7 @@ function bookingFlowInteractive(salonId: string, waPhone: string, branches: Arra
     type: "flow",
     header: { type: "text", text: "Book your salon appointment" },
     body: { text: "Choose branch, services, staff and slot in one smooth WhatsApp form." },
-    footer: { text: "SalonFlow" },
+    footer: { text: "Solastio" },
     action: {
       name: "flow",
       parameters: {
@@ -708,6 +730,7 @@ async function handleBookingFlowCompletion(salonId: string, message: WaInboundMe
     throw error;
   }
   publishRealtimeEvent(salonId, "appointment.created", { id: String(appointment._id), branchId: appointment.branchId, staffId: appointment.staffId, startAt: appointment.startAt.toISOString(), endAt: appointment.endAt.toISOString(), status: appointment.status, source: "whatsapp_flow" });
+  await recordCustomerBooking(salonId, phone, { staffId: appointment.staffId, serviceIds: appointment.serviceIds.map(String), startAt: appointment.startAt });
   void notifyStaffByStaffId(salonId, appointment.staffId, {
     title: "New appointment",
     body: `${appointment.customerName} — ${appointment.serviceNames.join(", ")} at ${appointment.startAt.toLocaleString("en-IN", { timeZone: branch.timezone || "Asia/Kolkata" })}`,
@@ -850,6 +873,82 @@ async function handleBookingMessage(salonId: string, branchId: string, message: 
   const activeBookingState = !!session && isActiveBookingState(session.state);
   const idleConversation = !activeBookingState && !(sessionValid && session!.state !== "menu" && isManagementState(session!.state));
 
+  // E5: AI concierge — answers open/greeting/price/availability questions on
+  // menu and dead-end paths only. Any booking it proposes is re-verified against
+  // the real schedule and commits only via the existing CONFIRM state machine.
+  const concierge = async (): Promise<Record<string, unknown> | null> => {
+    const env = loadEnv();
+    if (!env.WHATSAPP_CONCIERGE_ENABLED || !env.OPENAI_API_KEY) return null;
+    if (activeBookingState) return null;
+    if (sessionValid && session!.state !== "menu" && isManagementState(session!.state)) return null;
+    const turns = Number((session && (session as any).conciergeTurns) || 0);
+    if (turns >= env.WHATSAPP_CONCIERGE_MAX_TURNS) return null;
+    const branchForConcierge = String((branchMatch || (branches.length === 1 ? branches[0] : null) || (session && session.branchId))?._id || branchId);
+    const outcome = await conciergeChat({ text, salonId, branchId: branchForConcierge, customerId: String(customer._id) });
+    if (!outcome) return null;
+
+    const upsertSession = (patch: Record<string, unknown>): Promise<any> =>
+      WhatsAppBookingSessionModel.findOneAndUpdate(
+        { salonId, waPhone: phone },
+        {
+          $set: { ...patch, conciergeTurns: turns + 1, expiresAt: sessionExpiry(), managementAction: null, targetAppointmentId: null, modifyField: null, categoryPage: 0, servicePage: 0, staffPage: 0 },
+          $setOnInsert: { branchId: branchForConcierge, profileName: message.profileName, state: "menu", customerName: message.profileName || "" }
+        },
+        { upsert: true, new: true }
+      );
+
+    if (outcome.proposal) {
+      const proposal = outcome.proposal;
+      const services = await ServiceModel.find({
+        _id: { $in: proposal.serviceIds },
+        salonId,
+        status: "active",
+        $or: [{ branchIds: proposal.branchId }, { branchIds: { $size: 0 } }]
+      }).select("name category pricePaise durationMinutes eligibleStaffIds");
+      if (!services.length || !services.some((service) => (service.eligibleStaffIds || []).includes(proposal.staffId))) {
+        await upsertSession({});
+        return { action: "concierge", reply: `${outcome.reply}\n\nThat booking can't be placed right now. Reply MENU or ask me for another time.` };
+      }
+      const summary = summarizeServices(services);
+      const startAt = new Date(proposal.startAt);
+      const endAt = new Date(startAt.getTime() + summary.duration * 60_000);
+      const branch = await BranchModel.findOne({ _id: proposal.branchId, salonId });
+      const timezone = branch?.timezone || env.SALON_TIMEZONE || "Asia/Kolkata";
+      const free = await isStaffAvailableForBlock({ salonId, branchId: proposal.branchId, staffId: proposal.staffId, startAt, endAt, date: proposal.date, timezone });
+      if (!free) {
+        await upsertSession({});
+        return { action: "concierge", reply: `${outcome.reply}\n\nThat slot was just booked by someone else. Ask me for another time.` };
+      }
+      session = await upsertSession({
+        branchId: proposal.branchId,
+        state: "confirm_hold",
+        category: services[0]?.category || null,
+        searchQuery: "",
+        serviceId: String(services[0]!._id),
+        serviceName: services[0]!.name,
+        serviceIds: services.map((service) => String(service._id)),
+        serviceNames: services.map((service) => service.name),
+        durationMinutes: summary.duration,
+        value: summary.value,
+        availableSlots: [],
+        date: proposal.date,
+        startAt,
+        staffId: proposal.staffId,
+        lastAlternates: "",
+        earliestOffer: "",
+        pendingReminder: false
+      });
+      return {
+        action: "booking_proposal",
+        reply: `${outcome.reply}\n\n${proposal.serviceNames.join(" + ")} on ${displayDate(proposal.date)} at ${proposal.label} with ${proposal.staffName}. Total: ${money(summary.value)}, ${summary.duration} minutes.\nReply CONFIRM to book, or CANCEL to change your mind.`,
+        interactive: buttonsInteractive("Book this appointment?", [{ id: "confirm", title: "Confirm" }, { id: "cancel", title: "Cancel" }])
+      };
+    }
+
+    await upsertSession({ state: "menu" });
+    return { action: "concierge", reply: outcome.reply };
+  };
+
   // E3: instant availability answers — "are you free sunday morning?", "any slot at 5pm tomorrow?"
   // Runs before management-state routing so idle/menu sessions still get availability answers.
   const availabilityReply = async (): Promise<Record<string, unknown>> => {
@@ -879,11 +978,12 @@ async function handleBookingMessage(salonId: string, branchId: string, message: 
     }
     if (preference.flexible === true) {
       const earliest = seen[0]!;
+      const offerStaff = staff.slice(0, 4).find((s) => s.name === earliest.staffName) || staff[0];
       const servicePick = serviceDocs[0];
       const offer = JSON.stringify({
         branchId: chosenBranch,
         date: dateInput,
-        staffId: staff[0]!.staffId,
+        staffId: offerStaff.staffId,
         staffName: earliest.staffName,
         serviceId: String((servicePick && (servicePick as { _id?: unknown })._id) || ""),
         serviceName: first?.name || "service",
@@ -1045,7 +1145,7 @@ async function handleBookingMessage(salonId: string, branchId: string, message: 
     await session!.save();
     return { action: "booking_aborted", reply: "Okay, I stopped this flow. Send MENU anytime for options." };
   }
-  if (sessionValid && (session!.managementAction || isManagementState(session!.state)) && !(session!.state === "menu" && (BOOKING_KEYWORDS.some((keyword) => lower === keyword || lower.includes(keyword)) || /hair|spa|skin|nail|beard|colour|color|service|baal|kaat|kat|salon|book/.test(lower)))) {
+  if (sessionValid && (session!.managementAction || isManagementState(session!.state)) && !(session!.state === "menu" && (BOOKING_KEYWORDS.some((keyword) => lower === keyword || lower.includes(keyword)) || SALON_SERVICE_SIGNAL.test(lower)))) {
     return handleManagementState({ salonId, branchId, phone, customer, session: session!, branches, text, lower, message }, null);
   }
   const managementCommand = managementIntent(lower, ai);
@@ -1076,6 +1176,11 @@ async function handleBookingMessage(salonId: string, branchId: string, message: 
     if (!matches.length) {
       const direct = services.filter((item) => lower === item.name.toLowerCase() || lower.includes(item.name.toLowerCase()));
       if (direct.length) matches = direct.slice(0, 4);
+    }
+    if (!matches.length) {
+      const resolved = await resolveServiceIntents({ text, salonId, branchId: targetBranchId });
+      if (resolved.ambiguousNames.length) return null;
+      if (resolved.matched.length) matches = resolved.matched.slice(0, 4).map((entry) => entry.service as (typeof services)[number]);
     }
     if (!matches.length) return null;
     const summary = summarizeServices(matches);
@@ -1163,16 +1268,109 @@ async function handleBookingMessage(salonId: string, branchId: string, message: 
     };
   };
 
-  const naturalBookingSignal = BOOKING_KEYWORDS.some((keyword) => lower === keyword || lower.includes(keyword)) || /hair|spa|skin|nail|beard|colour|color|service|baal|kaat|kat|salon|book/.test(lower);
+  // E5b: memory booking — "book my usual / same as last time tomorrow 3pm" uses
+  // the customer's recorded favourites instead of parsing a service name.
+  const memoryBookingSignal = /same as last time|same as before|same as my last|my usual|usual service|like last time|last time wala|jaisa pehle|vaise hi|vahi service|favourite service|favorite service/.test(lower);
+  const memoryBooking = async (): Promise<Record<string, unknown> | null> => {
+    if (!memoryBookingSignal || !idleConversation) return null;
+    const favouriteIds = (customer.favoriteServiceIds || []).map(String);
+    if (!favouriteIds.length || !Number(customer.visitCount || 0)) return null;
+    const targetBranchId = (branchMatch || (branches.length === 1 ? branches[0] : null))?._id || branchId;
+    const services = await ServiceModel.find({
+      _id: { $in: favouriteIds },
+      salonId,
+      status: "active",
+      $or: [{ branchIds: targetBranchId }, { branchIds: { $size: 0 } }]
+    }).select("name category pricePaise durationMinutes eligibleStaffIds").sort({ name: 1 }).limit(4);
+    if (!services.length) return null;
+    const dateInput = parseNaturalDate(text, extremeTz);
+    if (!dateInput || dateInput < new Date(new Date().toLocaleString("en-US", { timeZone: extremeTz })).toLocaleDateString("en-CA")) return null;
+    const preference = parseTimePreference(text);
+    if (preference.time == null && preference.after == null && preference.before == null && preference.flexible !== true) return null;
+    const summary = summarizeServices(services);
+    const eligible = await eligibleStaffForServices(salonId, targetBranchId, services);
+    if (!eligible.length) return null;
+    const resolveSlots = async (staffId: string): Promise<Array<{ label: string; startAt: Date }>> => {
+      const slots = await suggestedSlots(salonId, targetBranchId, staffId, dateInput, summary.duration, undefined, 96);
+      if (!slots.length) return [];
+      const narrowed = filterSlotsByPreference(slots, preference);
+      return (narrowed.length ? narrowed : slots).slice(0, 4);
+    };
+    const preferredStaff = (customer.preferredStaffIds || []).map(String).find((staffId) => eligible.some((staff) => staff.staffId === staffId));
+    let staffPick: { staffId: string; name: string } | null = null;
+    let pickedSlots: Array<{ label: string; startAt: Date }> = [];
+    if (preferredStaff) {
+      const staff = eligible.find((entry) => entry.staffId === preferredStaff);
+      if (staff) {
+        const slots = await resolveSlots(staff.staffId);
+        if (slots.length) { staffPick = staff; pickedSlots = slots; }
+      }
+    }
+    if (!staffPick) {
+      for (const staff of eligible) {
+        const slots = await resolveSlots(staff.staffId);
+        if (slots.length) { staffPick = staff; pickedSlots = slots; break; }
+      }
+    }
+    if (!staffPick || !pickedSlots.length) return null;
+    const slotPick = pickedSlots[0]!;
+    session = await WhatsAppBookingSessionModel.findOneAndUpdate(
+      { salonId, waPhone: phone },
+      {
+        $set: {
+          branchId: targetBranchId,
+          profileName: message.profileName,
+          state: "confirm_hold",
+          managementAction: null,
+          targetAppointmentId: null,
+          modifyField: null,
+          category: services[0]!.category || null,
+          categoryPage: 0,
+          servicePage: 0,
+          staffPage: 0,
+          serviceId: String(services[0]!._id),
+          serviceName: services[0]!.name,
+          serviceIds: services.map((service) => String(service._id)),
+          serviceNames: services.map((service) => service.name),
+          durationMinutes: summary.duration,
+          value: summary.value,
+          availableSlots: [],
+          date: dateInput,
+          startAt: new Date(slotPick.startAt),
+          staffId: staffPick.staffId,
+          holdAppointmentId: null,
+          customerName: message.profileName || "",
+          lastAlternates: "",
+          earliestOffer: "",
+          expiresAt: sessionExpiry()
+        }
+      },
+      { upsert: true, new: true }
+    );
+    await CustomerModel.updateOne({ salonId, normalizedPhone: phone }, { $set: { interactionStatus: "booking_started" } });
+    return {
+      action: "booking_proposal",
+      reply: `Your usual — ${summary.names.join(" + ")} on ${displayDate(dateInput)} at ${slotPick.label} with ${staffPick.name}. Total: ${money(summary.value)}, ${summary.duration} minutes.\nReply CONFIRM to book, or CANCEL to change your mind.`,
+      interactive: buttonsInteractive("Book this appointment?", [{ id: "confirm", title: "Confirm" }, { id: "cancel", title: "Cancel" }])
+    };
+  };
+
+  const naturalBookingSignal = BOOKING_KEYWORDS.some((keyword) => lower === keyword || lower.includes(keyword)) || SALON_SERVICE_SIGNAL.test(lower);
   const extremeBookingGate = !activeBookingState && !(sessionValid && session!.state !== "menu" && isManagementState(session!.state)) && naturalBookingSignal;
   if (extremeBookingGate) {
     const proposal = await oneMessageBooking();
     if (proposal) return proposal;
   }
+  if (memoryBookingSignal) {
+    const proposal = await memoryBooking();
+    if (proposal) return proposal;
+  }
 
   if (!session || session.expiresAt < new Date() || BOOKING_KEYWORDS.includes(lower)) {
-    const hasBookingIntent = BOOKING_KEYWORDS.some((keyword) => lower === keyword || lower.includes(keyword)) || /hair|spa|skin|nail|makeup|beard|colour|color|service|price|baal|kaat|kat|salon/.test(lower) || (ai.isSalonRelated !== false && (ai.intent === "BOOK_APPOINTMENT" || ai.intent === "SERVICES" || ai.intent === "PRICES"));
+    const hasBookingIntent = BOOKING_KEYWORDS.some((keyword) => lower === keyword || lower.includes(keyword)) || SALON_SERVICE_SIGNAL.test(lower) || (ai.isSalonRelated !== false && (ai.intent === "BOOK_APPOINTMENT" || ai.intent === "SERVICES" || ai.intent === "PRICES"));
     if (!hasBookingIntent) {
+      const conciergeReply = await concierge();
+      if (conciergeReply) return conciergeReply;
       const greeting = !session ? "Hi! I can help you book or manage your appointments.\n\n" : "";
       session = await WhatsAppBookingSessionModel.findOneAndUpdate(
         { salonId, waPhone: phone },
@@ -1234,7 +1432,8 @@ async function handleBookingMessage(salonId: string, branchId: string, message: 
 
   if (session.state === "select_branch") {
     const index = Number(text) - 1;
-    const selected = branches[index] || branches.find((branch) => branch._id === text) || branchMatch;
+    const resolvedBranch = resolveBranchIntent(text, branches);
+    const selected = branches[index] || branches.find((branch) => branch._id === text) || branchMatch || (resolvedBranch ? branches.find((branch) => String(branch._id) === String(resolvedBranch!.branchId)) : undefined);
     if (!selected) return { action: "needs_branch", reply: `Please choose a valid branch.\n${formatOptions(branches.map((b) => b.name))}` };
     session.branchId = selected._id;
     session.state = "select_category";
@@ -1289,6 +1488,17 @@ async function handleBookingMessage(salonId: string, branchId: string, message: 
           await session.save();
           return { action: "search_results", reply: pageReply(`Search results for "${directQuery}":`, services.map((s) => `${s.name} - ${money(s.pricePaise)}`), hasNext), interactive: listInteractive("Choose a service:", "Services", [...services.map((s) => ({ id: String(s._id), title: s.name.slice(0, 24), description: money(s.pricePaise) })), ...(hasNext ? [{ id: "more", title: "More" }] : [])]) };
         }
+        const synonyms = await resolveServiceIntents({ text, salonId, branchId: session.branchId });
+        if (synonyms.matched.length && !synonyms.ambiguousNames.length) {
+          const list = synonyms.matched.slice(0, WHATSAPP_PAGE_SIZE).map((entry) => ({ _id: entry.service._id, name: entry.service.name, pricePaise: entry.service.pricePaise }));
+          session.searchQuery = directQuery;
+          session.category = null;
+          session.servicePage = 0;
+          session.state = "select_service";
+          session.expiresAt = sessionExpiry();
+          await session.save();
+          return { action: "search_results", reply: pageReply(`Found matching services for "${directQuery}":`, list.map((s) => `${s.name} - ${money(s.pricePaise)}`), false), interactive: listInteractive("Choose a service:", "Services", list.map((s) => ({ id: String(s._id), title: s.name.slice(0, 24), description: money(s.pricePaise) }))) };
+        }
       }
       return { action: "needs_category", reply: `${pageReply("Please choose a category.", page.pageItems, page.hasNext)}\n\nOr type any service name to search.` };
     }
@@ -1339,7 +1549,14 @@ async function handleBookingMessage(salonId: string, branchId: string, message: 
     }
     const page = pagedOptions(services, session.servicePage || 0);
     const index = Number(text) - 1;
-    const selected = page.pageItems[index] || services.find((service) => String(service._id) === text || service.name.toLowerCase() === lower || lower.includes(service.name.toLowerCase()) || (ai.service && service.name.toLowerCase().includes(ai.service.toLowerCase())));
+    let selected = page.pageItems[index] || services.find((service) => String(service._id) === text || service.name.toLowerCase() === lower || lower.includes(service.name.toLowerCase()) || (ai.service && service.name.toLowerCase().includes(ai.service.toLowerCase())));
+    if (!selected && directSearchInput(text)) {
+      const resolved = await resolveServiceIntents({ text, salonId, branchId: session.branchId });
+      if (resolved.matched.length && !resolved.ambiguousNames.length) {
+        selected = resolved.matched[0]!.service as (typeof services)[number];
+        session.searchQuery = "";
+      }
+    }
     if (!selected) return { action: "needs_service", reply: pageReply("Please select a valid service number/name.", page.pageItems.map((s) => `${s.name} - ${money(s.pricePaise)}`), page.hasNext) };
     const currentIds = session.serviceIds || [];
     if (!currentIds.includes(String(selected._id))) currentIds.push(String(selected._id));
@@ -1379,7 +1596,14 @@ async function handleBookingMessage(salonId: string, branchId: string, message: 
       session.expiresAt = sessionExpiry();
       await session.save();
       const { services, hasNext } = await serviceSearchPage(salonId, session.branchId, searchQuery, 0);
-      if (!services.length) return { action: "search_empty", reply: `No services found for "${searchQuery}". Reply YES to browse categories or DONE for staff.` };
+      if (!services.length) {
+        const synonyms = await resolveServiceIntents({ text, salonId, branchId: session.branchId });
+        if (synonyms.matched.length && !synonyms.ambiguousNames.length) {
+          const list = synonyms.matched.slice(0, WHATSAPP_PAGE_SIZE).map((entry) => ({ _id: entry.service._id, name: entry.service.name, pricePaise: entry.service.pricePaise }));
+          return { action: "search_results", reply: pageReply(`Found matching services for "${searchQuery}":`, list.map((s) => `${s.name} - ${money(s.pricePaise)}`), false), interactive: listInteractive("Choose a service:", "Services", list.map((s) => ({ id: String(s._id), title: s.name.slice(0, 24), description: money(s.pricePaise) }))) };
+        }
+        return { action: "search_empty", reply: `No services found for "${searchQuery}". Reply YES to browse categories or DONE for staff.` };
+      }
       return { action: "search_results", reply: pageReply(`Search results for "${searchQuery}":`, services.map((s) => `${s.name} - ${money(s.pricePaise)}`), hasNext), interactive: listInteractive("Choose a service:", "Services", [...services.map((s) => ({ id: String(s._id), title: s.name.slice(0, 24), description: money(s.pricePaise) })), ...(hasNext ? [{ id: "more", title: "More" }] : [])]) };
     }
     if (!isDoneInput(text)) return { action: "needs_add_more", reply: "Reply YES to add another service, type a service name to search, or DONE to choose staff." };
@@ -1405,7 +1629,8 @@ async function handleBookingMessage(salonId: string, branchId: string, message: 
       return { action: "staff_page", reply: pageReply("More staff:", nextPage.pageItems.map((item) => item.name), nextPage.hasNext), interactive: listInteractive("More staff:", "Staff", [...nextPage.pageItems.map((item) => ({ id: item.staffId, title: item.name.slice(0, 24) })), ...(nextPage.hasNext ? [{ id: "more", title: "More" }] : [])]) };
     }
     const page = pagedOptions(staff, session.staffPage || 0);
-    const selected = page.pageItems[Number(text) - 1] || staff.find((item) => item.staffId === text || item.name.toLowerCase() === lower || item.name.toLowerCase().includes(lower));
+    const fallbackStaff = resolveStaffIntent(text, staff);
+    const selected = page.pageItems[Number(text) - 1] || staff.find((item) => item.staffId === text || item.name.toLowerCase() === lower || item.name.toLowerCase().includes(lower)) || (fallbackStaff ? staff.find((item) => item.staffId === fallbackStaff!.staffId) : undefined);
     if (!selected) return { action: "needs_staff", reply: pageReply("Please choose a valid staff member.", page.pageItems.map((item) => item.name), page.hasNext) };
     session.staffId = selected.staffId;
     session.state = "select_date";
@@ -1543,7 +1768,7 @@ async function handleBookingMessage(salonId: string, branchId: string, message: 
     session.earliestOffer = "";
     session.expiresAt = sessionExpiry();
     await session.save();
-    await CustomerModel.updateOne({ salonId, normalizedPhone: phone }, { $set: { interactionStatus: "booked" } });
+    await recordCustomerBooking(salonId, phone, { staffId: appointment.staffId, serviceIds: appointment.serviceIds, startAt: appointment.startAt });
     const staffTitle = await staffNameOf(salonId, session.staffId!);
     return {
       action: "appointment_created",
@@ -1567,13 +1792,16 @@ async function handleBookingMessage(salonId: string, branchId: string, message: 
     hold.status = "confirmed";
     hold.paymentStatus = "not_required";
     await hold.save();
-    await CustomerModel.updateOne({ salonId, normalizedPhone: phone }, { $set: { interactionStatus: "booked" } });
+    await recordCustomerBooking(salonId, phone, { staffId: hold.staffId, serviceIds: (hold.serviceIds || []).map(String), startAt: hold.startAt });
     session.state = "menu";
     session.pendingReminder = true;
     session.expiresAt = sessionExpiry();
     await session.save();
     return { action: "appointment_created", appointment: { id: String(hold._id) }, reply: withSuccessTip(`Your appointment is confirmed.\nService: ${hold.serviceNames.join(", ")}\nDate: ${hold.startAt.toLocaleString("en-IN", { timeZone: "Asia/Kolkata" })}\nPrice: ${money(hold.value)}\nWant a reminder the day before? Reply YES or NO.`) };
   }
+
+  const conciergeReply = await concierge();
+  if (conciergeReply) return conciergeReply;
 
   return { action: "ignored", reply: "Send 'Book appointment' to start booking." };
 }
@@ -2658,6 +2886,7 @@ async function confirmRebookReply(customerId: string, salonId: string, session: 
     throw error;
   }
   publishRealtimeEvent(salonId, "appointment.created", { id: String(appointment._id), branchId: appointment.branchId, staffId: appointment.staffId, startAt: appointment.startAt.toISOString(), endAt: appointment.endAt.toISOString(), status: appointment.status, source: "whatsapp_rebook" });
+  await recordCustomerBooking(salonId, session.waPhone, { staffId: appointment.staffId, serviceIds: appointment.serviceIds.map(String), startAt: appointment.startAt });
   void notifyStaffByStaffId(salonId, appointment.staffId, {
     title: "New appointment",
     body: `${appointment.customerName} — ${appointment.serviceNames.join(", ")} at ${appointment.startAt.toLocaleString("en-IN", { timeZone: "Asia/Kolkata" })}`,

@@ -18,7 +18,7 @@ export async function createRazorpayPaymentLink(input: { amountPaise: number; cu
       amount: input.amountPaise,
       currency: "INR",
       accept_partial: false,
-      description: "SalonFlow booking deposit",
+      description: "Solastio booking deposit",
       customer: { name: input.customerName, contact: input.customerPhone },
       notify: { sms: false, email: false },
       notes: { appointmentId: input.appointmentId, salonId: input.salonId, source: "whatsapp" }

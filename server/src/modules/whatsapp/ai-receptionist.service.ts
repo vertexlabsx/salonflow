@@ -1,4 +1,5 @@
 import { loadEnv } from "../../config/env";
+import { serviceSynonymQuery } from "./catalog-intent";
 
 export interface AiReceptionistResult {
   intent: "BOOK_APPOINTMENT" | "CANCEL_APPOINTMENT" | "RESCHEDULE_APPOINTMENT" | "CHECK_APPOINTMENT" | "SERVICES" | "PRICES" | "HUMAN_SUPPORT" | "GENERAL_QUESTION";
@@ -37,7 +38,7 @@ function localFallbackEntities(text: string): Partial<AiReceptionistResult> {
   const date = lower.includes("day after tomorrow") || lower.includes("parso") ? addDays(today, 2).toLocaleDateString("en-CA") : lower.includes("tomorrow") || lower.includes("kal") ? addDays(today, 1).toLocaleDateString("en-CA") : lower.match(/\b\d{4}-\d{2}-\d{2}\b/)?.[0];
   const rawTime = lower.match(/\b\d{1,2}(?::\d{2})?\s*(?:am|pm)\b/)?.[0] || lower.match(/\b\d{1,2}:\d{2}\b/)?.[0] || lower.match(/\b\d{1,2}\s*baje\b/)?.[0]?.replace(/\s*baje\b/, lower.includes("raat") && !lower.includes("subah") ? "pm" : "");
   const time = normalizeTime(rawTime);
-  const service = /baal|hair|haircut|kaat|kat|cut/.test(lower) ? "Haircut" : undefined;
+  const service = serviceSynonymQuery(lower);
   const isIndic = /[\u0600-\u06FF\u0900-\u097F]|\b(tu|tum|aap|kaisa|kaisi|kaise|hai|hain|mujhe|baal|kaatna|kal|parso|raat|subah|shaam|baje|chahiye|bata|batao|shukriya)\b/.test(lower);
   return { ...(date ? { date } : {}), ...(time ? { time } : {}), ...(service ? { service } : {}), language: isIndic ? "hi-Latn" : "en", isSalonRelated: /book|appointment|hair|spa|skin|nail|makeup|beard|colour|color|service|price|baal|kaat|kat|cut|salon/.test(lower) };
 }
@@ -57,7 +58,7 @@ export async function extractReceptionistIntent(text: string): Promise<AiRecepti
         temperature: 0,
         response_format: { type: "json_object" },
         messages: [
-          { role: "system", content: `You are a multilingual salon WhatsApp receptionist for SalonFlow. Understand English, Hindi, Hinglish, Urdu, Punjabi-style roman text, and mixed language. Today is ${new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" })} in Asia/Kolkata.
+          { role: "system", content: `You are a multilingual salon WhatsApp receptionist for Solastio. Understand English, Hindi, Hinglish, Urdu, Punjabi-style roman text, and mixed language. Today is ${new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" })} in Asia/Kolkata.
 
 Return only compact JSON with: intent, branch, service, date, time, language, isSalonRelated, reply.
 

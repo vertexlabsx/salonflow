@@ -89,6 +89,15 @@ const loginSession = (id: string, accessToken = `access-${id}`) => ({
 
 function serviceWith(responder: Responder): { service: StaffAppService; calls: typeof sharedCalls } {
   mockCapacitorHttpResponder = responder;
+  Object.defineProperty(globalThis, "fetch", {
+    configurable: true,
+    value: vi.fn(async (url: string | URL, init?: RequestInit) => {
+      const method = (init?.method || "GET").toUpperCase() as "GET" | "POST" | "PATCH";
+      const body = typeof init?.body === "string" && init.body ? JSON.parse(init.body) : undefined;
+      const data = await firstValueFrom(responder(method, String(url), body, { headers: new HttpHeaders(init?.headers as Record<string, string> | undefined), withCredentials: init?.credentials === "include" }));
+      return { ok: true, status: 200, json: async () => data } as Response;
+    })
+  });
   const http = { get: vi.fn(), post: vi.fn(), patch: vi.fn() } as unknown as HttpClient;
   return { service: new StaffAppService(http), calls: sharedCalls };
 }

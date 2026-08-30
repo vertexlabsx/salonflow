@@ -31,7 +31,7 @@ import { ShopfiyClientService } from "../../core/shopify-client.service";
                 <small>{{ flow.description || flow.trigger }}</small>
               </div>
               <span class="flow-status" [attr.data-status]="flow.status">{{ flow.status }}</span>
-              <span class="flow-metrics">{{ flow.metrics?.['messagesSent'] || 0 }} sent</span>
+              <span class="flow-metrics">{{ flow.metrics['messagesSent'] || 0 }} sent</span>
             </article>
           } @empty {
             <p class="empty">No flows configured yet. Contact your automation provider to get started.</p>

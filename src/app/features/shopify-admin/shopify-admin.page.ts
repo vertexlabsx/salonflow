@@ -11,7 +11,7 @@ import type { Overview, Flow, Template, Customer, Campaign, LogRow } from "./sho
   template: `
     <section class="shopify-auto-page">
       <header class="hero">
-        <div><p class="eyebrow">Shopify Automation</p><h1>WhatsApp flows for Shopify orders, carts and campaigns</h1><p>Internal SalonFlow staff module using the existing WhatsApp and staff session infrastructure.</p></div>
+        <div><p class="eyebrow">Shopify Automation</p><h1>WhatsApp flows for Shopify orders, carts and campaigns</h1><p>Internal Solastio staff module using the existing WhatsApp and staff session infrastructure.</p></div>
         <div class="hero-actions"><button type="button" (click)="refresh()">Refresh</button><button type="button" (click)="seedFlows()">Install ready-made flows</button></div>
       </header>
 
@@ -24,7 +24,7 @@ import type { Overview, Flow, Template, Customer, Campaign, LogRow } from "./sho
       @if (activeTab() === 'Overview') {
         <section class="grid two">
           <article class="card"><span>Connected Shopify Store</span><strong>{{ overview()?.store?.storeName || overview()?.store?.shop || 'Not connected' }}</strong><small>{{ overview()?.store?.status || 'Connect with Shopify OAuth from Settings' }}</small></article>
-          <article class="card"><span>WhatsApp Status</span><strong>{{ overview()?.whatsapp?.status || 'SalonFlow WhatsApp' }}</strong><small>Messages reuse existing WhatsApp outbound logs.</small></article>
+          <article class="card"><span>WhatsApp Status</span><strong>{{ overview()?.whatsapp?.status || 'Solastio WhatsApp' }}</strong><small>Messages reuse existing WhatsApp outbound logs.</small></article>
         </section>
         <section class="kpis">
           @for (metric of metricCards(); track metric.label) { <article><span>{{ metric.label }}</span><strong>{{ metric.value }}</strong></article> }
@@ -50,7 +50,7 @@ import type { Overview, Flow, Template, Customer, Campaign, LogRow } from "./sho
         <section class="list">@for (campaign of campaigns(); track $index) { <article><div><strong>{{ campaign.name }}</strong><small>{{ campaign.templateName }}</small></div><span>{{ campaign.status }}</span><button type="button" [disabled]="campaign.status === 'completed' || campaign.status === 'running'" (click)="confirmCampaign(campaign); $event.stopPropagation()">Confirm Send</button></article> }</section>
       }
 
-      @if (activeTab() === 'Templates') { <section class="list">@for (template of templates(); track template.name + template.language) { <article><div><strong>{{ template.name }}</strong><small>{{ template.category }} · {{ template.language }}</small></div><span>{{ template.status }}</span></article> } @empty { <p>No synced Meta templates found in SalonFlow.</p> }</section> }
+      @if (activeTab() === 'Templates') { <section class="list">@for (template of templates(); track template.name + template.language) { <article><div><strong>{{ template.name }}</strong><small>{{ template.category }} · {{ template.language }}</small></div><span>{{ template.status }}</span></article> } @empty { <p>No synced Meta templates found in Solastio.</p> }</section> }
       @if (activeTab() === 'Logs') { <section class="list">@for (log of logs(); track $index) { <article><div><strong>{{ log.toPhone }} · {{ log.type }}</strong><small>{{ log.body }}</small></div><span [class.warn]="log.status === 'failed'">{{ log.status }}</span></article> }</section> }
       @if (activeTab() === 'Settings') { <section class="card"><h2>Shopify connection</h2><p>Use Shopify OAuth/app installation. Tokens are exchanged and stored server-side; staff never enters a Shopify password.</p><input [(ngModel)]="connect.shop" placeholder="client-store.myshopify.com" /><input [(ngModel)]="connect.code" placeholder="OAuth code fallback" /><div class="hero-actions"><button type="button" (click)="beginShopifyInstall()">Connect Shopify OAuth</button><button type="button" (click)="connectShopify()">Exchange code manually</button><button type="button" (click)="testShopify()">Test connection</button><button type="button" (click)="disconnectShopify()">Disconnect</button></div></section> }
     </section>

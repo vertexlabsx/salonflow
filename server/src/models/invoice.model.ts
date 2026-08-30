@@ -2,6 +2,8 @@ import mongoose, { model, Schema } from "mongoose";
 import type { Model } from "mongoose";
 
 export interface InvoiceLine {
+  serviceId?: string;
+  productId?: string;
   description: string;
   quantity: number;
   unitAmountPaise: number;
@@ -41,6 +43,8 @@ export interface Invoice {
 
 const invoiceLineSchema = new Schema<InvoiceLine>(
   {
+    serviceId: { type: String, maxlength: 120, default: "" },
+    productId: { type: String, maxlength: 120, default: "" },
     description: { type: String, required: true, maxlength: 240 },
     quantity: { type: Number, required: true, min: 1 },
     unitAmountPaise: { type: Number, required: true, min: 0 },

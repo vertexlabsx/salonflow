@@ -13,7 +13,7 @@ import { StaffAppService } from "../../core/staff-app.service";
         <section class="staff-card">
           <div class="orb login-orb"></div>
           <div class="orb login-orb-secondary"></div>
-          <p class="eyebrow dark">Aura Workspace</p>
+          <p class="eyebrow dark">Solastio Workspace</p>
           <h2>Open your workspace</h2>
 
           @if (staff.error()) {
@@ -68,16 +68,16 @@ import { StaffAppService } from "../../core/staff-app.service";
     </ion-content>
   `,
   styles: [`
-    .staff-login-shell { --background: var(--staff-background); }
-    .login-grid { width: min(520px, calc(100% - 28px)); min-height: 100%; margin: 0 auto; padding: 7vh 0; display: grid; grid-template-columns: 1fr; align-items: center; }
-    .staff-card { position: relative; overflow: hidden; padding: 34px; border: 1px solid var(--staff-border); border-radius: 28px; background: var(--staff-primary-light); box-shadow: var(--staff-shadow); }
+    .staff-login-shell { --background: radial-gradient(circle at 12% 5%, color-mix(in srgb,var(--staff-primary) 16%,transparent), transparent 30%), radial-gradient(circle at 88% 12%, color-mix(in srgb,var(--staff-border-accent) 42%,transparent), transparent 26%), var(--staff-background); }
+    .login-grid { width: min(540px, calc(100% - 28px)); min-height: 100%; margin: 0 auto; padding: 7vh 0; display: grid; grid-template-columns: 1fr; align-items: center; }
+    .staff-card { position: relative; overflow: hidden; padding: 38px; border: 1px solid color-mix(in srgb,var(--staff-primary) 18%,var(--staff-border)); border-radius: 34px; background: linear-gradient(145deg,var(--staff-surface),var(--staff-surface-secondary)); box-shadow: var(--staff-shadow-elevated); }
     .orb { position: absolute; z-index: 0; border-radius: 50%; opacity: .5; pointer-events: none; }
-    .orb.login-orb { width: 190px; height: 190px; right: -42px; top: -36px; background: var(--staff-decoration-one); }
-    .orb.login-orb-secondary { width: 140px; height: 140px; left: -48px; bottom: -48px; background: var(--staff-decoration-two); }
+    .orb.login-orb { width: 220px; height: 220px; right: -54px; top: -54px; background: radial-gradient(circle,var(--staff-border-accent),transparent 68%); }
+    .orb.login-orb-secondary { width: 170px; height: 170px; left: -58px; bottom: -58px; background: radial-gradient(circle,var(--staff-primary-light),transparent 70%); }
     .staff-card > :not(.orb) { position: relative; z-index: 1; }
     .eyebrow { position: relative; margin: 0 0 12px; color: var(--staff-primary-hover); font-size: .72rem; font-weight: 800; letter-spacing: .16em; text-transform: uppercase; }
     .dark { color: var(--staff-primary); }
-    h2 { margin: 0; color: var(--staff-text); font-size: clamp(2rem, 5vw, 3.2rem); line-height: 1; letter-spacing: -.04em; }
+    h2 { margin: 0; color: var(--staff-text); font-family:Georgia,"Times New Roman",serif;font-size: clamp(2.2rem, 5vw, 3.5rem); font-weight:500;line-height: .98; letter-spacing: -.055em; }
     .staff-form { display: grid; gap: 12px; margin-top: 20px; }
     .floating-field { position: relative; min-width: 0; }
     .floating-field > svg { position: absolute; z-index: 2; top: 50%; left: 18px; width: 20px; height: 20px; transform: translateY(-50%); fill: currentColor; color: #64748b; pointer-events: none; transition: color 180ms ease; }
@@ -101,17 +101,17 @@ import { StaffAppService } from "../../core/staff-app.service";
     .password-toggle:hover:not(:disabled), .password-toggle:focus-visible { border: 0; background: transparent; color: var(--staff-input-focus); }
     .password-toggle:focus-visible { outline: 3px solid var(--staff-input-focus-ring); outline-offset: -5px; }
     .password-toggle svg { width: 20px; height: 20px; fill: currentColor; }
-    button { margin-top: 14px; min-height: 56px; border: 1px solid var(--staff-primary); border-radius: 16px; background: var(--staff-primary); color: var(--staff-on-primary); font-weight: 750; cursor: pointer; }
-    button:hover:not(:disabled) { border-color: var(--staff-primary-hover); background: var(--staff-primary-hover); }
+    button { margin-top: 14px; min-height: 56px; border: 1px solid var(--staff-primary); border-radius: 18px; background: linear-gradient(135deg,var(--staff-primary),var(--staff-primary-hover)); color: var(--staff-on-primary); font-weight: 800; cursor: pointer; box-shadow:0 16px 34px color-mix(in srgb,var(--staff-primary) 24%,transparent); }
+    button:hover:not(:disabled) { border-color: var(--staff-primary-hover); background: linear-gradient(135deg,var(--staff-primary-hover),var(--staff-primary)); transform:translateY(-1px); }
     button:disabled { cursor: progress; opacity: .72; }
-    .biometric-button, .secondary-button { width: 100%; margin-top: 14px; min-height: 52px; border: 1px solid var(--staff-border-accent); border-radius: 16px; background: var(--staff-surface); color: var(--staff-primary-hover); font-weight: 750; cursor: pointer; }
+    .biometric-button, .secondary-button { width: 100%; margin-top: 14px; min-height: 52px; border: 1px solid var(--staff-border-accent); border-radius: 18px; background: var(--staff-surface); color: var(--staff-primary-hover); font-weight: 800; cursor: pointer; box-shadow:var(--staff-shadow); }
     .biometric-button { border-color: var(--staff-border-accent); background: var(--staff-primary-light); color: var(--staff-primary-hover); }
     .notice { margin: 18px 0; padding: 14px 16px; border: 1px solid var(--staff-error-border); border-radius: 16px; color: var(--staff-error-text); background: var(--staff-error-surface); font-weight: 650; }
     .success { border-color: var(--staff-success-border); color: var(--staff-success-text); background: var(--staff-success-surface); }
     .debug-box { margin: 10px 0; padding: 10px 14px; border: 1px dashed #94a3b8; border-radius: 12px; background: #1e293b; color: #e2e8f0; font-family: monospace; font-size: 11px; line-height: 1.6; }
     .debug-box summary { cursor: pointer; font-size: 12px; font-weight: 700; color: #94a3b8; }
     .debug-line { white-space: pre-wrap; word-break: break-all; }
-    @media (max-width: 820px) { .login-grid { width: calc(100% - 40px); padding: 20px 0; } .staff-card { padding: 20px; } }
+    @media (max-width: 820px) { .login-grid { width: calc(100% - 30px); padding: 20px 0; } .staff-card { padding: 24px 20px;border-radius:28px; } }
     @media (prefers-reduced-motion: reduce) { .floating-field input, .floating-field label, .floating-field > svg, .floating-field input::placeholder { transition: none; } }
   `]
 })

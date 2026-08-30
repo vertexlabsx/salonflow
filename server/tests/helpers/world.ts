@@ -1,6 +1,7 @@
 import { MongoMemoryReplSet } from "mongodb-memory-server";
 import mongoose from "mongoose";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import type { Env } from "../../src/config/env";
 import { setEnvForTesting } from "../../src/config/env";
@@ -17,16 +18,25 @@ let replSet: MongoMemoryReplSet | null = null;
 const DATA_ROOT = path.join(__dirname, "..", "..", ".mongodata");
 // Unique directory per run so a locked leftover from a crashed run can never block startup.
 const TEST_DB_PATH = path.join(DATA_ROOT, `run-${process.pid}-${Date.now()}`);
+const FALLBACK_DB_PATH = path.join(os.tmpdir(), `solastio-mongo-${process.pid}-${Date.now()}`);
 
 export async function startTestMongo(): Promise<string> {
   if (!replSet) {
-    fs.mkdirSync(TEST_DB_PATH, { recursive: true });
-    replSet = await MongoMemoryReplSet.create({
-      instanceOpts: [{ dbPath: TEST_DB_PATH, storageEngine: "wiredTiger" }],
-      replSet: { count: 1, storageEngine: "wiredTiger" }
-    });
+    try {
+      replSet = await createReplSet();
+    } catch (error) {
+      fs.mkdirSync(FALLBACK_DB_PATH, { recursive: true });
+      replSet = await createReplSet(FALLBACK_DB_PATH).catch(() => { throw error; });
+    }
   }
   return replSet.getUri("aura_saas_test");
+}
+
+function createReplSet(dbPath?: string): Promise<MongoMemoryReplSet> {
+  return MongoMemoryReplSet.create({
+    instanceOpts: [{ ...(dbPath ? { dbPath } : {}), storageEngine: "wiredTiger" }],
+    replSet: { count: 1, storageEngine: "wiredTiger" }
+  });
 }
 
 export async function stopTestMongo(): Promise<void> {
@@ -35,6 +45,7 @@ export async function stopTestMongo(): Promise<void> {
     replSet = null;
     try {
       fs.rmSync(TEST_DB_PATH, { recursive: true, force: true });
+      fs.rmSync(FALLBACK_DB_PATH, { recursive: true, force: true });
     } catch {
       // Best effort — a lingering handle must not fail the test run.
     }
@@ -78,13 +89,16 @@ export function testEnv(overrides: Partial<Env> = {}): Env {
     OPENAI_API_KEY: undefined,
     OPENAI_MODEL: "gpt-4o-mini",
     SEED_SALON_ID: "tenant_aura",
-    SEED_SALON_NAME: "Aura Shine Salon & Wellness",
+    SEED_SALON_NAME: "Solastio Studio - Flagship",
     SALON_TIMEZONE: "Asia/Kolkata",
     SEED_OWNER_LOGIN: "owner",
     SEED_OWNER_PASSWORD: "owner@123",
     SEED_STAFF_LOGIN: "reception",
     SEED_STAFF_PASSWORD: "staff@123",
     WHATSAPP_PROVIDER: "mock",
+    WHATSAPP_CONCIERGE_ENABLED: false,
+    WHATSAPP_CONCIERGE_MAX_TURNS: 4,
+    WHATSAPP_CONCIERGE_MODEL: undefined,
     WEB_PUSH_PUBLIC_KEY: undefined,
     WEB_PUSH_PRIVATE_KEY: undefined
   };

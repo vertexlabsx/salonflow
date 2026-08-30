@@ -7,7 +7,7 @@ import { StaffPageStateComponent } from "./staff-page-state.component";
   standalone: true,
   imports: [DatePipe, StaffPageStateComponent],
   template: `
-    <section class="page">
+    <section class="page queue-page">
       <header class="page-head"><div><p class="eyebrow">Today's queue</p><h1>Live queue</h1><p>Timeline and service timers for today.</p></div></header>
       @if (!canReadQueue()) { <section staffPageState class="notice">You do not have permission to read queue data.</section> }
       @if (loading()) { <section staffPageState class="state" [loading]="true">Loading queue...</section> }

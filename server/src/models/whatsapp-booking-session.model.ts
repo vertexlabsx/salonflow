@@ -31,6 +31,7 @@ export interface WhatsAppBookingSession {
   lastAlternates: string;
   earliestOffer: string;
   pendingReminder: boolean;
+  conciergeTurns: number;
   expiresAt: Date;
   createdAt?: Date;
   updatedAt?: Date;
@@ -64,6 +65,7 @@ const whatsAppBookingSessionSchema = new Schema<WhatsAppBookingSession>(
     lastAlternates: { type: String, default: "" },
     earliestOffer: { type: String, default: "" },
     pendingReminder: { type: Boolean, default: false },
+    conciergeTurns: { type: Number, default: 0 },
     expiresAt: { type: Date, required: true },
     managementAction: { type: String, default: null },
     modifyField: { type: String, default: null },

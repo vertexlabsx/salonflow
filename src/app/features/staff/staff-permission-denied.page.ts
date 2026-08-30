@@ -6,7 +6,7 @@ import { StaffAppService } from "../../core/staff-app.service";
   standalone: true,
   imports: [RouterLink],
   template: `
-    <section class="page">
+    <section class="page permission-denied-page">
       <article class="panel permission-panel">
         <p class="eyebrow">Permission denied</p>
         <h1>This workspace is restricted</h1>

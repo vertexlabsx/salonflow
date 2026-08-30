@@ -24,7 +24,7 @@
 
 ## Multi-Salon
 
-- Each salon connects through Embedded Signup from SalonFlow.
+- Each salon connects through Embedded Signup from Solastio.
 - Never reuse one global phone number across salons.
 - Validate every `phoneNumberId` through Meta before storing.
 - Confirm `WhatsAppConnection.phoneNumberId` unique index exists via `npm run db:indexes`.

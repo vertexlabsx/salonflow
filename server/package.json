@@ -1,8 +1,8 @@
 {
-  "name": "aura-staff-server",
+  "name": "solastio-server",
   "version": "0.1.0",
   "private": true,
-  "description": "Independent multi-tenant backend for the Aura Staff App (appointments, staff, WhatsApp booking automation).",
+  "description": "Independent multi-tenant backend for Solastio Salon & Beauty OS (appointments, staff, WhatsApp booking automation).",
   "main": "dist/index.js",
   "scripts": {
     "dev": "tsx watch src/index.ts",

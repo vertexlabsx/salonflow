@@ -1,6 +1,6 @@
 # Oracle Always Free Backend Deployment
 
-This folder contains non-secret deployment support for running the existing SalonFlow backend on an Oracle Cloud Always Free Ampere A1 VM.
+This folder contains non-secret deployment support for running the existing Solastio backend on an Oracle Cloud Always Free Ampere A1 VM.
 
 Render remains the fallback. Do not delete or modify Render during Oracle validation.
 

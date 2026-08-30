@@ -84,7 +84,7 @@ export class OwnerAppService {
         loginId: payload.loginId.trim(),
         password: payload.password,
         ...(twoFactorCode ? { totpToken: twoFactorCode, twoFactorCode } : {}),
-        device: { type: "owner-app", name: "Aura Owner", platform: "web" }
+        device: { type: "owner-app", name: "Solastio Owner", platform: "web" }
       }, { withCredentials: true }));
       const session = this.unwrap(response);
       if (this.normalizeRole(session.user?.role) !== "owner") {
@@ -208,6 +208,8 @@ export class OwnerAppService {
   markOwnerPayrollPaid(id: string): Promise<OwnerPayroll> { return this.post(`/owner-console/people/payroll/${encodeURIComponent(id)}/mark-paid`, {}); }
   ownerClients(params: OwnerOperationsQuery & { relationship?: string; outstanding?: string; lastVisit?: string }): Promise<OwnerOperationsResponse<OwnerClient>> { return this.get("/owner-console/operations/clients", this.operationsParams(params)); }
   ownerClient(id: string, branchId: string): Promise<OwnerClientDetail> { return this.get(`/owner-console/operations/clients/${encodeURIComponent(id)}`, { branchId }); }
+  createOwnerClient(payload: { branchId: string; name: string; phone: string; email?: string; gender?: string; birthday?: string; anniversary?: string; tags?: string[]; notes?: string; address?: string; walletBalancePaise?: number; loyaltyPoints?: number; membershipPlanName?: string; membershipCredits?: number; membershipCreditsRemaining?: number; membershipValidUntil?: string; membershipStatus?: string; packageName?: string; packageCreditsRemaining?: number; subscriptionName?: string; subscriptionStatus?: string }): Promise<{ id: string }> { return this.post("/owner-console/operations/clients", payload); }
+  updateOwnerClient(id: string, payload: { name?: string; email?: string; gender?: string; birthday?: string; anniversary?: string; tags?: string[]; notes?: string; address?: string; walletBalancePaise?: number; loyaltyPoints?: number; membershipPlanName?: string; membershipCredits?: number; membershipCreditsRemaining?: number; membershipValidUntil?: string; membershipStatus?: string; packageName?: string; packageCreditsRemaining?: number; subscriptionName?: string; subscriptionStatus?: string }): Promise<{ id: string; updatedAt: string }> { return this.patch(`/owner-console/operations/clients/${encodeURIComponent(id)}`, payload); }
   ownerInventory(params: OwnerOperationsQuery & { category?: string; supplier?: string }): Promise<OwnerInventoryResponse> { return this.get("/owner-console/operations/inventory", this.operationsParams(params)); }
   ownerInventoryProduct(id: string, branchId: string): Promise<OwnerInventoryDetail> { return this.get(`/owner-console/operations/inventory/${encodeURIComponent(id)}`, { branchId }); }
   ownerMarketing(params: OwnerOperationsQuery & { channel?: string }): Promise<OwnerOperationsResponse<OwnerCampaign>> { return this.get("/owner-console/operations/marketing", this.operationsParams({ ...params, branchId: "all" })); }
@@ -325,7 +327,7 @@ export class OwnerAppService {
 
   private async performRefresh(): Promise<void> {
     const response = await firstValueFrom(this.http.post<OwnerSession | ApiEnvelope<OwnerSession>>(`${this.baseUrl}/auth/refresh`, {
-      device: { type: "owner-app", name: "Aura Owner", platform: "web" }
+      device: { type: "owner-app", name: "Solastio Owner", platform: "web" }
     }, { withCredentials: true }));
     const session = this.unwrap(response);
     if (this.normalizeRole(session.user?.role) !== "owner") {

@@ -105,17 +105,34 @@ describe("owner-console CRM compatibility", () => {
 
   it("lists clients and returns client detail from Mongo customers", async () => {
     const session = await ownerSession();
-    const customer = await CustomerModel.create({ salonId: TENANT, branchId: BRANCH_ID, name: "Asha Rao", normalizedPhone: "919999999999", whatsappPhoneNumberId: "", interactionStatus: "active", source: "crm" });
+    const customer = await CustomerModel.create({ salonId: TENANT, branchId: BRANCH_ID, name: "Asha Rao", normalizedPhone: "919999999999", whatsappPhoneNumberId: "", interactionStatus: "active", source: "crm", walletBalancePaise: 250000, loyaltyPoints: 420, membershipPlanName: "Glow Gold", membershipCredits: 8, membershipCreditsRemaining: 5, membershipValidUntil: "2027-03-31", membershipStatus: "active", packageName: "Hair Spa Pack", packageCreditsRemaining: 2, subscriptionName: "Monthly Grooming", subscriptionStatus: "active" });
     await AppointmentModel.create({ salonId: TENANT, branchId: BRANCH_ID, staffId: "staff_seed_reception", customerId: String(customer._id), customerName: customer.name, serviceIds: ["svc_haircut"], serviceNames: ["Haircut"], durationMinutes: 30, value: 50000, startAt: new Date(), endAt: new Date(Date.now() + 30 * 60_000), status: "booked", source: "crm" });
 
     const list = await supertest(app).get("/api/v1/owner-console/operations/clients").set({ Authorization: `Bearer ${session.accessToken}` }).query({ branchId: "all", page: 1, pageSize: 30 });
     expect(list.status).toBe(200);
-    expect(list.body.data.items[0]).toMatchObject({ name: "Asha Rao", phone: "919999999999" });
+    expect(list.body.data.items[0]).toMatchObject({ name: "Asha Rao", phone: "919999999999", walletBalancePaise: 250000, loyaltyPoints: 420, membershipPlanName: "Glow Gold", packageName: "Hair Spa Pack", subscriptionName: "Monthly Grooming" });
 
     const detail = await supertest(app).get(`/api/v1/owner-console/operations/clients/${customer._id}`).set({ Authorization: `Bearer ${session.accessToken}` }).query({ branchId: BRANCH_ID });
     expect(detail.status).toBe(200);
     expect(detail.body.data.client.visitCount).toBe(1);
+    expect(detail.body.data.client).toMatchObject({ walletBalancePaise: 250000, loyaltyPoints: 420, packageCreditsRemaining: 2, subscriptionStatus: "active" });
+    expect(detail.body.data.membership).toMatchObject({ planName: "Glow Gold", planCredits: 8, creditsRemaining: 5, validityDate: "2027-03-31", status: "active" });
     expect(detail.body.data.appointments).toHaveLength(1);
+  });
+
+  it("creates and updates client wallet, loyalty, membership, package and subscription fields", async () => {
+    const session = await ownerSession();
+    const auth = { Authorization: `Bearer ${session.accessToken}`, "x-csrf-token": session.csrfToken };
+    const create = await supertest(app).post("/api/v1/owner-console/operations/clients").set(auth).send({ branchId: BRANCH_ID, name: "Meera Jain", phone: "919111111111", walletBalancePaise: 100000, loyaltyPoints: 80, membershipPlanName: "Silver Care", membershipCredits: 4, membershipCreditsRemaining: 4, membershipValidUntil: "2027-01-31", membershipStatus: "active", packageName: "Blowdry Pack", packageCreditsRemaining: 3, subscriptionName: "Weekly Nails", subscriptionStatus: "paused" });
+    expect(create.status).toBe(201);
+
+    const update = await supertest(app).patch(`/api/v1/owner-console/operations/clients/${create.body.data.id}`).set(auth).send({ walletBalancePaise: 150000, loyaltyPoints: 120, membershipCreditsRemaining: 2, subscriptionStatus: "active" });
+    expect(update.status).toBe(200);
+
+    const detail = await supertest(app).get(`/api/v1/owner-console/operations/clients/${create.body.data.id}`).set({ Authorization: `Bearer ${session.accessToken}` }).query({ branchId: BRANCH_ID });
+    expect(detail.status).toBe(200);
+    expect(detail.body.data.client).toMatchObject({ walletBalancePaise: 150000, loyaltyPoints: 120, packageName: "Blowdry Pack", packageCreditsRemaining: 3, subscriptionName: "Weekly Nails", subscriptionStatus: "active" });
+    expect(detail.body.data.membership).toMatchObject({ planName: "Silver Care", creditsRemaining: 2 });
   });
 
   it("creates, lists, opens and transitions owner appointments", async () => {

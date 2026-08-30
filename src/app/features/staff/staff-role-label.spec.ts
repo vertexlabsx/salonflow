@@ -32,9 +32,9 @@ describe("formatStaffRoleLabel", () => {
   });
 
   it("preserves long display values and reacts to changed inputs without caching", () => {
-    const first = resolveStaffIdentity({ roleDisplayName: "Senior Hair and Beauty Experience Specialist", branchName: "Aura Shine Jubilee Hills Flagship" });
+    const first = resolveStaffIdentity({ roleDisplayName: "Senior Hair and Beauty Experience Specialist", branchName: "Solastio Jubilee Hills Flagship" });
     const changed = resolveStaffIdentity({ roleDisplayName: "Salon Manager", branchName: "Kondapur" });
-    expect(first.subtitle).toBe("Senior Hair and Beauty Experience Specialist · Aura Shine Jubilee Hills Flagship");
+    expect(first.subtitle).toBe("Senior Hair and Beauty Experience Specialist · Solastio Jubilee Hills Flagship");
     expect(changed.subtitle).toBe("Salon Manager · Kondapur");
   });
 });
