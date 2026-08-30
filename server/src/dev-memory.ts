@@ -1,5 +1,6 @@
 import { MongoMemoryReplSet } from "mongodb-memory-server";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { createApp } from "./app";
 import { connectMongo } from "./config/mongo";
@@ -27,13 +28,26 @@ async function seedShopifyUsers() {
   }
 }
 
-async function main(): Promise<void> {
-  const dbPath = path.join(process.cwd(), ".mongodata", `dev-${process.pid}-${Date.now()}`);
-  fs.mkdirSync(dbPath, { recursive: true });
-  const replSet = await MongoMemoryReplSet.create({
-    instanceOpts: [{ dbPath, storageEngine: "wiredTiger", args: ["--wiredTigerCacheSizeGB", "0.25"] }],
+async function createReplSet(dbPath: string): Promise<MongoMemoryReplSet> {
+  return MongoMemoryReplSet.create({
+    instanceOpts: [{ dbPath, storageEngine: "wiredTiger" }],
     replSet: { count: 1, storageEngine: "wiredTiger" }
   });
+}
+
+async function main(): Promise<void> {
+  let dbPath = path.join(process.cwd(), ".mongodata", `dev-${process.pid}-${Date.now()}`);
+  let replSet: MongoMemoryReplSet;
+  try {
+    // Prefer the repo drive (D:) — the system temp drive may not have enough free
+    // space for WiredTiger journal pre-allocation.
+    fs.mkdirSync(dbPath, { recursive: true });
+    replSet = await createReplSet(dbPath);
+  } catch {
+    dbPath = path.join(os.tmpdir(), `solastio-dev-${process.pid}-${Date.now()}`);
+    fs.mkdirSync(dbPath, { recursive: true });
+    replSet = await createReplSet(dbPath);
+  }
   const uri = replSet.getUri("aura_dev");
 
   setEnvForTesting({
@@ -98,7 +112,7 @@ async function main(): Promise<void> {
   const shutdown = async () => {
     server.close();
     await replSet.stop();
-    try { fs.rmSync(dbPath, { recursive: true, force: true }); } catch {}
+    try { if (dbPath.startsWith(process.cwd())) fs.rmSync(dbPath, { recursive: true, force: true }); } catch {}
     process.exit(0);
   };
   process.on("SIGINT", shutdown);

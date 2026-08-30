@@ -25,7 +25,7 @@ export const STAFF_CREDENTIALS = {
 /* ── Owner Credentials ─────────────────────────────────── */
 
 export const OWNER_CREDENTIALS = {
-  tenantId: process.env.OWNER_TENANT || "tenant_salonist",
+  tenantId: process.env.OWNER_TENANT || "tenant_aura",
   loginId: process.env.OWNER_USER || "",
   password: process.env.OWNER_PASS || "",
 };
@@ -77,11 +77,24 @@ export async function apiLoginStaff(context: BrowserContext): Promise<boolean> {
     const body = await loginRes.json().catch(() => ({}));
     const session = body?.data || body;
     if (!session?.accessToken) return false;
+    const sessionUser = session?.user as { id?: string; loginId?: string; name?: string; role?: string } | undefined;
+    if (!sessionUser?.id) return false;
 
-    // Store accessToken in localStorage so the Angular service can pick it up
-    await context.addInitScript((token: string) => {
-      localStorage.setItem("auraStaffAccessToken", token);
-    }, session.accessToken);
+    // The staff app keeps tokens out of localStorage (in-memory access token +
+    // httpOnly refresh cookie). It persists only a session *hint* under
+    // auraStaffPersistentSession, which the guard reads to restore + refresh.
+    const hint = JSON.stringify({
+      tenantId: STAFF_CREDENTIALS.tenantId,
+      user: {
+        id: sessionUser.id,
+        loginId: sessionUser.loginId || STAFF_CREDENTIALS.loginId,
+        name: sessionUser.name || STAFF_CREDENTIALS.loginId,
+        role: sessionUser.role || "receptionist",
+      },
+    });
+    await context.addInitScript((persisted) => {
+      localStorage.setItem("auraStaffPersistentSession", persisted);
+    }, hint);
 
     return true;
   } catch {
@@ -101,7 +114,7 @@ export async function apiLoginOwner(context: BrowserContext): Promise<boolean> {
       headers: csrfToken ? { "x-csrf-token": csrfToken } : {},
       data: {
         tenantId: OWNER_CREDENTIALS.tenantId,
-        email: OWNER_CREDENTIALS.loginId,
+        email: OWNER_CREDENTIALS.loginId.includes("@") ? OWNER_CREDENTIALS.loginId : undefined,
         loginId: OWNER_CREDENTIALS.loginId,
         password: OWNER_CREDENTIALS.password,
         device: { type: "owner-app", name: "Solastio Owner", platform: "web" },
@@ -114,19 +127,9 @@ export async function apiLoginOwner(context: BrowserContext): Promise<boolean> {
     const session = body?.data || body;
     if (!session?.accessToken) return false;
 
-    // Owner app uses httpOnly refresh cookie (set by the login response)
-    // + in-memory accessToken restored via owner.restore() → refresh()
-    // The refresh cookie is already stored in the browser context by context.request.
-    // On page load, Angular's ownerAuthGuard calls restore() → refresh() using the cookie.
-    // We also inject the accessToken as a fallback so the page doesn't redirect to login.
-    await context.addInitScript((token: string) => {
-      // Owner app reads token via its in-memory service, but we need
-      // the page to load the owner shell. The guard calls restore() which
-      // hits /auth/refresh with the cookie. If cookie is set, it works.
-      // Store in localStorage as backup for the owner service.
-      try { localStorage.setItem("auraOwnerAccessToken", token); } catch { /* */ }
-    }, session.accessToken);
-
+    // Owner app holds its access token in memory and restores via
+    // owner.restore() → /auth/refresh using the httpOnly cookie already
+    // persisted in the browser context by context.request.
     return true;
   } catch {
     return false;
