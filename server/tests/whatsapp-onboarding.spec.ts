@@ -8,6 +8,7 @@ import { BranchModel } from "../src/models/branch.model";
 import { SalonModel } from "../src/models/salon.model";
 import { ServiceModel } from "../src/models/service.model";
 import { CustomerModel } from "../src/models/customer.model";
+import { WhatsAppOutboundModel } from "../src/models/whatsapp-outbound.model";
 import { loadEnv, setEnvForTesting } from "../src/config/env";
 import { createHmac } from "node:crypto";
 import { encryptSecret } from "../src/shared/secret-box";
@@ -159,6 +160,35 @@ describe("multi-tenant WhatsApp onboarding", () => {
     expect(faq.status).toBe(200);
     expect(faq.body.data.action).toBe("faq_day_hours");
     expect(faq.body.data.reply).toContain("10:00 - 21:00");
+  });
+
+  it("greets a fresh chat with the native booking flow form plus a menu follow-up when a Flow ID is configured", async () => {
+    setEnvForTesting({ ...loadEnv(), WHATSAPP_PROVIDER: "mock", WHATSAPP_BOOKING_FLOW_ID: "flow_test_123", META_APP_SECRET: "", META_WEBHOOK_APP_SECRET: "" });
+    const phone = "919999111111";
+    const res = await sendWhatsAppSimMessage(app, { from: phone, text: "hi", messageId: "wamid.sim.flowgreet" });
+    expect(res.status).toBe(200);
+    expect(res.body.data.action).toBe("booking_flow");
+    expect(res.body.data.interactive).toMatchObject({ type: "flow" });
+    expect(res.body.data.followUp).toMatchObject({ action: "menu", interactive: { type: "list" } });
+    expect(res.body.data.interactive.action.parameters).toMatchObject({ flow_id: "flow_test_123", flow_cta: "Book appointment" });
+
+    const outbound = await WhatsAppOutboundModel.find({ salonId: TENANT, toPhone: phone }).lean();
+    const flowMessages = outbound.filter((row) => row.interactive && (row.interactive as { type?: string }).type === "flow");
+    const menuMessages = outbound.filter((row) => row.interactive && (row.interactive as { type?: string }).type === "list");
+    expect(flowMessages.length).toBe(1);
+    expect(menuMessages.length).toBe(1);
+    const flowMessage = flowMessages[0]!.interactive as { body?: { text?: string } };
+    expect(flowMessage.body?.text).toContain("Hi! I can help you book or manage your appointments.");
+  });
+
+  it("keeps the two-choice gate when no WhatsApp booking Flow ID is configured", async () => {
+    setEnvForTesting({ ...loadEnv(), WHATSAPP_PROVIDER: "mock", WHATSAPP_BOOKING_FLOW_ID: "", META_APP_SECRET: "", META_WEBHOOK_APP_SECRET: "" });
+    const phone = "919999111112";
+    const res = await sendWhatsAppSimMessage(app, { from: phone, text: "hi", messageId: "wamid.sim.gatefallback" });
+    expect(res.status).toBe(200);
+    expect(res.body.data.action).toBe("gate");
+    expect(res.body.data.interactive).toMatchObject({ type: "button" });
+    expect(res.body.data.followUp).toBeUndefined();
   });
 
   it("simulates price-to-book context without AI", async () => {

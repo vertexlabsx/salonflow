@@ -253,14 +253,14 @@ function pageReply(title: string, items: string[], hasNext: boolean): string {
   return `${title}\n${formatOptions([...items, ...(hasNext ? ["More"] : [])])}`;
 }
 
-function bookingFlowInteractive(salonId: string, waPhone: string, branches: Array<{ _id: string; name: string }> = []): Record<string, unknown> | null {
+function bookingFlowInteractive(salonId: string, waPhone: string, branches: Array<{ _id: string; name: string }> = [], body = "Choose branch, services, staff and slot in one smooth WhatsApp form."): Record<string, unknown> | null {
   const env = loadEnv();
   if (!env.WHATSAPP_BOOKING_FLOW_ID) return null;
   const branchOptions = branches.slice(0, 10).map((branch) => ({ id: branch._id, title: branch.name }));
   return {
     type: "flow",
     header: { type: "text", text: "Book your salon appointment" },
-    body: { text: "Choose branch, services, staff and slot in one smooth WhatsApp form." },
+    body: { text: body },
     footer: { text: "Solastio" },
     action: {
       name: "flow",
@@ -1703,15 +1703,21 @@ async function handleBookingMessage(salonId: string, branchId: string, message: 
   if (!session || session.expiresAt < new Date() || BOOKING_KEYWORDS.includes(lower)) {
     const hasBookingIntent = BOOKING_KEYWORDS.some((keyword) => lower === keyword || lower.includes(keyword)) || SALON_SERVICE_SIGNAL.test(lower) || (ai.isSalonRelated !== false && (ai.intent === "BOOK_APPOINTMENT" || ai.intent === "SERVICES" || ai.intent === "PRICES"));
     if (!session) {
-      // Brand-new chat: route through the two-choice gate first. Explicit booking
-      // requests were already handled above by oneMessageBooking; anything else and
-      // any greeting lands here so the customer can pick Book or Menu.
+      // Brand-new chat: when the WhatsApp booking Flow is configured, greet with the
+      // native one-form booking flow and the full menu immediately (no gate tap).
+      // Otherwise route through the two-choice gate; explicit booking requests were
+      // already handled above by oneMessageBooking.
+      const repeatGreeting = Number(customer.visitCount || 0) > 1 ? `Welcome back${customer.name ? `, ${customer.name}` : ""}! Want the usual or something new?\n\n` : "Hi! I can help you book or manage your appointments.\n\n";
+      const flowInteractive = bookingFlowInteractive(salonId, phone, branches, `${repeatGreeting}Choose branch, services, staff and slot in one smooth WhatsApp form.`);
       session = await WhatsAppBookingSessionModel.findOneAndUpdate(
         { salonId, waPhone: phone },
-        { $set: { state: "gate", managementAction: null, targetAppointmentId: null, modifyField: null, categoryPage: 0, servicePage: 0, staffPage: 0, expiresAt: sessionExpiry() } },
+        { $set: { state: flowInteractive ? "menu" : "gate", managementAction: null, targetAppointmentId: null, modifyField: null, categoryPage: 0, servicePage: 0, staffPage: 0, expiresAt: sessionExpiry() } },
         { upsert: true, new: true }
       );
-      const repeatGreeting = Number(customer.visitCount || 0) > 1 ? `Welcome back${customer.name ? `, ${customer.name}` : ""}! Want the usual or something new?\n\n` : "Hi! I can help you book or manage your appointments.\n\n";
+      if (flowInteractive) {
+        const followUp = mainMenuPayload();
+        return { ...followUp, action: "booking_flow", reply: `${repeatGreeting}Tap below to book your appointment in one smooth WhatsApp form.`, interactive: flowInteractive, followUp: { ...followUp, action: "menu" } };
+      }
       return gatePayload(repeatGreeting);
     }
     if (!hasBookingIntent) {
@@ -3645,6 +3651,18 @@ const receiveWebhook = asyncHandler(async (req, res) => {
         interactive: (result.interactive as Record<string, unknown> | undefined) || null,
         metadata: { dedupeKey: `bot_reply:${message.messageId || `${message.waPhone}:${message.timestampMs}`}`, source: "bot_reply", action: String(result.action || "unknown"), hasInteractive: !!result.interactive },
         appointmentId: result.action === "appointment_created" ? String((result.appointment as { id?: string }).id || "") : null
+      });
+    }
+    const followUp = (result.followUp ?? null) as { reply?: unknown; interactive?: unknown; action?: unknown } | null;
+    if (result.followUp && followUp?.reply) {
+      await sendWhatsAppMessage({
+        salonId: String(salonId),
+          toPhone: normalizedPhone,
+        type: "utility",
+        body: String(followUp.reply),
+        interactive: (followUp.interactive as Record<string, unknown> | undefined) || null,
+        metadata: { dedupeKey: `bot_reply:${message.messageId || `${message.waPhone}:${message.timestampMs}`}:#followup`, source: "bot_reply", action: String(followUp.action || "menu"), hasInteractive: !!followUp.interactive },
+        appointmentId: null
       });
     }
     await WhatsAppInboundModel.create({
