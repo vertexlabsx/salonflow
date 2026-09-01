@@ -2,15 +2,16 @@ import { beforeAll, beforeEach, afterAll, afterEach, describe, expect, it, vi } 
 import type { Express } from "express";
 import supertest from "supertest";
 import { createTestWorld, destroyTestWorld } from "./helpers/world";
-import { cleanupCollections, fetchCsrf, seedAuthFixtures, TENANT } from "./helpers/auth-fixtures";
+import { cleanupCollections, fetchCsrf, seedAuthFixtures, TENANT, BRANCH_ID } from "./helpers/auth-fixtures";
 import { WhatsAppConnectionModel } from "../src/models/whatsapp-connection.model";
 import { BranchModel } from "../src/models/branch.model";
 import { SalonModel } from "../src/models/salon.model";
 import { ServiceModel } from "../src/models/service.model";
 import { CustomerModel } from "../src/models/customer.model";
 import { WhatsAppOutboundModel } from "../src/models/whatsapp-outbound.model";
+import { AppointmentModel } from "../src/models/appointment.model";
 import { loadEnv, setEnvForTesting } from "../src/config/env";
-import { createHmac } from "node:crypto";
+import { createHmac, generateKeyPairSync, publicEncrypt, randomBytes, createCipheriv, createDecipheriv, constants } from "node:crypto";
 import { encryptSecret } from "../src/shared/secret-box";
 import { sendWhatsAppMessage } from "../src/modules/whatsapp/whatsapp.service";
 import { sendWhatsAppSimMessage } from "./helpers/whatsapp-simulator";
@@ -22,6 +23,32 @@ async function ownerSession(): Promise<{ accessToken: string; csrfToken: string 
   const login = await supertest(app).post("/api/v1/auth/login").set("x-csrf-token", csrf.token).send({ tenantId: TENANT, loginId: "owner", password: "owner@123", device: { type: "owner-app" } });
   expect(login.status).toBe(200);
   return { accessToken: login.body.data.accessToken as string, csrfToken: csrf.token };
+}
+
+function flowPrivateKeyPem(): string {
+  return loadEnv().WHATSAPP_FLOW_PRIVATE_KEY || "";
+}
+
+/** Encrypts a flow data_exchange payload (as Meta does) and returns request + shared AES material. */
+function flowBrokerRequest(app: Express, publicKey: string, payload: Record<string, unknown>): { req: supertest.Request; aesKey: Buffer; iv: Buffer } {
+  const aesKey = randomBytes(32);
+  const iv = randomBytes(12);
+  const cipher = createCipheriv("aes-256-gcm", aesKey, iv);
+  const ciphertext = Buffer.concat([cipher.update(JSON.stringify(payload), "utf8"), cipher.final()]);
+  const encryptedFlowData = Buffer.concat([ciphertext, cipher.getAuthTag()]).toString("base64");
+  const encryptedAesKey = publicEncrypt({ key: publicKey, padding: constants.RSA_PKCS1_OAEP_PADDING, oaepHash: "sha256" }, aesKey).toString("base64");
+  const req = supertest(app).post("/api/v1/whatsapp/flows/booking").send({ encrypted_aes_key: encryptedAesKey, initial_vector: iv.toString("base64"), encrypted_flow_data: encryptedFlowData });
+  return { req, aesKey, iv };
+}
+
+/** Decrypts a flow data_exchange response using the shared AES material. */
+function flowBrokerResponse(body: unknown, aesKey: Buffer, iv: Buffer): Record<string, unknown> {
+  const decoded = Buffer.from(String(body), "base64");
+  const tag = decoded.subarray(decoded.length - 16);
+  const ciphertext = decoded.subarray(0, decoded.length - 16);
+  const decipher = createDecipheriv("aes-256-gcm", aesKey, Buffer.from(iv.map((byte) => byte ^ 0xff)));
+  decipher.setAuthTag(tag);
+  return JSON.parse(Buffer.concat([decipher.update(ciphertext), decipher.final()]).toString("utf8")) as Record<string, unknown>;
 }
 
 beforeAll(async () => {
@@ -179,6 +206,59 @@ describe("multi-tenant WhatsApp onboarding", () => {
     expect(menuMessages.length).toBe(1);
     const flowMessage = flowMessages[0]!.interactive as { body?: { text?: string } };
     expect(flowMessage.body?.text).toContain("Hi! I can help you book or manage your appointments.");
+  });
+
+  it("serves the Appointment Booking template screens (APPOINTMENT -> DETAILS -> SUMMARY) and books once", async () => {
+    const { publicKey, privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
+    setEnvForTesting({ ...loadEnv(), WHATSAPP_PROVIDER: "mock", WHATSAPP_FLOW_PRIVATE_KEY: privateKey.export({ type: "pkcs8", format: "pem" }).toString(), META_APP_SECRET: "", META_WEBHOOK_APP_SECRET: "" });
+    const service = await ServiceModel.findOne({ salonId: TENANT, name: "Haircut" });
+    expect(service).toBeTruthy();
+    const today = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Kolkata", year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date());
+
+    const appointmentReq = flowBrokerRequest(app, publicKey.export({ type: "spki", format: "pem" }).toString(), { version: "3.0", action: "data_exchange", screen: "APPOINTMENT", flow_token: `${TENANT}:919999000777:1700000000000`, data: { trigger: "date_selected", department: String(service!._id), location: BRANCH_ID, date: today } });
+    const appointmentRes = await appointmentReq.req;
+    expect(appointmentRes.status).toBe(200);
+    const appointment = flowBrokerResponse(appointmentRes.text, appointmentReq.aesKey, appointmentReq.iv);
+    expect(appointment.screen).toBe("APPOINTMENT");
+    expect((appointment.data as { department: Array<{ id: string; title: string }> }).department).toEqual(expect.arrayContaining([expect.objectContaining({ id: String(service!._id), title: "Haircut" })]));
+    expect((appointment.data as { location: Array<{ id: string; title: string }> }).location).toEqual(expect.arrayContaining([expect.objectContaining({ id: BRANCH_ID, title: "Main Branch" })]));
+    expect((appointment.data as { date: Array<{ id: string }> }).date).toHaveLength(14);
+    expect((appointment.data as { is_time_enabled: boolean }).is_time_enabled).toBe(true);
+    const timeOptions = (appointment.data as { time: Array<{ id: string; title: string }> }).time;
+    expect(timeOptions.length).toBeGreaterThan(0);
+    expect(timeOptions[0]!.title).toMatch(/^\d{2}:\d{2}$/);
+    expect(timeOptions[0]!.id).toContain("|staff_seed_reception");
+
+    const detailsReq = flowBrokerRequest(app, publicKey.export({ type: "spki", format: "pem" }).toString(), { version: "3.0", action: "data_exchange", screen: "DETAILS", flow_token: `${TENANT}:919999000777:1700000000000`, data: { department: String(service!._id), location: BRANCH_ID, date: today, time: timeOptions[0]!.id, name: "Garv Test", email: "garv@test.com", phone: "919999000777", more_details: "Prefers a window seat" } });
+    const detailsRes = await detailsReq.req;
+    expect(detailsRes.status).toBe(200);
+    const details = flowBrokerResponse(detailsRes.text, detailsReq.aesKey, detailsReq.iv);
+    expect(details.screen).toBe("SUMMARY");
+    expect((details.data as { appointment: string }).appointment).toContain("Haircut");
+    expect((details.data as { details: string }).details).toContain("Garv Test");
+    expect((details.data as { details: string }).details).toContain("Prefers a window seat");
+
+    const summaryPayload = { version: "3.0", action: "data_exchange", screen: "SUMMARY", flow_token: `${TENANT}:919999000777:1700000000000`, data: { department: String(service!._id), location: BRANCH_ID, date: today, time: timeOptions[0]!.id, name: "Garv Test", email: "garv@test.com", phone: "919999000777", more_details: "Prefers a window seat" } };
+    const summaryReq = flowBrokerRequest(app, publicKey.export({ type: "spki", format: "pem" }).toString(), summaryPayload);
+    const summaryRes = await summaryReq.req;
+    expect(summaryRes.status).toBe(200);
+    expect(flowBrokerResponse(summaryRes.text, summaryReq.aesKey, summaryReq.iv).screen).toBe("SUMMARY");
+
+    const booked = await AppointmentModel.findOne({ salonId: TENANT, source: "whatsapp_flow" });
+    expect(booked).toBeTruthy();
+    expect(booked!.staffId).toBe("staff_seed_reception");
+    expect(booked!.customerName).toBe("Garv Test");
+    expect(booked!.serviceNames).toContain("Haircut");
+
+    const summaryRepeat = flowBrokerRequest(app, publicKey.export({ type: "spki", format: "pem" }).toString(), summaryPayload);
+    const summaryRepeatRes = await summaryRepeat.req;
+    expect(summaryRepeatRes.status).toBe(200);
+    expect(flowBrokerResponse(summaryRepeatRes.text, summaryRepeat.aesKey, summaryRepeat.iv).screen).toBe("SUMMARY");
+    expect(await AppointmentModel.countDocuments({ salonId: TENANT, source: "whatsapp_flow" })).toBe(1);
+
+    const replies = await WhatsAppOutboundModel.find({ salonId: TENANT, toPhone: "919999000777", type: "utility" }).lean();
+    expect(replies).toHaveLength(1);
+    expect(String(replies[0]!.body)).toContain("appointment is booked");
   });
 
   it("keeps the two-choice gate when no WhatsApp booking Flow ID is configured", async () => {

@@ -253,10 +253,16 @@ function pageReply(title: string, items: string[], hasNext: boolean): string {
   return `${title}\n${formatOptions([...items, ...(hasNext ? ["More"] : [])])}`;
 }
 
-function bookingFlowInteractive(salonId: string, waPhone: string, branches: Array<{ _id: string; name: string }> = [], body = "Choose branch, services, staff and slot in one smooth WhatsApp form."): Record<string, unknown> | null {
+async function bookingFlowInteractive(salonId: string, waPhone: string, branches: Array<{ _id: string; name: string }> = [], body = "Choose department, branch, date and time in one smooth WhatsApp form."): Promise<Record<string, unknown> | null> {
   const env = loadEnv();
   if (!env.WHATSAPP_BOOKING_FLOW_ID) return null;
   const branchOptions = branches.slice(0, 10).map((branch) => ({ id: branch._id, title: branch.name }));
+  const services = await ServiceModel.find({ salonId, status: "active" }).sort({ name: 1 }).limit(24);
+  const departmentOptions = services.map((service) => ({ id: String(service._id), title: service.name.slice(0, 30) }));
+  const dateOptions = Array.from({ length: 14 }, (_, index) => {
+    const value = new Date(Date.now() + index * 24 * 60 * 60_000).toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" });
+    return { id: value, title: displayDate(value) };
+  });
   return {
     type: "flow",
     header: { type: "text", text: "Book your salon appointment" },
@@ -270,7 +276,19 @@ function bookingFlowInteractive(salonId: string, waPhone: string, branches: Arra
         flow_token: `${salonId}:${waPhone}:${Date.now()}`,
         flow_cta: "Book appointment",
         flow_action: "navigate",
-        flow_action_payload: { screen: "BRANCH", data: { salonId, branches: branchOptions } }
+        flow_action_payload: {
+          screen: "APPOINTMENT",
+          data: {
+            salonId,
+            department: departmentOptions,
+            is_location_enabled: true,
+            location: branchOptions,
+            is_date_enabled: true,
+            date: dateOptions,
+            is_time_enabled: false,
+            time: []
+          }
+        }
       }
     }
   };
@@ -826,14 +844,37 @@ function flowStringArray(data: Record<string, unknown>, keys: string[]): string[
   return [];
 }
 
-async function handleBookingFlowCompletion(salonId: string, message: WaInboundMessage): Promise<Record<string, unknown>> {
-  const response = message.flowResponse || {};
-  const branchId = flowString(response, ["branchId", "branch_id", "branch"]);
-  const staffId = flowString(response, ["staffId", "staff_id", "staff"]);
+/** Splits a flow slot id of the form "10:30|<staffId>" back into display label + staffId. */
+function parseFlowTime(value: string | null | undefined): { label: string; staffId: string } {
+  const raw = (value || "").trim();
+  const index = raw.indexOf("|");
+  if (index < 0) return { label: raw, staffId: "" };
+  return { label: raw.slice(0, index).trim(), staffId: raw.slice(index + 1).trim() };
+}
+
+/** Builds the human-readable SUMMARY strings shown by the Appointment Booking template. */
+async function bookingAppointmentText(salonId: string, input: { departmentId: string; branchId: string; date: string; time: string }): Promise<string> {
+  const parsed = parseFlowTime(input.time);
+  const [service, branch] = await Promise.all([
+    input.departmentId ? ServiceModel.findById(input.departmentId).select("name").lean() : null,
+    input.branchId ? BranchModel.findById(input.branchId).select("name").lean() : null
+  ]);
+  const when = input.date ? `${displayDate(input.date)}${parsed.label ? ` at ${parsed.label}` : ""}` : "";
+  return `${service?.name || "Service"} at ${branch?.name || "Branch"}${when ? `\n${when}.` : ""}`;
+}
+
+/** Shared booking creator used by both the nfm_reply webhook and the flow's
+ *  SUMMARY confirm data_exchange. Accepts the Appointment Booking template
+ *  field names (department/location/name) alongside the legacy custom-flow ones. */
+async function finalizeFlowBooking(salonId: string, waPhone: string, profileName: string, phoneNumberId: string, response: Record<string, unknown>): Promise<Record<string, unknown>> {
+  const timeRaw = flowString(response, ["time", "slot", "appointmentTime", "appointment_time"]);
+  const parsedTime = parseFlowTime(timeRaw);
+  const branchId = flowString(response, ["branchId", "branch_id", "branch", "location"]);
+  const staffId = flowString(response, ["staffId", "staff_id", "staff"]) || parsedTime.staffId;
   const date = flowString(response, ["date", "appointmentDate", "appointment_date"]);
-  const time = normalizeTimeInput(flowString(response, ["time", "slot", "appointmentTime", "appointment_time"]));
-  const serviceIds = flowStringArray(response, ["serviceIds", "service_ids", "services"]);
-  const customerName = flowString(response, ["customerName", "customer_name", "name"]) || message.profileName || normalizePhone(message.waPhone);
+  const time = normalizeTimeInput(parsedTime.label || timeRaw);
+  const serviceIds = flowStringArray(response, ["serviceIds", "service_ids", "services", "department"]);
+  const customerName = flowString(response, ["customerName", "customer_name", "name"]) || profileName || normalizePhone(waPhone);
   if (!branchId || !staffId || !date || !time || !serviceIds.length) return { action: "flow_incomplete", reply: "I could not read all booking details from the form. Please try again or type 'book appointment'." };
   if (!isValidDateString(date) || !/^\d{4}-\d{2}-\d{2}$/.test(date) || isPastBusinessDate(date)) return { action: "flow_invalid_date", reply: "Please choose today or a future date in the booking form." };
   const services = await selectedServices({ salonId, branchId, serviceIds });
@@ -844,11 +885,13 @@ async function handleBookingFlowCompletion(salonId: string, message: WaInboundMe
   const [hour, minute] = time.split(":").map(Number);
   const startAt = zonedTimeToUtc(branch.timezone || loadEnv().SALON_TIMEZONE || "Asia/Kolkata", date, hour || 0, minute || 0);
   const endAt = new Date(startAt.getTime() + summary.duration * 60_000);
+  const phone = normalizePhone(waPhone);
+  const recent = await AppointmentModel.findOne({ salonId, branchId, staffId, startAt, source: "whatsapp_flow", createdAt: { $gte: new Date(Date.now() - 10 * 60_000) } });
+  if (recent) return { action: "appointment_created", appointment: { id: String(recent._id) }, reply: "" };
   if (!(await isStaffAvailableForBlock({ salonId, branchId, staffId, startAt, endAt, date, timezone: branch.timezone || loadEnv().SALON_TIMEZONE || "Asia/Kolkata" }))) return { action: "flow_slot_unavailable", reply: "That staff/slot is no longer available. Please open the booking form and choose another slot." };
-  const phone = normalizePhone(message.waPhone);
   const customer = await CustomerModel.findOneAndUpdate(
     { salonId, normalizedPhone: phone },
-    { $setOnInsert: { branchId, source: "whatsapp" }, $set: { name: customerName, whatsappPhoneNumberId: message.phoneNumberId, interactionStatus: "booked" } },
+    { $setOnInsert: { branchId, source: "whatsapp" }, $set: { name: customerName, whatsappPhoneNumberId: phoneNumberId, interactionStatus: "booked" } },
     { upsert: true, new: true }
   );
   const appointment = await AppointmentModel.create({ salonId, branchId, staffId, customerId: String(customer._id), customerName, serviceIds: services.map((service) => service.id), serviceNames: summary.names, durationMinutes: summary.duration, value: summary.value, startAt, endAt, status: "confirmed", source: "whatsapp_flow", paymentStatus: "not_required" });
@@ -877,7 +920,7 @@ async function handleBookingFlowCompletion(salonId: string, message: WaInboundMe
     customerPhone: phone
   });
   await WhatsAppBookingSessionModel.updateOne(
-    { salonId, waPhone: message.waPhone },
+    { salonId, waPhone },
     { $set: { pendingReminder: true, holdAppointmentId: String(appointment._id), state: deposit.applied ? "awaiting_payment" : "menu" }, $setOnInsert: { branchId, profileName: "", expiresAt: sessionExpiry() } },
     { upsert: true }
   );
@@ -885,6 +928,10 @@ async function handleBookingFlowCompletion(salonId: string, message: WaInboundMe
     return { action: "awaiting_payment", appointment: { id: String(appointment._id) }, reply: `Your slot is held while we process the advance deposit.\n${bookingSummaryLines({ bookingId: String(appointment._id), serviceNames: summary.names, staffName: flowStaffName, branchName: branch.name, startAt, timezone: branch.timezone || "Asia/Kolkata", durationMinutes: summary.duration, value: summary.value })}\nComplete the payment link I just sent. The slot will be released in 30 minutes if not paid.` };
   }
   return { action: "appointment_created", appointment: { id: String(appointment._id) }, reply: withSuccessTip(`Your appointment is booked.\n${bookingSummaryLines({ bookingId: String(appointment._id), serviceNames: summary.names, staffName: flowStaffName, branchName: branch.name, startAt, timezone: branch.timezone || "Asia/Kolkata", durationMinutes: summary.duration, value: summary.value })}\nChoose reminders:\n1. Day before + 2 hours before\n2. Only 2 hours before\n3. Only day before\n4. No reminders`) };
+}
+
+async function handleBookingFlowCompletion(salonId: string, message: WaInboundMessage): Promise<Record<string, unknown>> {
+  return finalizeFlowBooking(salonId, message.waPhone, message.profileName || "", message.phoneNumberId, message.flowResponse || {});
 }
 
 function flowPrivateKeyPem(): string {
@@ -920,58 +967,81 @@ async function whatsappFlowDataResponse(payload: Record<string, unknown>): Promi
   const action = String(payload.action || "").toLowerCase();
   if (action === "ping") return { version, screen: "", data: { status: "active" } };
   const data = (payload.data && typeof payload.data === "object" ? payload.data : {}) as Record<string, unknown>;
-  const step = flowString(data, ["step", "trigger"]) || "init";
-  const salonId = flowString(data, ["salonId", "salon_id"]) || "salon_realistic_test";
-  const branchId = flowString(data, ["branchId", "branch_id", "branch"]);
-  const category = flowString(data, ["category"]);
-  const serviceIds = flowStringArray(data, ["serviceIds", "service_ids", "services"]).slice(0, 20);
-  const staffId = flowString(data, ["staffId", "staff_id", "staff"]);
-  const date = flowString(data, ["date", "appointment_date"]);
-  const time = normalizeTimeInput(flowString(data, ["time", "slot"]));
-  const customerName = flowString(data, ["customerName", "customer_name", "name"]);
-  const branches = await BranchModel.find({ salonId, status: "active" }).sort({ createdAt: 1 });
-  const resolvedBranchId = branchId || branches[0]?._id || "";
-  const branchOptions = branches.map((branch) => ({ id: branch._id, title: branch.name }));
+  const screen = String(payload.screen || "").toUpperCase();
+  const [tokenSalonId, tokenWaPhone] = String(payload.flow_token || "").split(":");
+  const salonId = flowString(data, ["salonId", "salon_id"]) || tokenSalonId || "salon_realistic_test";
+  const waPhone = tokenWaPhone || "";
+
+  if (screen === "APPOINTMENT") {
+    return { version, screen: "APPOINTMENT", data: await bookingAppointmentScreenData(salonId, data) };
+  }
+
+  const fields = {
+    department: flowString(data, ["department"]),
+    location: flowString(data, ["location"]),
+    date: flowString(data, ["date", "appointmentDate", "appointment_date"]),
+    time: flowString(data, ["time", "slot"]),
+    name: flowString(data, ["name", "customerName", "customer_name"]),
+    email: flowString(data, ["email", "customerEmail"]),
+    phone: flowString(data, ["phone", "customerPhone"]),
+    more_details: flowString(data, ["more_details", "note", "notes"])
+  };
+
+  if (screen === "DETAILS") {
+    const appointment = await bookingAppointmentText(salonId, { departmentId: fields.department, branchId: fields.location, date: fields.date, time: fields.time });
+    return { version, screen: "SUMMARY", data: { appointment, details: buildFlowDetailsText(fields), salonId, ...fields } };
+  }
+
+  if (screen === "SUMMARY") {
+    const booking = await finalizeFlowBooking(salonId, waPhone || fields.phone, fields.name, "", fields as Record<string, string>);
+    if (booking.reply && (waPhone || fields.phone)) {
+      await sendWhatsAppMessage({ salonId, toPhone: normalizePhone(waPhone || fields.phone), type: "utility", body: String(booking.reply), appointmentId: booking.appointment && typeof booking.appointment === "object" && "id" in booking.appointment ? String((booking.appointment as { id: unknown }).id || "") : null, metadata: { dedupeKey: `bot_reply:flow_summary:${String(payload.flow_token || `${waPhone}:${Date.now()}`)}`, source: "bot_reply", action: String(booking.action || "unknown"), hasInteractive: false } });
+    }
+    const appointment = await bookingAppointmentText(salonId, { departmentId: fields.department, branchId: fields.location, date: fields.date, time: fields.time });
+    return { version, screen: "SUMMARY", data: { appointment, details: buildFlowDetailsText(fields), salonId, ...fields } };
+  }
+
+  return { version, screen, data: {} };
+}
+
+/** Serves the Appointment Booking template's APPOINTMENT screen dependency dropdowns. */
+async function bookingAppointmentScreenData(salonId: string, data: Record<string, unknown>): Promise<Record<string, unknown>> {
+  const departmentId = flowString(data, ["department"]);
+  const locationId = flowString(data, ["location"]);
+  const date = flowString(data, ["date"]);
+  const [branches, services] = await Promise.all([
+    BranchModel.find({ salonId, status: "active" }).sort({ createdAt: 1 }),
+    ServiceModel.find({ salonId, status: "active" }).sort({ name: 1 }).limit(24)
+  ]);
   const dateOptions = Array.from({ length: 14 }, (_, index) => {
     const value = new Date(Date.now() + index * 24 * 60 * 60_000).toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" });
     return { id: value, title: displayDate(value) };
   });
-  if (step === "category") {
-    const categories = [...new Set((await ServiceModel.find(branchServiceFilter(salonId, resolvedBranchId)).select("category name")).map((service) => service.category || "Services"))].map((value) => ({ id: value, title: value }));
-    return { version, screen: "CATEGORY", data: { salonId, branchId: resolvedBranchId, categories } };
+  let timeOptions: Array<{ id: string; title: string }> = [];
+  if (departmentId && locationId && date) {
+    const docs = await selectedServices({ salonId, branchId: locationId, serviceIds: [departmentId] });
+    if (docs.length) {
+      const staff = await eligibleStaffForServices(salonId, locationId, docs);
+      const slots = staff.length ? await smartSlotOptions({ salonId, branchId: locationId, staff, date, durationMinutes: docs[0]!.durationMinutes, preference: null, limit: 16 }) : [];
+      timeOptions = slots.map((slot) => ({ id: `${slot.label}|${slot.staffId}`, title: slot.label }));
+    }
   }
-  if (step === "services") {
-    const filter = branchServiceFilter(salonId, resolvedBranchId, category ? { category } : {});
-    const services = await ServiceModel.find(filter).sort({ name: 1 }).limit(100);
-    return {
-      version,
-      screen: "SERVICES",
-      data: { salonId, branchId: resolvedBranchId, category, services: services.map((service) => ({ id: String(service._id), title: service.name.slice(0, 30), description: `${money(service.pricePaise)} • ${service.durationMinutes} min` })) }
-    };
-  }
-  if (step === "staff") {
-    const docs = await selectedServices({ salonId, branchId: resolvedBranchId, serviceIds });
-    const staff = docs.length ? await eligibleStaffForServices(salonId, resolvedBranchId, docs) : [];
-    return { version, screen: "STAFF", data: { salonId, branchId: resolvedBranchId, serviceIds, staff: staff.map((item) => ({ id: item.staffId, title: item.name.slice(0, 30) })) } };
-  }
-  if (step === "date") {
-    return { version, screen: "DATE", data: { salonId, branchId: resolvedBranchId, serviceIds, staffId, date: dateOptions } };
-  }
-  const docs = await selectedServices({ salonId, branchId: resolvedBranchId, serviceIds });
-  const summary = summarizeServices(docs);
-  const branchTitle = branches.find((branch) => String(branch._id) === resolvedBranchId)?.name || resolvedBranchId;
-  const summaryFields = { branch_title: branchTitle, summary_services: summary.names.join(", "), summary_total: money(summary.value), summary_duration: `${summary.duration} minutes` };
-  if (step === "slot") {
-    const slots = staffId && date && summary.duration ? await suggestedSlots(salonId, resolvedBranchId, staffId, date, summary.duration) : [];
-    return { version, screen: "SLOT", data: { salonId, branchId: resolvedBranchId, serviceIds, staffId, date, time: slots.map((slot) => ({ id: slot.label, title: slot.label })), ...summaryFields } };
-  }
-  if (step === "details") {
-    return { version, screen: "DETAILS", data: { salonId, branchId: resolvedBranchId, serviceIds, staffId, date, time, ...summaryFields } };
-  }
-  if (step === "summary") {
-    return { version, screen: "SUMMARY", data: { salonId, branchId: resolvedBranchId, serviceIds, staffId, date, time, customerName, ...summaryFields } };
-  }
-  return { version, screen: "BRANCH", data: { salonId, branches: branchOptions } };
+  return {
+    salonId,
+    department: services.map((service) => ({ id: String(service._id), title: service.name.slice(0, 30) })),
+    is_location_enabled: true,
+    location: branches.map((branch) => ({ id: branch._id, title: branch.name })),
+    is_date_enabled: true,
+    date: dateOptions,
+    is_time_enabled: timeOptions.length > 0,
+    time: timeOptions
+  };
+}
+
+function buildFlowDetailsText(fields: { name: string; email: string; phone: string; more_details: string }): string {
+  const lines = [`Name: ${fields.name || "-"}`, `Email: ${fields.email || "-"}`, `Phone: ${fields.phone || "-"}`];
+  if (fields.more_details) lines.push("", fields.more_details);
+  return lines.join("\n");
 }
 
 function slotInstants(startAt: Date, endAt: Date): Date[] {
@@ -1708,7 +1778,7 @@ async function handleBookingMessage(salonId: string, branchId: string, message: 
       // Otherwise route through the two-choice gate; explicit booking requests were
       // already handled above by oneMessageBooking.
       const repeatGreeting = Number(customer.visitCount || 0) > 1 ? `Welcome back${customer.name ? `, ${customer.name}` : ""}! Want the usual or something new?\n\n` : "Hi! I can help you book or manage your appointments.\n\n";
-      const flowInteractive = bookingFlowInteractive(salonId, phone, branches, `${repeatGreeting}Choose branch, services, staff and slot in one smooth WhatsApp form.`);
+      const flowInteractive = await bookingFlowInteractive(salonId, phone, branches, `${repeatGreeting}Choose department, branch, date and time in one smooth WhatsApp form.`);
       session = await WhatsAppBookingSessionModel.findOneAndUpdate(
         { salonId, waPhone: phone },
         { $set: { state: flowInteractive ? "menu" : "gate", managementAction: null, targetAppointmentId: null, modifyField: null, categoryPage: 0, servicePage: 0, staffPage: 0, expiresAt: sessionExpiry() } },
@@ -1765,7 +1835,7 @@ async function handleBookingMessage(salonId: string, branchId: string, message: 
     );
     if (!session) throw ApiError.badRequest("Unable to start booking session.");
     await CustomerModel.updateOne({ salonId, normalizedPhone: phone }, { $set: { interactionStatus: "booking_started" } });
-    const flowInteractive = bookingFlowInteractive(salonId, phone, branches);
+    const flowInteractive = await bookingFlowInteractive(salonId, phone, branches);
     if (flowInteractive) return { action: "booking_flow", state: session.state, reply: "Tap below to book your appointment in one smooth WhatsApp form.", interactive: flowInteractive };
     if (matchedService) return { action: "service_selected", state: session.state, reply: `${matchedService.name} added. Total: ${money(matchedService.pricePaise)}, ${matchedService.durationMinutes} minutes.\nAdd another service? Reply YES, search <service>, or DONE.` };
     if (session.state === "select_branch") return { action: "needs_branch", state: session.state, reply: `Which branch would you like to visit?\n${formatOptions(branches.map((b) => b.name))}`, interactive: listInteractive("Which branch would you like to visit?", "Branches", branches.slice(0, 10).map((b) => ({ id: b._id, title: b.name }))) };
