@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "description": "Independent multi-tenant backend for Solastio Salon & Beauty OS (appointments, staff, WhatsApp booking automation).",
-  "main": "dist/index.js",
+  "main": "dist/src/index.js",
   "scripts": {
     "dev": "tsx watch src/index.ts",
     "dev:memory": "tsx src/dev-memory.ts",
@@ -15,6 +15,7 @@
     "cleanup": "tsx src/jobs/cleanup.ts",
     "reminders": "tsx src/jobs/appointment-reminders.ts",
     "whatsapp:retry": "tsx src/jobs/whatsapp-retry.ts",
+    "whatsapp:nudges": "tsx src/jobs/whatsapp-nudges.ts",
     "shopify:automation": "tsx src/jobs/shopify-automation.ts",
     "test": "vitest run",
     "test:watch": "vitest",

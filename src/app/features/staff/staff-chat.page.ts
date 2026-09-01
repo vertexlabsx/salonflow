@@ -1,7 +1,7 @@
 import { DatePipe } from "@angular/common";
 import { AfterViewInit, Component, ElementRef, OnDestroy, OnInit, computed, signal } from "@angular/core";
 import { FormsModule } from "@angular/forms";
-import { StaffAppService, StaffChatConversation, StaffConversationMessage, StaffMessageReceiptUpdate } from "../../core/staff-app.service";
+import { StaffAppService, StaffChatConversation, StaffChatSearchResponse, StaffChatSearchResult, StaffConversationMessage, StaffMessageReceiptUpdate } from "../../core/staff-app.service";
 
 type RealtimeState = "connecting" | "live" | "polling" | "offline";
 
@@ -82,8 +82,8 @@ type RealtimeState = "connecting" | "live" | "polling" | "offline";
               @if (!canSendChat()) { <div class="chat-offline-note" role="note">Read-only access. You can follow this conversation but cannot send messages.</div> }
 
               <div class="chat-local-search message-search">
-                <label for="message-search">Search loaded messages in {{ active.title }}</label>
-                <div class="chat-search-control"><span aria-hidden="true">⌕</span><input id="message-search" type="search" autocomplete="off" [ngModel]="messageSearch()" (ngModelChange)="setMessageSearch($event)" (focus)="showMsgSuggestions.set(true)" (blur)="closeMsgSuggestions()" placeholder="Search sender or message"><small>Loaded messages only</small></div>
+                <label for="message-search">Search all messages in {{ active.title }}</label>
+                <div class="chat-search-control"><span aria-hidden="true">⌕</span><input id="message-search" type="search" autocomplete="off" [ngModel]="messageSearch()" (ngModelChange)="setMessageSearch($event)" (focus)="showMsgSuggestions.set(true)" (blur)="closeMsgSuggestions()" placeholder="Search sender or message"><small>{{ messageSearchHint() }}</small></div>
                 @if (showMsgSuggestions() && messageSuggestions().length) {
                   <div class="search-suggestions" role="listbox">
                     @for (s of messageSuggestions(); track s) {
@@ -119,8 +119,8 @@ type RealtimeState = "connecting" | "live" | "polling" | "offline";
                         @if (item.senderUserId === staff.user()?.id) { <span class="message-sent" [attr.aria-label]="receiptLabel(item)">{{ receiptMark(item) }} {{ receiptLabel(item) }}</span> }
                       </article>
                     } @empty {
-                      @if (messageSearch().trim() && messages().length) {
-                        <div class="chat-thread-state"><span class="empty-chat-mark" aria-hidden="true">⌕</span><strong>No matching loaded messages</strong><p>Try another sender name or phrase. Search is limited to this loaded conversation.</p></div>
+                      @if (messageSearch().trim()) {
+                        <div class="chat-thread-state"><span class="empty-chat-mark" aria-hidden="true">⌕</span><strong>{{ messageSearchState().title }}</strong><p>{{ messageSearchState().detail }}</p></div>
                       } @else {
                         <div class="chat-thread-state"><span class="empty-chat-mark" aria-hidden="true">•••</span><strong>Start the conversation</strong><p>{{ active.type === 'private-owner' ? 'Need to discuss something privately? Start a secure chat with the owner.' : 'Share the first update with your branch team.' }}</p></div>
                       }
@@ -204,6 +204,8 @@ export class StaffChatPage implements OnInit, AfterViewInit, OnDestroy {
   readonly unseenMessageCount = signal(0);
   readonly conversationSearch = signal("");
   readonly messageSearch = signal("");
+  readonly messageSearching = signal(false);
+  readonly searchedMessages = signal<StaffChatSearchResponse | null>(null);
   readonly typingUsers = signal<Record<string, string>>({});
   readonly activeConversation = computed(() => this.conversations().find((item) => item.id === this.activeConversationId()) || null);
   readonly filteredConversations = computed(() => {
@@ -213,6 +215,8 @@ export class StaffChatPage implements OnInit, AfterViewInit, OnDestroy {
   });
   readonly filteredMessages = computed(() => {
     const query = this.normalizeSearch(this.messageSearch());
+    const results = this.searchedMessages();
+    if (query && results) return results.items.map((item) => this.searchResultToMessage(item));
     if (!query) return this.messages();
     return this.messages().filter((item) => this.normalizeSearch(`${item.senderName || "Team member"} ${item.senderUserId === this.staff.user()?.id ? "You" : ""} ${item.body}`).includes(query));
   });
@@ -244,13 +248,26 @@ export class StaffChatPage implements OnInit, AfterViewInit, OnDestroy {
   }
 
   selectMsgSuggestion(val: string): void {
-    this.messageSearch.set(val);
+    this.setMessageSearch(val);
     this.showMsgSuggestions.set(false);
   }
   closeMsgSuggestions(): void {
     setTimeout(() => this.showMsgSuggestions.set(false), 150);
   }
   readonly connectionLabel = computed(() => ({ connecting: "Connecting", live: "Live", polling: "Syncing", offline: "Offline" })[this.connectionState()]);
+  readonly messageSearchHint = computed(() => {
+    const term = this.messageSearch().trim();
+    if (!term) return "All history";
+    if (this.messageSearching()) return "Searching all messages…";
+    const result = this.searchedMessages();
+    if (result) return `${result.total} ${result.total === 1 ? "match" : "matches"} across all history`;
+    return "Loaded matches only";
+  });
+  readonly messageSearchState = computed(() => {
+    if (this.messageSearching()) return { title: "Searching messages…", detail: "Looking across this conversation's full message history." };
+    if (this.searchedMessages()) return { title: "No matching messages", detail: "Try another sender name or phrase. Search covers the full conversation history." };
+    return { title: "No matching loaded messages", detail: "Try another sender name or phrase. Search is limited to the loaded messages." };
+  });
   readonly typingLabel = computed(() => {
     const names = Object.values(this.typingUsers());
     if (!names.length) return "";
@@ -264,6 +281,8 @@ export class StaffChatPage implements OnInit, AfterViewInit, OnDestroy {
   private reconnectAttempts = 0;
   private conversationGeneration = 0;
   private messageGeneration = 0;
+  private messageSearchTimer = 0;
+  private messageSearchGeneration = 0;
   private nearBottom = true;
   private destroyed = false;
   private typingStopTimer = 0;
@@ -302,6 +321,7 @@ export class StaffChatPage implements OnInit, AfterViewInit, OnDestroy {
     window.clearInterval(this.pollTimer);
     window.clearTimeout(this.reconnectTimer);
     window.clearTimeout(this.typingStopTimer);
+    window.clearTimeout(this.messageSearchTimer);
     this.sendTyping(false);
     this.clearTypingUsers();
     this.socket?.close();
@@ -314,7 +334,46 @@ export class StaffChatPage implements OnInit, AfterViewInit, OnDestroy {
   canSubmit(): boolean { return this.canSendChat() && this.online() && !this.sending() && !!this.draft.trim() && this.draft.length <= 4000 && !!this.activeConversationId(); }
   clearActionError(): void { this.actionError.set(""); }
   setConversationSearch(value: string): void { this.conversationSearch.set(value || ""); }
-  setMessageSearch(value: string): void { this.messageSearch.set(value || ""); }
+  setMessageSearch(value: string): void {
+    const term = value || "";
+    this.messageSearch.set(term);
+    window.clearTimeout(this.messageSearchTimer);
+    const conversationId = this.activeConversationId();
+    if (!term.trim() || !conversationId) {
+      this.messageSearching.set(false);
+      this.searchedMessages.set(null);
+      return;
+    }
+    this.messageSearching.set(true);
+    this.messageSearchTimer = window.setTimeout(() => void this.runServerSearch(conversationId, term), 260);
+  }
+
+  private async runServerSearch(conversationId: string, term: string): Promise<void> {
+    const generation = ++this.messageSearchGeneration;
+    try {
+      const result = await this.staff.staffMessageSearch(conversationId, term);
+      if (generation === this.messageSearchGeneration && conversationId === this.activeConversationId() && this.messageSearch() === term) {
+        this.searchedMessages.set(result);
+      }
+    } catch {
+      if (generation === this.messageSearchGeneration) this.searchedMessages.set(null);
+    } finally {
+      if (generation === this.messageSearchGeneration) this.messageSearching.set(false);
+    }
+  }
+
+  private searchResultToMessage(item: StaffChatSearchResult): StaffConversationMessage {
+    return {
+      id: item.id,
+      conversationId: item.conversationId,
+      type: item.conversationType,
+      senderUserId: item.senderUserId,
+      senderName: item.senderName,
+      body: item.body,
+      createdAt: item.createdAt,
+      receipt: { deliveredCount: 0, readCount: 0 }
+    };
+  }
 
   lastActiveLabel(value: string | null | undefined): string {
     const date = this.validDate(value);
@@ -395,6 +454,10 @@ export class StaffChatPage implements OnInit, AfterViewInit, OnDestroy {
     if (conversationId === this.activeConversationId() && !this.messagesError()) return;
     this.stopTyping();
     this.clearTypingUsers();
+    window.clearTimeout(this.messageSearchTimer);
+    this.messageSearch.set("");
+    this.messageSearching.set(false);
+    this.searchedMessages.set(null);
     this.activeConversationId.set(conversationId);
     this.messages.set([]);
     this.messagesError.set("");

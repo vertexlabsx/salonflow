@@ -17,6 +17,7 @@ export interface OwnerBillingDetail {
   items: Array<{ id: string; name: string; type: string; quantity: number; unitPricePaise: number; discountAmountPaise: number; taxAmountPaise: number; totalAmountPaise: number }>;
   taxes: Array<{ id: string; type: string; rate: number; amountPaise: number }>;
   payments: Array<{ id: string; method: string; status: string; reference: string; amountPaise: number; paidAt: string; createdAt: string }>;
+  tips?: Array<{ id: string; staffId: string; method: string; reference: string; amountPaise: number; createdAt: string }>;
   events: Array<{ id: string; type: string; actorUserId: string; createdAt: string }>;
   capabilities: Record<string, boolean>;
 }

@@ -105,7 +105,7 @@ export class OwnerAppointmentsPage implements OnDestroy {
   });
 
   readonly views: Array<{ id: OwnerAppointmentView; label: string }> = [
-    { id: "list", label: "List" }, { id: "day", label: "Day" }, { id: "week", label: "Week" }, { id: "staff", label: "Staff" }, { id: "branch", label: "Branch" }
+    { id: "list", label: "List" }, { id: "staff", label: "Staff" }, { id: "branch", label: "Branch" }
   ];
   readonly initialStatuses = INITIAL_STATUSES;
 
@@ -236,6 +236,7 @@ export class OwnerAppointmentsPage implements OnDestroy {
   }
 
   openCreate(event: Event): void { this.form = this.emptyForm(); this.form.branchId = this.context.selectedBranchId() || this.branches()[0]?.id || ""; this.openModal("create", event); }
+  openWalkIn(event: Event): void { this.form = this.emptyForm(); this.form.branchId = this.context.selectedBranchId() || this.branches()[0]?.id || ""; this.form.source = "walk-in"; this.form.status = "booked"; this.openModal("create", event); }
   openEdit(event: Event): void { const detail = this.detail(); if (!detail || !this.writeOptionsReady(detail.appointment.branchId)) return; this.form = this.formFrom(detail.appointment); this.form.serviceIds = this.form.serviceIds.filter((serviceId) => this.formServices().some((service) => service.id === serviceId)); this.openModal("edit", event); }
   openReschedule(event: Event): void { const appointment = this.detail()?.appointment; if (!appointment) return; this.rescheduleForm = this.rescheduleFrom(appointment); this.openModal("reschedule", event); }
   openActionModal(kind: "cancel" | "complete" | "noShow" | "status", event: Event): void { this.cancelReason.set(""); this.actionNote.set(""); this.nextStatus.set(""); this.openModal(kind, event); }
@@ -283,7 +284,8 @@ export class OwnerAppointmentsPage implements OnDestroy {
       branchId: this.form.branchId, clientId: this.form.clientId, staffId: this.form.staffId, serviceIds: [...this.form.serviceIds], startAt,
       ...(endAt ? { endAt } : {}), ...(this.form.notes.trim() ? { notes: this.form.notes.trim() } : {}),
       ...(this.modal() === "create" && INITIAL_STATUSES.includes(this.form.status) ? { status: this.form.status } : {}),
-      ...(this.form.source.trim() ? { source: this.form.source.trim() } : {})
+      ...(this.form.source.trim() ? { source: this.form.source.trim() } : {}),
+      ...(this.modal() === "create" && this.form.recurrenceFrequency !== "none" ? { recurrence: { frequency: this.form.recurrenceFrequency, interval: this.form.recurrenceInterval, count: this.form.recurrenceCount, ...(this.form.recurrenceUntil ? { until: this.toIso(this.form.recurrenceUntil, this.form.time) } : {}) } } : {})
     };
     await this.mutate(async () => {
       const current = this.detail();
@@ -291,7 +293,7 @@ export class OwnerAppointmentsPage implements OnDestroy {
         ? await this.owner.updateAppointment(current.appointment.id, payload, current.version)
         : await this.owner.createAppointment(payload);
       this.detail.set(response);
-      return this.modal() === "edit" ? "Appointment updated." : "Appointment created.";
+      return this.modal() === "edit" ? "Appointment updated." : this.form.recurrenceFrequency !== "none" ? "Recurring appointments created." : "Appointment created.";
     });
   }
 
@@ -493,9 +495,9 @@ export class OwnerAppointmentsPage implements OnDestroy {
     });
   }
 
-  private emptyForm(): OwnerAppointmentFormValue { return { branchId: "", clientId: "", staffId: "", serviceIds: [], date: "", time: "", endDate: "", endTime: "", notes: "", status: "booked", source: "" }; }
+  private emptyForm(): OwnerAppointmentFormValue { return { branchId: "", clientId: "", staffId: "", serviceIds: [], date: "", time: "", endDate: "", endTime: "", notes: "", status: "booked", source: "", recurrenceFrequency: "none", recurrenceInterval: 1, recurrenceCount: 1, recurrenceUntil: "" }; }
   private emptyRescheduleForm(): OwnerAppointmentRescheduleFormValue { return { branchId: "", staffId: "", date: "", time: "", endDate: "", endTime: "", reason: "" }; }
-  private formFrom(item: OwnerAppointment): OwnerAppointmentFormValue { const start = this.localParts(item.startAt); const end = item.endAt ? this.localParts(item.endAt) : { date: "", time: "" }; return { branchId: item.branchId, clientId: item.clientId, staffId: item.staffId, serviceIds: [...item.serviceIds], date: start.date, time: start.time, endDate: end.date, endTime: end.time, notes: item.notes || "", status: item.status || "", source: item.sourceChannel || item.source || "" }; }
+  private formFrom(item: OwnerAppointment): OwnerAppointmentFormValue { const start = this.localParts(item.startAt); const end = item.endAt ? this.localParts(item.endAt) : { date: "", time: "" }; return { branchId: item.branchId, clientId: item.clientId, staffId: item.staffId, serviceIds: [...item.serviceIds], date: start.date, time: start.time, endDate: end.date, endTime: end.time, notes: item.notes || "", status: item.status || "", source: item.sourceChannel || item.source || "", recurrenceFrequency: "none", recurrenceInterval: 1, recurrenceCount: 1, recurrenceUntil: "" }; }
   private rescheduleFrom(item: OwnerAppointment): OwnerAppointmentRescheduleFormValue { const start = this.localParts(item.startAt); const end = item.endAt ? this.localParts(item.endAt) : { date: "", time: "" }; return { branchId: item.branchId, staffId: item.staffId, date: start.date, time: start.time, endDate: end.date, endTime: end.time, reason: "" }; }
   private localParts(value: string): { date: string; time: string } { const date = new Date(value); if (Number.isNaN(date.getTime())) return { date: "", time: "" }; const parts = new Intl.DateTimeFormat("en-CA", { year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hourCycle: "h23", timeZone: this.context.effectiveTimezone() }).formatToParts(date); const part = (type: Intl.DateTimeFormatPartTypes) => parts.find((item) => item.type === type)?.value || ""; return { date: `${part("year")}-${part("month")}-${part("day")}`, time: `${part("hour")}:${part("minute")}` }; }
   private toIso(date: string, time: string): string { return new Date(`${date}T${time}:00+05:30`).toISOString(); }
@@ -507,7 +509,7 @@ export class OwnerAppointmentsPage implements OnDestroy {
   private weekStart(value: string): string { const date = new Date(`${value}T00:00:00Z`); return this.addDays(value, -((date.getUTCDay() + 6) % 7)); }
   private applyCalendarSpan(days: 1 | 7): void { const focus = this.focusDate() || this.from(); this.from.set(days === 7 ? this.weekStart(focus) : focus); this.to.set(days === 7 ? this.addDays(this.from(), 6) : focus); void this.loadAppointments(true); }
   private unique(values: string[]): string[] { return [...new Set(values.map((value) => value.trim()).filter(Boolean))].sort((a, b) => a.localeCompare(b)); }
-  private readView(): OwnerAppointmentView { try { const value = localStorage.getItem("auraOwner:appointmentView"); return value === "day" || value === "week" || value === "staff" || value === "branch" ? value : "list"; } catch { return "list"; } }
+  private readView(): OwnerAppointmentView { try { const value = localStorage.getItem("auraOwner:appointmentView"); return value === "staff" || value === "branch" ? value : "list"; } catch { return "list"; } }
   private writeView(value: OwnerAppointmentView): void { try { localStorage.setItem("auraOwner:appointmentView", value); } catch { /* Current view remains available in memory. */ } }
   private lockPage(): void { document.documentElement.classList.add("staff-overlay-open"); }
   private unlockPage(): void { if (!this.modal() && !this.detail() && !this.detailLoading() && !this.detailError()) document.documentElement.classList.remove("staff-overlay-open"); }

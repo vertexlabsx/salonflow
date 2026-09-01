@@ -18,4 +18,4 @@ COPY --from=build /app/dist ./dist
 COPY PRODUCTION.md ./PRODUCTION.md
 USER node
 EXPOSE 4000
-CMD ["node", "dist/index.js"]
+CMD ["node", "dist/src/index.js"]

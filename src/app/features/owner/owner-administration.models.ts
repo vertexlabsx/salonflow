@@ -100,6 +100,9 @@ export interface OwnerGeneralSettings {
   dateTime: { dateFormat: string; timeFormat: string; businessDayStartHour: number; weekStartsOn: string };
   interface: { compactMode: boolean; showModuleBadges: boolean; enableCommandSearch: boolean };
   defaults: { refreshReportsOnOpen: boolean; ownerNotifications: boolean; staffHints: boolean };
+  whatsappNudges: { birthdayOfferPercent: number; feedbackDelayMinutes: number; rebookingWeeks: number; loyaltyStep: number; noShowEnabled: boolean; abandonedEnabled: boolean; birthdayEnabled: boolean; feedbackEnabled: boolean; rebookingEnabled: boolean; loyaltyEnabled: boolean };
+  whatsappPolicy: { cancellationCutoffHours: number; enforceCancellationCutoff: boolean; rescheduleCutoffHours: number; enforceRescheduleCutoff: boolean; depositRefundPolicy: string; googleReviewUrl: string };
+  booking: { depositsEnabled: boolean; depositMode: "fixed" | "percent"; depositPercent: number; depositFixedPaise: number; depositMinimumPaise: number };
 }
 
 export interface OwnerSettingsAudit { lastChangedBy: string; lastChangedAt: string; }
@@ -140,4 +143,68 @@ export interface OwnerWhatsAppSignupState {
   configId: string;
   apiVersion: string;
   provider: string;
+}
+
+export interface OwnerWhatsAppConversation {
+  phone: string;
+  customerId: string;
+  customerName: string;
+  branchId: string;
+  interactionStatus: string;
+  marketingOptOut: boolean;
+  lastMessageAt: string | null;
+  lastDirection: "inbound" | "outbound" | null;
+  lastBody: string;
+  lastStatus: string;
+  inboundCount: number;
+  outboundCount: number;
+  appointmentId: string | null;
+}
+
+export interface OwnerWhatsAppMessage {
+  id: string;
+  direction: "inbound" | "outbound";
+  body: string;
+  status: string;
+  type: string;
+  appointmentId: string | null;
+  providerMessageId: string;
+  at: string | null;
+  deliveredAt?: string | null;
+  readAt?: string | null;
+  error?: string;
+}
+
+export interface OwnerWhatsAppConversationList {
+  items: OwnerWhatsAppConversation[];
+  page: { limit: number; offset: number; total: number; hasMore: boolean };
+}
+
+export interface OwnerWhatsAppMessageList {
+  customer: { id: string; name: string; phone: string; branchId: string; interactionStatus: string; marketingOptOut: boolean; lastBookedAt: string | null };
+  items: OwnerWhatsAppMessage[];
+  page: { limit: number; offset: number; total: number; hasMore: boolean };
+}
+
+export interface OwnerWhatsAppBotSettings {
+  personality?: "friendly" | "luxury" | "quick" | "hinglish";
+  address?: string;
+  contact?: string;
+  instagram?: string;
+  parking?: string;
+  paymentModes?: string[];
+  customAnswers?: Array<{ question: string; answer: string; keywords?: string[]; enabled?: boolean }>;
+  features?: { upsells?: boolean; hinglishReplies?: boolean; groupBooking?: boolean; abandonedRecovery?: boolean; reviewPrompts?: boolean };
+}
+
+export interface OwnerWhatsAppBotSettingsResponse { branchId: string; settings: OwnerWhatsAppBotSettings; }
+
+export interface OwnerWhatsAppIntelligence {
+  analytics: { since: string; inboundCount: number; outboundCount: number; actionCounts: Record<string, number>; statusCounts: Record<string, number>; topServices: Array<{ name: string; count: number }> };
+  health: { failedSends: number; stuckSessions: number; repeatedMisunderstandings: number };
+  templateReadiness: Array<{ name: string; ready: boolean; templates: Array<{ name: string; language: string; status: string; category: string; lastSyncedAt?: string }> }>;
+  waitlist: Array<{ id: string; branchId: string; staffId: string; serviceNames: string[]; date: string; preferredTime: string; customerPhone: string; status: string; notified: boolean; opportunityExpiresAt: string; createdAt: string }>;
+  qualityQueue: Array<{ id: string; phone: string; name: string; text: string; receivedAt: string; reason: string }>;
+  campaignSegments: Array<{ key: string; tags: string[]; count: number }>;
+  customers: Array<{ id: string; name: string; phone: string; tags: string[]; preferredStaffIds: string[]; favoriteServiceIds: string[]; visitCount: number; lastBookedAt: string; interactionStatus: string }>;
 }

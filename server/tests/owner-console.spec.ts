@@ -2,10 +2,12 @@ import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
 import supertest from "supertest";
 import type { Express } from "express";
 import { createTestWorld, destroyTestWorld } from "./helpers/world";
-import { BRANCH_ID, TENANT, cleanupCollections, fetchCsrf, seedAuthFixtures } from "./helpers/auth-fixtures";
+import { BRANCH_ID, TENANT, cleanupCollections, createUser, fetchCsrf, seedAuthFixtures } from "./helpers/auth-fixtures";
 import { CustomerModel } from "../src/models/customer.model";
 import { AppointmentModel } from "../src/models/appointment.model";
 import { OwnerSettingsModel } from "../src/models/owner-settings.model";
+import { NotificationModel } from "../src/models/notification.model";
+import { BranchModel } from "../src/models/branch.model";
 import { businessDateIn, zonedDayRange } from "../src/shared/business-date";
 
 let app: Express;
@@ -16,6 +18,16 @@ async function ownerSession(): Promise<{ accessToken: string; csrfToken: string 
     .post("/api/v1/auth/login")
     .set("x-csrf-token", csrf.token)
     .send({ tenantId: TENANT, loginId: "owner", password: "owner@123", device: { type: "owner-app" } });
+  expect(login.status).toBe(200);
+  return { accessToken: login.body.data.accessToken as string, csrfToken: csrf.token };
+}
+
+async function loginSession(loginId: string, password: string): Promise<{ accessToken: string; csrfToken: string }> {
+  const csrf = await fetchCsrf(app);
+  const login = await supertest(app)
+    .post("/api/v1/auth/login")
+    .set("x-csrf-token", csrf.token)
+    .send({ tenantId: TENANT, loginId, password, device: { type: "owner-app" } });
   expect(login.status).toBe(200);
   return { accessToken: login.body.data.accessToken as string, csrfToken: csrf.token };
 }
@@ -133,6 +145,38 @@ describe("owner-console CRM compatibility", () => {
     expect(detail.status).toBe(200);
     expect(detail.body.data.client).toMatchObject({ walletBalancePaise: 150000, loyaltyPoints: 120, packageName: "Blowdry Pack", packageCreditsRemaining: 3, subscriptionName: "Weekly Nails", subscriptionStatus: "active" });
     expect(detail.body.data.membership).toMatchObject({ planName: "Silver Care", creditsRemaining: 2 });
+  });
+
+  it("allows managers to add walk-in clients and notifies owner when client data changes", async () => {
+    await createUser({ loginId: "manager", password: "manager@123", name: "Salon Manager", role: "manager", staffId: "staff_manager", staffAppPermissions: ["read:appointments", "create:appointments", "update:appointments", "read:clients", "create:clients", "update:clients"] });
+    const session = await loginSession("manager", "manager@123");
+    const auth = { Authorization: `Bearer ${session.accessToken}`, "x-csrf-token": session.csrfToken };
+
+    const create = await supertest(app).post("/api/v1/owner-console/operations/clients").set(auth).send({ branchId: BRANCH_ID, name: "Walk In Client", phone: "919333333333", notes: "Walk-in consultation" });
+    expect(create.status).toBe(201);
+
+    const update = await supertest(app).patch(`/api/v1/owner-console/operations/clients/${create.body.data.id}`).set(auth).send({ notes: "Updated by manager", loyaltyPoints: 10 });
+    expect(update.status).toBe(200);
+
+    const notifications = await NotificationModel.find({ salonId: TENANT }).sort({ createdAt: 1 }).lean();
+    expect(notifications).toHaveLength(2);
+    expect(notifications[0]).toMatchObject({ staffId: null, title: "Client created by Salon Manager", status: "unread" });
+    expect(notifications[1]?.body).toContain("notes, loyaltyPoints");
+  });
+
+  it("blocks manager client writes outside assigned locations", async () => {
+    const otherBranchId = `${TENANT}_other`;
+    await BranchModel.create({ _id: otherBranchId, salonId: TENANT, name: "Other Branch", timezone: "Asia/Kolkata", status: "active", slotIntervalMinutes: 30, hours: [] });
+    await createUser({ loginId: "manager", password: "manager@123", name: "Salon Manager", role: "manager", staffId: "staff_manager", staffAppPermissions: ["read:appointments", "create:appointments", "update:appointments", "read:clients", "create:clients", "update:clients"] });
+    const session = await loginSession("manager", "manager@123");
+    const auth = { Authorization: `Bearer ${session.accessToken}`, "x-csrf-token": session.csrfToken };
+
+    const create = await supertest(app).post("/api/v1/owner-console/operations/clients").set(auth).send({ branchId: otherBranchId, name: "Outside Client", phone: "919444444444" });
+    expect(create.status).toBe(403);
+
+    const customer = await CustomerModel.create({ salonId: TENANT, branchId: otherBranchId, name: "Existing Other", normalizedPhone: "919555555555", whatsappPhoneNumberId: "", interactionStatus: "active", source: "crm" });
+    const update = await supertest(app).patch(`/api/v1/owner-console/operations/clients/${customer._id}`).set(auth).send({ notes: "Should fail" });
+    expect(update.status).toBe(404);
   });
 
   it("creates, lists, opens and transitions owner appointments", async () => {

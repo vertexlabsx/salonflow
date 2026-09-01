@@ -6,7 +6,7 @@ export interface WhatsAppBookingSession {
   branchId: string;
   waPhone: string;
   profileName: string;
-  state: "select_branch" | "select_category" | "select_service" | "add_more_services" | "select_staff" | "select_date" | "select_time" | "confirm_hold" | "awaiting_payment" | "confirm_name" | "confirm" | "completed" | "cancelled" | "menu" | "view_bookings" | "manage_booking" | "view_history" | "select_cancel_booking" | "confirm_cancel" | "select_reschedule_booking" | "reschedule_date" | "reschedule_time" | "select_modify_booking" | "modify_choose_field" | "confirm_modify" | "select_rebook_booking" | "confirm_rebook";
+  state: "gate" | "select_branch" | "select_category" | "select_service" | "add_more_services" | "select_staff" | "select_date" | "select_time" | "confirm_hold" | "awaiting_payment" | "confirm_name" | "confirm" | "completed" | "cancelled" | "menu" | "view_bookings" | "manage_booking" | "view_history" | "select_cancel_booking" | "confirm_cancel" | "select_reschedule_booking" | "reschedule_date" | "reschedule_time" | "select_modify_booking" | "modify_choose_field" | "confirm_modify" | "select_rebook_booking" | "confirm_rebook";
   managementAction: string | null;
   modifyField: string | null;
   targetAppointmentId: string | null;
@@ -31,6 +31,9 @@ export interface WhatsAppBookingSession {
   lastAlternates: string;
   earliestOffer: string;
   pendingReminder: boolean;
+  reminderPreference: "both" | "day_before" | "short" | "none" | null;
+  pendingFeedbackAppointmentId: string | null;
+  waitlistOfferId: string | null;
   conciergeTurns: number;
   expiresAt: Date;
   createdAt?: Date;
@@ -65,6 +68,9 @@ const whatsAppBookingSessionSchema = new Schema<WhatsAppBookingSession>(
     lastAlternates: { type: String, default: "" },
     earliestOffer: { type: String, default: "" },
     pendingReminder: { type: Boolean, default: false },
+    reminderPreference: { type: String, enum: ["both", "day_before", "short", "none", null], default: null },
+    pendingFeedbackAppointmentId: { type: String, default: null },
+    waitlistOfferId: { type: String, default: null },
     conciergeTurns: { type: Number, default: 0 },
     expiresAt: { type: Date, required: true },
     managementAction: { type: String, default: null },

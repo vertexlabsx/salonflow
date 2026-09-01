@@ -78,9 +78,9 @@ export function parseNaturalDate(value: string, timezone = "Asia/Kolkata"): stri
     if (isValidIso(candidate)) return candidate;
   }
 
-  if (/\b(day after tomorrow|parso)\b/.test(lower)) return isoKey(at(2, timezone), timezone);
-  if (/\b(tomorrow|kal)\b/.test(lower)) return isoKey(at(1, timezone), timezone);
-  if (/\b(today|aaj)\b/.test(lower)) return isoKey(at(0, timezone), timezone);
+  if (/\b(day after tomorrow|parso|parson)\b/.test(lower)) return isoKey(at(2, timezone), timezone);
+  if (/\b(tomorrow|tomorow|tommorow|tmrw|tmr|2moro|kal)\b/.test(lower)) return isoKey(at(1, timezone), timezone);
+  if (/\b(today|aaj|aj|ajj)\b/.test(lower)) return isoKey(at(0, timezone), timezone);
 
   const inDays = lower.match(/\bin\s+(\d+)\s+days?\b/);
   if (inDays) return isoKey(at(Math.max(0, Math.min(Number(inDays[1]), 60)), timezone), timezone);
@@ -181,8 +181,10 @@ export function parseTimePreference(value: string): { time?: string; after?: num
     }
   }
 
+  if (/\b(early morning|subah jaldi)\b/.test(lower)) return { before: 10 * 60 };
   if (/\b(morning|subah|subha)\b/.test(lower)) return { before: 12 * 60 };
   if (/\b(afternoon|noon|lunch)\b/.test(lower)) return { after: 12 * 60, before: 16 * 60 };
+  if (/\b(late evening|shaam late|raat se pehle)\b/.test(lower)) return { after: 18 * 60 };
   if (/\b(evening|shaam)\b/.test(lower)) return { after: 16 * 60 };
   if (/\b(night|raat)\b/.test(lower)) return { after: 18 * 60 };
   if (/\b(between)\b/.test(lower) && /(?:after|from)\b.*\b(before|to|until)\b/.test(lower)) {
@@ -196,7 +198,7 @@ export function parseTimePreference(value: string): { time?: string; after?: num
       }
     }
   }
-  const flexible = /\b(first available|earliest|asap|a\.s\.a\.p|whenever|anytime|any time|sometime|soonest|earliest slot|first slot|convenient)\b/.test(lower);
+  const flexible = /\b(first available|earliest|asap|a\.s\.a\.p|whenever|anytime|any time|sometime|soonest|earliest slot|first slot|convenient|koi bhi|kabhi bhi|jaldi|fastest)\b/.test(lower);
   return flexible ? { flexible: true } : {};
 }
 

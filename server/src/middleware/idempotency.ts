@@ -29,21 +29,36 @@ export function idempotencyGuard() {
     try {
       const existing = await IdempotencyModel.findOne(filter);
       if (existing) {
-        if (existing.requestHash !== hash) {
-          res.status(409).json({
-            success: false,
-            error: { message: "This Idempotency-Key was already used with a different payload. Generate a new key." }
-          });
+        if (existing.responseStatus === 0) {
+          // A prior request reserved this key but never completed (crash/restart). Re-run it.
+          await IdempotencyModel.deleteOne(filter);
+        } else {
+          if (existing.requestHash !== hash) {
+            res.status(409).json({
+              success: false,
+              error: { message: "This Idempotency-Key was already used with a different payload. Generate a new key." }
+            });
+            return;
+          }
+          res.status(existing.responseStatus).type("json").send(existing.responseBody);
           return;
         }
-        res.status(existing.responseStatus).type("json").send(existing.responseBody);
-        return;
       }
 
       // Reserve the key before execution; a concurrent duplicate insert fails here.
       try {
-        await IdempotencyModel.create({ ...filter, requestHash: hash, responseStatus: 0, responseBody: "", storedAt: new Date() });
+        await IdempotencyModel.create({ ...filter, requestHash: hash, responseStatus: 0, responseBody: "(reserving)", storedAt: new Date() });
         req.idempotencyReservedKey = { ...filter };
+        // Persist the real response once the handler serializes it, so retries replay it.
+        const originalJson = res.json.bind(res);
+        res.json = ((body: unknown) => {
+          try {
+            void storeIdempotentResponse(req.idempotencyReservedKey, res.statusCode, JSON.stringify(body));
+          } catch {
+            /* best-effort persistence */
+          }
+          return originalJson(body);
+        }) as Response["json"];
       } catch (error) {
         const code = (error as { code?: number }).code;
         if (code === 11000) {

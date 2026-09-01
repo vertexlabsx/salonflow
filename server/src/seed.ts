@@ -80,8 +80,8 @@ export async function seed(options: { disconnect?: boolean } = { disconnect: tru
       role: "receptionist",
       roleDisplayName: "Receptionist",
       staffId: "staff_seed_reception",
-      staffAppPermissions: ["read:appointments", "read:staff", "read:clients", "allow:staff-checkin-checkout", "create:appointments"],
-      crmPermissions: ["read:appointments", "read:staff", "read:clients"]
+      staffAppPermissions: ["read:appointments", "read:staff", "read:clients", "create:clients", "update:clients", "allow:staff-checkin-checkout", "create:appointments"],
+      crmPermissions: ["read:appointments", "read:staff", "read:clients", "create:clients", "update:clients"]
     }
   ];
 

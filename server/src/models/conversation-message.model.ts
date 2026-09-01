@@ -29,6 +29,7 @@ const conversationMessageSchema = new Schema<ConversationMessage>(
 );
 
 conversationMessageSchema.index({ conversationId: 1, createdAt: 1 });
+conversationMessageSchema.index({ body: "text", senderName: "text" });
 
 export const ConversationMessageModel: Model<ConversationMessage> =
   (mongoose.models.ConversationMessage as Model<ConversationMessage>) ||

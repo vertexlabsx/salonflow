@@ -23,9 +23,35 @@ import {
 import { OwnerAttendance, OwnerAttendanceDevice, OwnerAttendanceEvidence, OwnerAttendancePolicy, OwnerLeave, OwnerLeaveDetail, OwnerListResponse, OwnerPayroll, OwnerPayrollDetail, OwnerShiftSwap, OwnerStaff, OwnerStaffDetail, OwnerStaffWrite } from "./owner-people.models";
 import { OwnerExportFile, OwnerFinanceDrilldown, OwnerFinanceOverview, OwnerFinanceQuery, OwnerReportCatalogue, OwnerReportData } from "./owner-finance-reports.models";
 import { OwnerCampaign, OwnerChatConversation, OwnerChatMessage, OwnerChatMessagesResponse, OwnerChatReceiptResponse, OwnerClient, OwnerClientDetail, OwnerInventoryDetail, OwnerInventoryResponse, OwnerNotification, OwnerNotificationReceipt, OwnerOperationsQuery, OwnerOperationsResponse } from "./owner-operations.models";
-import { OwnerAccessAdministration, OwnerAdministrationUser, OwnerBranchCatalogue, OwnerBranchMutation, OwnerBranchWrite, OwnerRoleMutation, OwnerRoleWrite, OwnerSettingsResponse, OwnerUserWrite, OwnerWhatsAppStatus, OwnerWhatsAppSignupState } from "./owner-administration.models";
+import { OwnerAccessAdministration, OwnerAdministrationUser, OwnerBranchCatalogue, OwnerBranchMutation, OwnerBranchWrite, OwnerRoleMutation, OwnerRoleWrite, OwnerSettingsResponse, OwnerUserWrite, OwnerWhatsAppBotSettings, OwnerWhatsAppBotSettingsResponse, OwnerWhatsAppConversationList, OwnerWhatsAppIntelligence, OwnerWhatsAppMessageList, OwnerWhatsAppStatus, OwnerWhatsAppSignupState } from "./owner-administration.models";
 import { OwnerBillingDetail, OwnerBillingList } from "./owner-billing.models";
 
+export interface OwnerPromo {
+  _id?: string; id?: string; salonId: string; kind: "coupon" | "referral"; code: string; label: string; description?: string;
+  discountType: "percent" | "flat"; discountPercent?: number; discountPaise?: number; minimumSpendPaise?: number;
+  maxRedemptions?: number; startsAt?: string; expiresAt?: string; anyBranch: boolean; branchIds: string[];
+  status: "active" | "paused" | "expired" | "exhausted"; redemptionCount: number; totalDiscountPaise: number;
+  referrerRewardType?: "percent" | "flat"; referrerRewardPercent?: number; referrerRewardPaise?: number;
+  createdBy: string; createdAt?: string; updatedAt?: string;
+}
+export interface OwnerPromoRedemption {
+  _id?: string; id?: string; salonId: string; branchId: string; promoId: string; code: string;
+  customerId: string; customerName: string; appointmentId?: string; invoiceId?: string;
+  discountPaise: number; discountPercent?: number; appliedByUserId: string; appliedAt: string; createdAt?: string;
+}
+export interface OwnerPromoRedeemResponse {
+  promo: OwnerPromo; discountPaise: number; redemptionsUsed: number; remaining: number | null;
+}
+export interface OwnerExpense {
+  id: string; branchId: string; date: string; category: string; vendor: string; description: string; amountPaise: number; taxRateBps: number; taxPaise: number; totalPaise: number; notes: string; createdAt: string;
+}
+export interface OwnerExpenseList { items: OwnerExpense[]; page: { limit: number; offset: number; total: number; hasMore: boolean; nextOffset: number | null }; metadata: { timezone: string; moneyUnit: string } }
+export interface OwnerGstReport { gstin: string; placeOfSupply: string; fromDate: string; toDate: string; taxableValuePaise: number; outputTaxPaise: number; inputCreditPaise: number; netGstPayablePaise: number; collection: { invoiceCount: number; totalCollectedPaise: number }; liability: { type: string; cgstPaise: number; sgstPaise: number; igstPaise: number }; expenses: { count: number; totalExpenseAmountPaise: number; inputTaxPaise: number }; rateBreakdown: Array<{ rateBps: number; taxablePaise: number; taxPaise: number }> }
+export interface OwnerGstReportResponse { report: OwnerGstReport; metadata: { timezone: string; moneyUnit: string } }
+export interface OwnerGiftCard { id: string; code: string; purchaserName: string; recipientName: string; recipientPhone: string; initialValuePaise: number; balancePaise: number; expiresAt: string; status: string; createdAt: string }
+export interface OwnerBundleDeal { id: string; name: string; description: string; items: Array<{ serviceId: string; quantity: number }>; pricePaise: number; startsAt: string; expiresAt: string; status: string; createdAt: string }
+export interface OwnerPurchaseOrder { id: string; branchId: string; poNumber: string; supplierName: string; supplierPhone: string; status: string; expectedAt: string; lines: Array<{ itemName: string; sku: string; quantity: number; unitCostPaise: number; totalPaise: number }>; subtotalPaise: number; taxPaise: number; totalPaise: number; notes: string; createdAt: string }
+export interface OwnerBusyHourCell { dayOfWeek: number; hour: number; appointments: number; valuePaise: number; intensity: number }
 export type OwnerUser = {
   id: string;
   name: string;
@@ -134,6 +160,9 @@ export class OwnerAppService {
   dashboard(params: { branchId: string; range: string; from?: string; to?: string }): Promise<OwnerDashboardResponse> { return this.get("/owner-console/dashboard", params); }
   ownerBillingInvoices(params: Record<string, string | number | boolean>): Promise<OwnerBillingList> { return this.get("/owner-console/billing/invoices", params); }
   ownerBillingInvoice(id: string): Promise<OwnerBillingDetail> { return this.get(`/owner-console/billing/invoices/${encodeURIComponent(id)}`); }
+  recordOwnerInvoicePayment(id: string, payload: { method: "cash" | "card" | "upi" | "bank_transfer" | "other"; amountPaise: number; reference?: string }): Promise<unknown> { return this.post(`/owner-console/finance/invoices/${encodeURIComponent(id)}/payments`, payload); }
+  recordOwnerInvoiceTip(id: string, payload: { method: "cash" | "card" | "upi" | "bank_transfer" | "other"; amountPaise: number; reference?: string; staffId?: string }): Promise<unknown> { return this.post(`/owner-console/finance/invoices/${encodeURIComponent(id)}/tips`, payload); }
+  voidOwnerInvoice(id: string, reason: string): Promise<unknown> { return this.post(`/owner-console/finance/invoices/${encodeURIComponent(id)}/void`, { reason }); }
   async realtimeSocketTicketUrl(branchId = ""): Promise<string> {
     const response = await this.post<{ ticket: string }>("/realtime/ticket", { branchId: branchId === "all" ? "" : branchId }, true);
     const base = this.baseUrl.startsWith("http") ? new URL(this.baseUrl) : new URL(this.baseUrl, window.location.origin);
@@ -236,6 +265,36 @@ export class OwnerAppService {
   whatsappSignupState(): Promise<OwnerWhatsAppSignupState> { return this.post("/whatsapp/embedded-signup/state", {}); }
   whatsappSignupCallback(payload: { state: string; authorizationCode: string; wabaId?: string; phoneNumberId?: string; businessId?: string; redirectUri?: string }): Promise<OwnerWhatsAppStatus> { return this.post("/whatsapp/embedded-signup/callback", payload); }
   disconnectWhatsApp(phoneNumberId?: string): Promise<{ connection: unknown }> { return this.post("/whatsapp/disconnect", phoneNumberId ? { phoneNumberId } : {}); }
+  whatsappConversations(params: { search?: string; limit?: number; offset?: number } = {}): Promise<OwnerWhatsAppConversationList> { return this.get("/whatsapp/conversations", params); }
+  whatsappMessages(phone: string, params: { limit?: number; offset?: number } = {}): Promise<OwnerWhatsAppMessageList> { return this.get(`/whatsapp/conversations/${encodeURIComponent(phone)}/messages`, params); }
+  whatsappIntelligence(days = 30): Promise<OwnerWhatsAppIntelligence> { return this.get("/owner-console/whatsapp/intelligence", { days }); }
+  whatsappBotSettings(branchId = ""): Promise<OwnerWhatsAppBotSettingsResponse> { return this.get("/owner-console/whatsapp/bot-settings", branchId ? { branchId } : {}); }
+  saveWhatsAppBotSettings(branchId: string, settings: OwnerWhatsAppBotSettings): Promise<OwnerWhatsAppBotSettingsResponse> { return this.put("/owner-console/whatsapp/bot-settings", { branchId, settings }); }
+
+  ownerPromos(params: OwnerOperationsQuery & { kind?: string }): Promise<OwnerOperationsResponse<OwnerPromo>> { return this.get("/owner-console/promos", this.operationsParams({ ...params, branchId: "all" })); }
+  createOwnerPromo(payload: { kind: string; code?: string; label: string; description?: string; discountType: string; discountPercent?: number; discountPaise?: number; minimumSpendPaise?: number; maxRedemptions?: number; startsAt?: string; expiresAt?: string; branchId: string; branchIds?: string[]; referrerRewardType?: string; referrerRewardPercent?: number; referrerRewardPaise?: number }): Promise<OwnerPromo> { return this.post("/owner-console/promos", payload); }
+  setOwnerPromoStatus(id: string, status: "active" | "paused"): Promise<OwnerPromo> { return this.patch(`/owner-console/promos/${encodeURIComponent(id)}/status`, { status }); }
+  ownerPromoRedemptions(id: string, params: { page?: number; pageSize?: number } = {}): Promise<OwnerOperationsResponse<OwnerPromoRedemption>> { return this.get(`/owner-console/promos/${encodeURIComponent(id)}/redemptions`, params); }
+  redeemOwnerPromo(payload: { code: string; customerId?: string; customerPhone?: string; valuePaise: number; branchId?: string; appointmentId?: string; invoiceId?: string }): Promise<OwnerPromoRedeemResponse> { return this.post("/owner-console/promos/redeem", payload); }
+  ownerExpenses(params: { branchId: string; fromDate: string; toDate: string; category?: string; limit?: number; offset?: number }): Promise<OwnerExpenseList> { return this.get("/owner-console/finance/expenses", params); }
+  createOwnerExpense(payload: Omit<OwnerExpense, "id" | "taxPaise" | "totalPaise" | "createdAt">): Promise<{ expense: OwnerExpense }> { return this.post("/owner-console/finance/expenses", payload); }
+  updateOwnerExpense(id: string, payload: Omit<OwnerExpense, "id" | "taxPaise" | "totalPaise" | "createdAt">): Promise<{ expense: OwnerExpense }> { return this.put(`/owner-console/finance/expenses/${encodeURIComponent(id)}`, payload); }
+  deleteOwnerExpense(id: string): Promise<{ id: string }> { return this.delete(`/owner-console/finance/expenses/${encodeURIComponent(id)}`); }
+  ownerGstReport(params: { branchId: string; fromDate: string; toDate: string }): Promise<OwnerGstReportResponse> { return this.get("/owner-console/finance/gst-report", params); }
+  ownerGiftCards(params: { status?: string } = {}): Promise<{ items: OwnerGiftCard[] }> { return this.get("/owner-console/commerce/gift-cards", params); }
+  createOwnerGiftCard(payload: { purchaserName?: string; recipientName?: string; recipientPhone?: string; initialValuePaise: number; expiresAt?: string }): Promise<{ giftCard: Pick<OwnerGiftCard, "id" | "code" | "status" | "balancePaise"> }> { return this.post("/owner-console/commerce/gift-cards", payload); }
+  setOwnerGiftCardStatus(id: string, status: string): Promise<{ id: string; status: string }> { return this.patch(`/owner-console/commerce/gift-cards/${encodeURIComponent(id)}/status`, { status }); }
+  redeemOwnerGiftCard(id: string, payload: { amountPaise: number; reference?: string }): Promise<{ giftCard: Pick<OwnerGiftCard, "id" | "code" | "status" | "balancePaise"> }> { return this.post(`/owner-console/commerce/gift-cards/${encodeURIComponent(id)}/redeem`, payload); }
+  ownerBundles(): Promise<{ items: OwnerBundleDeal[] }> { return this.get("/owner-console/commerce/bundles"); }
+  createOwnerBundle(payload: { name: string; description?: string; items: Array<{ serviceId: string; quantity: number }>; pricePaise: number; startsAt?: string; expiresAt?: string; status?: string }): Promise<{ bundle: Pick<OwnerBundleDeal, "id" | "name" | "status" | "pricePaise"> }> { return this.post("/owner-console/commerce/bundles", payload); }
+  setOwnerBundleStatus(id: string, status: string): Promise<{ id: string; status: string }> { return this.patch(`/owner-console/commerce/bundles/${encodeURIComponent(id)}/status`, { status }); }
+  ownerPurchaseOrders(params: { branchId: string; status?: string }): Promise<{ items: OwnerPurchaseOrder[] }> { return this.get("/owner-console/operations/purchase-orders", params); }
+  createOwnerPurchaseOrder(payload: { branchId: string; supplierName: string; supplierPhone?: string; expectedAt?: string; taxPaise?: number; notes?: string; lines: Array<{ itemName: string; sku?: string; quantity: number; unitCostPaise: number }> }): Promise<{ purchaseOrder: Pick<OwnerPurchaseOrder, "id" | "poNumber" | "status" | "totalPaise"> }> { return this.post("/owner-console/operations/purchase-orders", payload); }
+  setOwnerPurchaseOrderStatus(id: string, status: string): Promise<{ id: string; status: string }> { return this.patch(`/owner-console/operations/purchase-orders/${encodeURIComponent(id)}/status`, { status }); }
+  sendOwnerReviewRequest(clientId: string, payload: { reviewUrl: string; message?: string }): Promise<{ id: string; sent: boolean }> { return this.post(`/owner-console/operations/clients/${encodeURIComponent(clientId)}/review-request`, payload); }
+  createOwnerClientPhoto(clientId: string, payload: { branchId: string; appointmentId?: string; beforeUrl?: string; afterUrl?: string; caption?: string; serviceNames?: string[] }): Promise<{ photo: unknown }> { return this.post(`/owner-console/operations/clients/${encodeURIComponent(clientId)}/photos`, payload); }
+  deleteOwnerClientPhoto(clientId: string, photoId: string): Promise<{ id: string }> { return this.delete(`/owner-console/operations/clients/${encodeURIComponent(clientId)}/photos/${encodeURIComponent(photoId)}`); }
+  ownerBusyHours(params: { branchId: string; fromDate: string; toDate: string }): Promise<{ cells: OwnerBusyHourCell[]; metadata: { timezone: string; fromDate: string; toDate: string; branchId: string } }> { return this.get("/owner-console/analytics/busy-hours", params); }
 
   private async get<T>(path: string, params: Record<string, string | number | boolean> = {}): Promise<T> {
     try {
@@ -313,6 +372,19 @@ export class OwnerAppService {
       if (!this.isSessionRejected(error)) throw error;
       await this.refresh();
       const response = await firstValueFrom(this.http.put<T | ApiEnvelope<T>>(`${this.baseUrl}${path}`, body, { headers: this.authHeaders() }));
+      return this.unwrap(response);
+    }
+  }
+
+  private async delete<T>(path: string): Promise<T> {
+    try {
+      if (!this.accessToken) await this.refresh();
+      const response = await firstValueFrom(this.http.delete<T | ApiEnvelope<T>>(`${this.baseUrl}${path}`, { headers: this.authHeaders() }));
+      return this.unwrap(response);
+    } catch (error) {
+      if (!this.isSessionRejected(error)) throw error;
+      await this.refresh();
+      const response = await firstValueFrom(this.http.delete<T | ApiEnvelope<T>>(`${this.baseUrl}${path}`, { headers: this.authHeaders() }));
       return this.unwrap(response);
     }
   }

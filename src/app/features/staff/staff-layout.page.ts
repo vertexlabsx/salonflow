@@ -334,7 +334,6 @@ export class StaffLayoutPage implements OnInit, OnDestroy {
   private readonly nav: StaffNavItem[] = [
     { label: "Dashboard", path: "/staff/dashboard", iconPath: "M3 13h8V3H3v10zm0 8h8v-6H3v6zm10 0h8V11h-8v10zm0-18v6h8V3h-8z", group: "Home", permission: "read:appointments" },
     { label: "Roster", path: "/staff/roster", iconPath: "M4 4h16v4H4V4zm0 6h7v10H4V10zm9 0h7v10h-7V10z", group: "Work" },
-    { label: "Calendar", path: "/staff/calendar", iconPath: "M19 3h-1V1h-2v2H8V1H6v2H5a2 2 0 0 0-2 2v16h18V5a2 2 0 0 0-2-2zm0 16H5V9h14v10z", group: "Work", permission: "read:appointments" },
     { label: "Clients", path: "/staff/clients", iconPath: "M16 11c1.7 0 3-1.3 3-3s-1.3-3-3-3-3 1.3-3 3 1.3 3 3 3zM8 12c2.2 0 4-1.8 4-4S10.2 4 8 4 4 5.8 4 8s1.8 4 4 4zm8 2c-2 0-6 1-6 3v2h12v-2c0-2-4-3-6-3zM8 14c-2.7 0-8 1.3-8 4v1h8v-2c0-1 .5-2 1.3-2.8-.4-.1-.8-.2-1.3-.2z", group: "Work", permission: "read:clients" },
     { label: "Performance", path: "/staff/performance", iconPath: "M3 17h3v4H3v-4zm5-6h3v10H8V11zm5 3h3v7h-3v-7zm5-9h3v16h-3V5z", group: "Intelligence", permission: "read:staff" },
     { label: "Leaderboard", path: "/staff/leaderboard", iconPath: "M7 21h10v-2H7v2zM5 3h14v4a7 7 0 0 1-6 6.9V17h-2v-3.1A7 7 0 0 1 5 7V3zm2 2v2a5 5 0 0 0 10 0V5H7z", group: "Intelligence", permission: "read:staff" },

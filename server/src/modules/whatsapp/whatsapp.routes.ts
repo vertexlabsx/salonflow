@@ -1,10 +1,12 @@
 import { Router, type Request, type Response } from "express";
+import { z } from "zod";
 import { constants, createDecipheriv, createHmac, createPrivateKey, createCipheriv, privateDecrypt, timingSafeEqual } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { ApiError, asyncHandler, ok } from "../../shared/http";
 import { loadEnv } from "../../config/env";
 import { SalonModel } from "../../models/salon.model";
 import { WhatsAppInboundModel } from "../../models/whatsapp-inbound.model";
+import { WhatsAppOutboundModel } from "../../models/whatsapp-outbound.model";
 import { WhatsAppBookingSessionModel } from "../../models/whatsapp-booking-session.model";
 import { BranchModel } from "../../models/branch.model";
 import { ServiceModel } from "../../models/service.model";
@@ -18,21 +20,30 @@ import { logger } from "../../shared/logger";
 import { publishRealtimeEvent } from "../realtime/realtime.service";
 import { notifyStaffByStaffId } from "../push/push.service";
 import { applyWhatsAppDeliveryStatus, sendWhatsAppMessage } from "./whatsapp.service";
+import { applyDepositToAppointment, verifyOrRefreshDepositLink } from "./deposit.service";
+import { hoursUntil, loadWhatsAppPolicySettings } from "./policy.service";
 import { zonedTimeToUtc, zonedWeekday } from "../../shared/business-date";
 import { WhatsAppConnectionModel } from "../../models/whatsapp-connection.model";
 import { WhatsAppWebhookEventModel } from "../../models/whatsapp-webhook-event.model";
 import { embeddedSignupRouter } from "./meta/embedded-signup.routes";
+import { requireAuth } from "../../middleware/auth.middleware";
+import { requirePermissions } from "../../middleware/rbac";
 import { AppointmentModel } from "../../models/appointment.model";
 import { AppointmentSlotLockModel } from "../../models/appointment-slot-lock.model";
 import { OwnerSettingsModel } from "../../models/owner-settings.model";
+import { WaitlistModel } from "../../models/waitlist.model";
+import { NotificationModel } from "../../models/notification.model";
 import { createRazorpayPaymentLink, verifyRazorpayWebhook } from "../payments/razorpay.service";
 import { extractReceptionistIntent } from "./ai-receptionist.service";
 import { conciergeChat } from "./concierge.service";
+import { answerFaq, type FaqContext } from "./faq-answer";
 import { closestName as fuzzyClosestName, filterBookingsByHints, filterSlotsByPreference, hintLabel, normalizedNameKey, parseNaturalDate, parseTimePreference, pickBestSlot } from "./smart-parse";
 import { resolveBranchIntent, resolveServiceIntents, resolveStaffIntent, serviceSynonymQuery } from "./catalog-intent";
 
 export const whatsappRouter = Router();
 export const metaWebhookRouter = Router();
+
+const WHATSAPP_READ_PERMISSION = "read:appointments";
 
 /* ── Meta webhook verification handshake ────────────────────────────────── */
 
@@ -62,6 +73,7 @@ interface WaInboundMessage {
   flowResponse?: Record<string, unknown> | null;
   /** Stable machine id from an interactive button/list row payload (id takes priority over the human label). */
   interactiveId: string;
+  messageType: string;
 }
 
 interface WaDeliveryStatus {
@@ -78,7 +90,7 @@ function extractMessage(payload: unknown): WaInboundMessage | null {
         value?: {
           metadata?: { phone_number_id?: string };
           contacts?: Array<{ profile?: { name?: string }; wa_id?: string }>;
-          messages?: Array<{ id?: string; from?: string; timestamp?: string; type?: string; text?: { body?: string }; interactive?: { button_reply?: { id?: string; title?: string }; list_reply?: { id?: string; title?: string }; nfm_reply?: { response_json?: string; body?: string; name?: string } } }>;
+          messages?: Array<{ id?: string; from?: string; timestamp?: string; type?: string; text?: { body?: string }; image?: { id?: string; caption?: string }; document?: { id?: string; caption?: string; filename?: string }; audio?: { id?: string; voice?: boolean }; video?: { id?: string; caption?: string }; interactive?: { button_reply?: { id?: string; title?: string }; list_reply?: { id?: string; title?: string }; nfm_reply?: { response_json?: string; body?: string; name?: string } } }>;
         };
       }>;
     }>;
@@ -88,7 +100,7 @@ function extractMessage(payload: unknown): WaInboundMessage | null {
       for (const change of entry.changes ?? []) {
         const value = change.value;
         const message = value?.messages?.[0];
-        if (!message || (message.type !== "text" && message.type !== "interactive")) continue;
+        if (!message) continue;
         let flowResponse: Record<string, unknown> | null = null;
         const responseJson = message.interactive?.nfm_reply?.response_json;
         if (responseJson) {
@@ -106,10 +118,11 @@ function extractMessage(payload: unknown): WaInboundMessage | null {
           waPhone: message.from ?? "",
           profileName: value?.contacts?.[0]?.profile?.name ?? "",
           messageId: message.id ?? "",
-          text: message.text?.body ?? interactiveText,
+          text: message.text?.body ?? (interactiveText || message.image?.caption || message.document?.caption || message.video?.caption || `[${message.type || "unsupported"}]`),
           timestampMs: message.timestamp ? Number(message.timestamp) * 1000 : Date.now(),
           flowResponse,
-          interactiveId: interactiveId || (message.text?.body ? "" : interactiveTitle)
+          interactiveId: interactiveId || (message.text?.body ? "" : interactiveTitle),
+          messageType: message.type || "unknown"
         };
       }
     }
@@ -168,6 +181,8 @@ function sessionExpiry(): Date {
  *  last time", favourite staff/services). Only called after a booking is
  *  actually created/confirmed — never for speculative holds. */
 async function recordCustomerBooking(salonId: string, normalizedPhone: string, appointment: { staffId?: string | null; serviceIds: string[]; startAt: Date }): Promise<void> {
+  const hour = appointment.startAt.getHours();
+  const preferredTime = hour < 12 ? "prefers_morning" : hour < 16 ? "prefers_afternoon" : hour < 19 ? "prefers_evening" : "prefers_late_evening";
   const push: Record<string, unknown> = { favoriteServiceIds: { $each: appointment.serviceIds.map(String).slice(0, 20), $slice: 30 } };
   if (appointment.staffId) push.preferredStaffIds = { $each: [String(appointment.staffId)], $slice: 8 };
   await CustomerModel.updateOne(
@@ -175,9 +190,15 @@ async function recordCustomerBooking(salonId: string, normalizedPhone: string, a
     {
       $inc: { visitCount: 1 },
       $set: { lastBookedAt: appointment.startAt, interactionStatus: "booked" },
+      $addToSet: { tags: { $each: ["whatsapp_booked", preferredTime] } },
       $push: push
     }
   );
+}
+
+async function tagCustomerLead(salonId: string, normalizedPhone: string, tags: string[]): Promise<void> {
+  if (!tags.length) return;
+  await CustomerModel.updateOne({ salonId, normalizedPhone }, { $addToSet: { tags: { $each: tags.slice(0, 8) } } });
 }
 
 async function defaultBranchId(salonId: string): Promise<string> {
@@ -254,6 +275,80 @@ function bookingFlowInteractive(salonId: string, waPhone: string, branches: Arra
     }
   };
 }
+
+function iso(value: Date | string | null | undefined): string | null {
+  if (!value) return null;
+  const date = value instanceof Date ? value : new Date(value);
+  return Number.isNaN(date.getTime()) ? null : date.toISOString();
+}
+
+function safeRegex(value: string): RegExp {
+  return new RegExp(value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i");
+}
+
+function whatsappPage(limit: number, offset: number, total: number): { limit: number; offset: number; total: number; hasMore: boolean } {
+  return { limit, offset, total, hasMore: offset + limit < total };
+}
+
+whatsappRouter.get("/conversations", requireAuth, requirePermissions(WHATSAPP_READ_PERMISSION), asyncHandler(async (req, res) => {
+  const query = z.object({ search: z.string().trim().max(120).default(""), limit: z.coerce.number().int().min(1).max(100).default(40), offset: z.coerce.number().int().min(0).default(0) }).parse(req.query);
+  const salonId = req.context!.salonId;
+  const searchDigits = query.search.replace(/\D/g, "");
+  const customerFilter: Record<string, unknown> = { salonId };
+  if (query.search) customerFilter.$or = [{ name: safeRegex(query.search) }, ...(searchDigits ? [{ normalizedPhone: new RegExp(searchDigits) }] : [])];
+  const customers = await CustomerModel.find(customerFilter).select("name normalizedPhone branchId interactionStatus marketingOptOut lastBookedAt").sort({ updatedAt: -1 }).limit(300).lean();
+  const phoneSet = new Set(customers.map((customer) => customer.normalizedPhone).filter(Boolean));
+  const messagePhoneFilter = query.search ? (phoneSet.size ? { $in: [...phoneSet] } : searchDigits ? { $regex: searchDigits } : "__no_phone_match__") : undefined;
+  const [inbound, outbound] = await Promise.all([
+    WhatsAppInboundModel.find({ salonId, ...(messagePhoneFilter ? { waPhone: messagePhoneFilter } : {}) }).sort({ receivedAt: -1 }).limit(500).lean(),
+    WhatsAppOutboundModel.find({ salonId, ...(messagePhoneFilter ? { toPhone: messagePhoneFilter } : {}) }).sort({ createdAt: -1 }).limit(500).lean()
+  ]);
+  for (const row of inbound) phoneSet.add(row.waPhone);
+  for (const row of outbound) phoneSet.add(row.toPhone);
+  const known = new Map(customers.map((customer) => [customer.normalizedPhone, customer]));
+  const missingPhones = [...phoneSet].filter((phone) => phone && !known.has(phone));
+  if (missingPhones.length) {
+    const moreCustomers = await CustomerModel.find({ salonId, normalizedPhone: { $in: missingPhones } }).select("name normalizedPhone branchId interactionStatus marketingOptOut lastBookedAt").lean();
+    for (const customer of moreCustomers) known.set(customer.normalizedPhone, customer);
+  }
+  const conversations = new Map<string, { phone: string; customerId: string; customerName: string; branchId: string; interactionStatus: string; marketingOptOut: boolean; lastMessageAt: Date | null; lastDirection: "inbound" | "outbound" | null; lastBody: string; lastStatus: string; inboundCount: number; outboundCount: number; appointmentId: string | null }>();
+  const ensure = (phone: string) => {
+    const customer = known.get(phone) as (typeof customers)[number] | undefined;
+    if (!conversations.has(phone)) conversations.set(phone, { phone, customerId: customer?._id ? String(customer._id) : "", customerName: customer?.name || phone, branchId: customer?.branchId || "", interactionStatus: customer?.interactionStatus || "active", marketingOptOut: !!customer?.marketingOptOut, lastMessageAt: null, lastDirection: null, lastBody: "", lastStatus: "", inboundCount: 0, outboundCount: 0, appointmentId: null });
+    return conversations.get(phone)!;
+  };
+  for (const row of inbound) {
+    const item = ensure(row.waPhone);
+    item.inboundCount += 1;
+    if (!item.lastMessageAt || row.receivedAt > item.lastMessageAt) Object.assign(item, { lastMessageAt: row.receivedAt, lastDirection: "inbound", lastBody: row.text, lastStatus: "received", appointmentId: row.appointmentId || item.appointmentId });
+  }
+  for (const row of outbound) {
+    const item = ensure(row.toPhone);
+    item.outboundCount += 1;
+    const createdAt = row.createdAt || row.lastAttemptAt || null;
+    if (createdAt && (!item.lastMessageAt || createdAt > item.lastMessageAt)) Object.assign(item, { lastMessageAt: createdAt, lastDirection: "outbound", lastBody: row.body, lastStatus: row.status, appointmentId: row.appointmentId || item.appointmentId });
+  }
+  for (const phone of phoneSet) ensure(phone);
+  const all = [...conversations.values()].sort((a, b) => (b.lastMessageAt?.getTime() || 0) - (a.lastMessageAt?.getTime() || 0));
+  ok(res, { items: all.slice(query.offset, query.offset + query.limit).map((item) => ({ ...item, lastMessageAt: iso(item.lastMessageAt) })), page: whatsappPage(query.limit, query.offset, all.length) });
+}));
+
+whatsappRouter.get("/conversations/:phone/messages", requireAuth, requirePermissions(WHATSAPP_READ_PERMISSION), asyncHandler(async (req, res) => {
+  const params = z.object({ phone: z.string().trim().min(4).max(40) }).parse(req.params);
+  const query = z.object({ limit: z.coerce.number().int().min(1).max(100).default(60), offset: z.coerce.number().int().min(0).default(0) }).parse(req.query);
+  const salonId = req.context!.salonId;
+  const phone = normalizePhone(params.phone);
+  const [customer, inbound, outbound] = await Promise.all([
+    CustomerModel.findOne({ salonId, normalizedPhone: phone }).select("name normalizedPhone branchId interactionStatus marketingOptOut lastBookedAt").lean(),
+    WhatsAppInboundModel.find({ salonId, waPhone: phone }).sort({ receivedAt: -1 }).limit(400).lean(),
+    WhatsAppOutboundModel.find({ salonId, toPhone: phone }).sort({ createdAt: -1 }).limit(400).lean()
+  ]);
+  const timeline = [
+    ...inbound.map((row) => ({ id: String(row._id), direction: "inbound" as const, body: row.text, status: "received", type: "message", appointmentId: row.appointmentId || null, providerMessageId: row.messageId, at: row.receivedAt })),
+    ...outbound.map((row) => ({ id: String(row._id), direction: "outbound" as const, body: row.body, status: row.status, type: row.type, appointmentId: row.appointmentId || null, providerMessageId: row.providerMessageId, at: row.createdAt || row.lastAttemptAt || new Date(0), deliveredAt: iso(row.deliveredAt), readAt: iso(row.readAt), error: row.error }))
+  ].sort((a, b) => b.at.getTime() - a.at.getTime());
+  ok(res, { customer: { id: customer?._id ? String(customer._id) : "", name: customer?.name || phone, phone, branchId: customer?.branchId || "", interactionStatus: customer?.interactionStatus || "active", marketingOptOut: !!customer?.marketingOptOut, lastBookedAt: iso(customer?.lastBookedAt) }, items: timeline.slice(query.offset, query.offset + query.limit).map((item) => ({ ...item, at: iso(item.at) })), page: whatsappPage(query.limit, query.offset, timeline.length) });
+}));
 
 async function serviceSearchPage(salonId: string, branchId: string, query: string, page = 0): Promise<{ services: Array<{ _id: unknown; name: string; pricePaise: number }>; hasNext: boolean }> {
   const all = await ServiceModel.find(serviceSearchFilter(salonId, branchId, query)).sort({ name: 1 });
@@ -428,6 +523,7 @@ function isHelpIntent(value: string): boolean {
 function isAvailabilityIntent(value: string): boolean {
   const t = value.trim().toLowerCase();
   if (!t) return false;
+  if (/\b(open|close|closed|tim(?:e|ing)s?|hours?|opening hours?)\b/.test(t) && !/\b(slot|slots|appointment|booking|available|availability|free)\b/.test(t)) return false;
   if (/\b(my|mine|i have|i've|i've got|my booking|my slot)\b/.test(t) && /\b(booking|appointment|slot)\b/.test(t)) return false;
   const hasAsk = /\b(available|availability|any slot|any slots|free|open|got free|any free|do you have|can you fit|fit me in|is there any|booked up|booked out|opening|open up|openings?|free slot|free slots)\b/.test(t);
   if (!hasAsk) return false;
@@ -456,17 +552,17 @@ function isStopFlowIntent(value: string): boolean {
 
 function isAcceptOfferIntent(value: string): boolean {
   const t = value.trim().toLowerCase();
-  return ["yes", "sure", "ok", "okay", "yep", "yeah", "done", "confirm", "book", "book it", "book this", "go ahead", "haan", "han", "karo", "haan haan"].includes(t);
+  return ["yes", "sure", "ok", "okay", "yep", "yeah", "done", "confirm", "confirm this", "book", "book it", "book this", "go ahead", "haan", "han", "ha", "haa", "karo", "kar do", "krdo", "haan haan", "theek hai", "thik hai"].includes(t);
 }
 
 function isDeclineOfferIntent(value: string): boolean {
   const t = value.trim().toLowerCase();
-  return ["no", "nope", "nah", "nahi", "forget it", "never mind", "nevermind", "skip", "not now", "not needed", "deny", "cancel offer", "no thanks"].includes(t);
+  return ["no", "nope", "nah", "nahi", "na", "mat karo", "forget it", "never mind", "nevermind", "skip", "not now", "not needed", "deny", "cancel offer", "no thanks"].includes(t);
 }
 
 function isCorrectionIntent(value: string): boolean {
   const t = value.trim().toLowerCase();
-  return /\b(other one|the other|other option|second one|another one|another option|not that one|not this one|wrong one|pick another|pick the other|something else|different one|do you have anything else|koi aur|dusra|any other)\b/.test(t);
+  return /\b(other one|the other|other option|second one|another one|another option|not that one|not this one|wrong one|pick another|pick the other|something else|different one|different staff|different time|aur slot|aur time|do you have anything else|koi aur|dusra|dusra time|any other)\b/.test(t);
 }
 
 function extractBookingId(value: string): string | null {
@@ -600,6 +696,40 @@ async function freeNearbySlots(salonId: string, branchId: string, staffId: strin
       return Math.abs(value - around) <= 45;
     })
     .slice(0, 3);
+}
+
+async function smartSlotOptions(input: { salonId: string; branchId: string; staff: Array<{ staffId: string; name: string }>; date: string; durationMinutes: number; preference: ReturnType<typeof parseTimePreference> | null; limit?: number; excludeAppointmentId?: string }): Promise<Array<{ label: string; startAt: Date; staffId: string; staffName: string }>> {
+  const options: Array<{ label: string; startAt: Date; staffId: string; staffName: string }> = [];
+  for (const item of input.staff.slice(0, 8)) {
+    const slots = await suggestedSlots(input.salonId, input.branchId, item.staffId, input.date, input.durationMinutes, input.excludeAppointmentId, 96);
+    const filtered = input.preference ? filterSlotsByPreference(slots, input.preference) : slots;
+    for (const slot of filtered.length ? filtered : slots) {
+      if (options.length >= (input.limit || 3)) break;
+      if (!options.some((option) => option.label === slot.label && option.staffId === item.staffId)) options.push({ ...slot, staffId: item.staffId, staffName: item.name });
+    }
+    if (options.length >= (input.limit || 3)) break;
+  }
+  return options;
+}
+
+function offerFromSmartOptions(input: { branchId: string; date: string; services: Array<{ id: string; name: string; durationMinutes: number; pricePaise: number; eligibleStaffIds: string[] }>; summary: { names: string[]; duration: number; value: number }; options: Array<{ label: string; startAt: Date; staffId: string; staffName: string }>; preference: ReturnType<typeof parseTimePreference> | null }): string {
+  const first = input.options[0]!;
+  return JSON.stringify({
+    branchId: input.branchId,
+    date: input.date,
+    staffId: first.staffId,
+    staffName: first.staffName,
+    serviceId: input.services[0]?.id || "",
+    serviceName: input.summary.names[0] || "service",
+    serviceIds: input.services.map((service) => service.id),
+    serviceNames: input.summary.names,
+    durationMinutes: input.summary.duration,
+    value: input.summary.value,
+    label: first.label,
+    startAt: first.startAt.toISOString(),
+    preference: input.preference,
+    expanded: input.options.map((option) => ({ label: option.label, startAt: option.startAt.toISOString(), staffId: option.staffId, staffName: option.staffName }))
+  });
 }
 
 /** Scans the next 7 days (starting tomorrow) and returns up to 3 dates that have at least one free slot. */
@@ -738,12 +868,23 @@ async function handleBookingFlowCompletion(salonId: string, message: WaInboundMe
     data: { appointmentId: String(appointment._id), type: "appointment.created" }
   });
   const flowStaffName = await staffNameOf(salonId, staffId);
+  const deposit = await applyDepositToAppointment({
+    salonId,
+    branchId,
+    appointmentId: String(appointment._id),
+    valuePaise: appointment.value,
+    customerName: customerName,
+    customerPhone: phone
+  });
   await WhatsAppBookingSessionModel.updateOne(
     { salonId, waPhone: message.waPhone },
-    { $set: { pendingReminder: true, holdAppointmentId: String(appointment._id), state: "menu" }, $setOnInsert: { branchId, profileName: "", expiresAt: sessionExpiry() } },
+    { $set: { pendingReminder: true, holdAppointmentId: String(appointment._id), state: deposit.applied ? "awaiting_payment" : "menu" }, $setOnInsert: { branchId, profileName: "", expiresAt: sessionExpiry() } },
     { upsert: true }
   );
-  return { action: "appointment_created", appointment: { id: String(appointment._id) }, reply: withSuccessTip(`Your appointment is booked.\n${bookingSummaryLines({ bookingId: String(appointment._id), serviceNames: summary.names, staffName: flowStaffName, branchName: branch.name, startAt, timezone: branch.timezone || "Asia/Kolkata", durationMinutes: summary.duration, value: summary.value })}\nWant a reminder the day before? Reply YES or NO.`) };
+  if (deposit.applied) {
+    return { action: "awaiting_payment", appointment: { id: String(appointment._id) }, reply: `Your slot is held while we process the advance deposit.\n${bookingSummaryLines({ bookingId: String(appointment._id), serviceNames: summary.names, staffName: flowStaffName, branchName: branch.name, startAt, timezone: branch.timezone || "Asia/Kolkata", durationMinutes: summary.duration, value: summary.value })}\nComplete the payment link I just sent. The slot will be released in 30 minutes if not paid.` };
+  }
+  return { action: "appointment_created", appointment: { id: String(appointment._id) }, reply: withSuccessTip(`Your appointment is booked.\n${bookingSummaryLines({ bookingId: String(appointment._id), serviceNames: summary.names, staffName: flowStaffName, branchName: branch.name, startAt, timezone: branch.timezone || "Asia/Kolkata", durationMinutes: summary.duration, value: summary.value })}\nChoose reminders:\n1. Day before + 2 hours before\n2. Only 2 hours before\n3. Only day before\n4. No reminders`) };
 }
 
 function flowPrivateKeyPem(): string {
@@ -869,9 +1010,69 @@ async function handleBookingMessage(salonId: string, branchId: string, message: 
   const branches = await BranchModel.find({ salonId, status: "active" }).sort({ createdAt: 1 });
   const branchMatch = branches.find((branch) => branch.name.toLowerCase() === lower || lower.includes(branch.name.toLowerCase()));
 
+  /** Starts a fresh booking flow from the entry gate (equivalent to the menu's
+   *  "Book appointment" option). Picks the single branch automatically, otherwise
+   *  asks which branch first. */
+  const startBookingFromMenuIn = async (input: { salonId: string; branchId: string; branches: Array<{ _id: string; name: string }>; message: WaInboundMessage; phone: string }): Promise<Record<string, unknown>> => {
+    const selectedBranchId = input.branches.length === 1 ? input.branches[0]!._id : input.branchId;
+    session = await WhatsAppBookingSessionModel.findOneAndUpdate(
+      { salonId: input.salonId, waPhone: input.phone },
+      {
+        $set: {
+          managementAction: null,
+          targetAppointmentId: null,
+          modifyField: null,
+          branchId: selectedBranchId,
+          profileName: input.message.profileName,
+          state: input.branches.length === 1 ? "select_category" : "select_branch",
+          category: null,
+          categoryPage: 0,
+          servicePage: 0,
+          staffPage: 0,
+          serviceId: null,
+          serviceName: null,
+          serviceIds: [],
+          serviceNames: [],
+          durationMinutes: 0,
+          value: 0,
+          availableSlots: [],
+          date: null,
+          startAt: null,
+          staffId: null,
+          holdAppointmentId: null,
+          customerName: input.message.profileName || "",
+          expiresAt: sessionExpiry()
+        }
+      },
+      { upsert: true, new: true }
+    );
+    if (input.branches.length > 1) {
+      return { action: "booking_started", reply: `Which branch would you like to visit?\n${formatOptions(input.branches.map((branch) => branch.name))}`, interactive: listInteractive("Which branch would you like to visit?", "Branches", input.branches.slice(0, 10).map((branch) => ({ id: branch._id, title: branch.name }))) };
+    }
+    const categories = [...new Set((await ServiceModel.find(branchServiceFilter(input.salonId, selectedBranchId)).select("category name")).map((item) => item.category || "Services"))];
+    const page = pagedOptions(categories, 0);
+    return { action: "booking_started", reply: `${pageReply("What service would you like?", page.pageItems, page.hasNext)}\n\nOr type a service name to search, like massage or facial.`, interactive: listInteractive("Categories:", "Categories", [...page.pageItems.map((category) => ({ id: category, title: category })), ...(page.hasNext ? [{ id: "more", title: "More" }] : [])]) };
+  };
+
   const sessionValid = !!session && session.expiresAt >= new Date();
   const activeBookingState = !!session && isActiveBookingState(session.state);
   const idleConversation = !activeBookingState && !(sessionValid && session!.state !== "menu" && isManagementState(session!.state));
+
+  if (idleConversation && /\b(me and my|for me and|my son|my daughter|my wife|my husband|my friend|two people|2 people|family booking|group booking)\b/.test(lower)) {
+    await tagCustomerLead(salonId, phone, ["group_booking", "hot_lead"]);
+    return { action: "group_booking_detected", reply: "I can help with group/family bookings too. Please book the first person now, then send BOOK AGAIN for the next person so I can keep the timings clean and avoid overlaps. Example: 'book haircut for me tomorrow 5pm'." };
+  }
+
+  if (idleConversation && /\b(walk ?in|come now|coming now|right now|abhi|abhi aa|can i come|come today|drop in)\b/.test(lower)) {
+    const chosenBranch = (branchMatch || (branches.length === 1 ? branches[0] : null))?._id || branchId;
+    const today = new Date(new Date().toLocaleString("en-US", { timeZone: loadEnv().SALON_TIMEZONE || "Asia/Kolkata" })).toLocaleDateString("en-CA");
+    const services = await ServiceModel.find(branchServiceFilter(salonId, chosenBranch)).select("name pricePaise durationMinutes eligibleStaffIds").sort({ durationMinutes: 1 }).limit(1);
+    const staff = services.length ? await eligibleStaffForServices(salonId, chosenBranch, services) : [];
+    const options = staff.length && services[0] ? await smartSlotOptions({ salonId, branchId: chosenBranch, staff, date: today, durationMinutes: services[0].durationMinutes || 45, preference: { flexible: true }, limit: 3 }) : [];
+    await tagCustomerLead(salonId, phone, ["walk_in_interest", "hot_lead"]);
+    if (!options.length) return { action: "walkin_no_slots", reply: "I don't see an immediate walk-in slot right now. Send 'book appointment' and I'll find the next available time." };
+    return { action: "walkin_slots", reply: `Walk-in style slots available today:\n${formatOptions(options.map((slot) => `${slot.label} with ${slot.staffName}`))}\nReply like "book ${services[0]!.name} today at ${options[0]!.label}" to lock one.`, interactive: buttonsInteractive("Book now?", [{ id: "book_appointment", title: "Book appointment" }, { id: "menu", title: "Menu" }]) };
+  }
 
   // E5: AI concierge — answers open/greeting/price/availability questions on
   // menu and dead-end paths only. Any booking it proposes is re-verified against
@@ -1014,18 +1215,26 @@ async function handleBookingMessage(salonId: string, branchId: string, message: 
   }
 
   if (idleConversation && sessionValid && session!.earliestOffer) {
-    if (isAcceptOfferIntent(lower)) {
+    const numericOfferChoice = /^\d+$/.test(lower) ? Number(lower) : 0;
+    if (isAcceptOfferIntent(lower) || numericOfferChoice > 0) {
       let offer: any = null;
       try {
         offer = JSON.parse(session!.earliestOffer);
       } catch {
         offer = null;
       }
+      if (numericOfferChoice > 0 && Array.isArray(offer?.expanded) && offer.expanded[numericOfferChoice - 1]) {
+        const chosen = offer.expanded[numericOfferChoice - 1];
+        offer = { ...offer, staffId: chosen.staffId || offer.staffId, staffName: chosen.staffName || offer.staffName, label: chosen.label || offer.label, startAt: chosen.startAt || offer.startAt };
+      }
       if (!offer || !offer.staffId || !offer.date || !offer.startAt) {
         await WhatsAppBookingSessionModel.updateOne({ salonId, waPhone: phone }, { $set: { earliestOffer: "" } });
         return { action: "offer_invalid", reply: "That offer expired. Ask me for another day/time, or send MENU." };
       }
-      const oService = offer.serviceId ? await ServiceModel.findOne({ _id: offer.serviceId, salonId, status: "active" }) : null;
+      const offerServiceIds = Array.isArray(offer.serviceIds) && offer.serviceIds.length ? offer.serviceIds.map(String) : offer.serviceId ? [String(offer.serviceId)] : [];
+      const offerServices = offerServiceIds.length ? await selectedServices({ salonId, branchId: offer.branchId || branchId, serviceIds: offerServiceIds }) : [];
+      const offerSummary = summarizeServices(offerServices);
+      const oService = offerServices[0] || null;
       const startAt = new Date(offer.startAt);
       const endAt = new Date(startAt.getTime() + (offer.durationMinutes || 45) * 60_000);
       const free = await isStaffAvailableForBlock({ salonId, branchId: offer.branchId || branchId, staffId: offer.staffId, startAt, endAt, date: offer.date, timezone: loadEnv().SALON_TIMEZONE || "Asia/Kolkata" });
@@ -1033,9 +1242,10 @@ async function handleBookingMessage(salonId: string, branchId: string, message: 
         await WhatsAppBookingSessionModel.updateOne({ salonId, waPhone: phone }, { $set: { earliestOffer: "" } });
         return { action: "offer_unavailable", reply: "That slot just got taken. Ask me for the next earliest, or send MENU." };
       }
-      const offerDuration = oService?.durationMinutes || offer.durationMinutes || 45;
-      const offerValue = oService?.pricePaise || 0;
-      const offerName = oService?.name || offer.serviceName || "this service";
+      const offerDuration = offerSummary.duration || oService?.durationMinutes || offer.durationMinutes || 45;
+      const offerValue = offerSummary.value || oService?.pricePaise || offer.value || 0;
+      const offerNames = offerSummary.names.length ? offerSummary.names : Array.isArray(offer.serviceNames) ? offer.serviceNames : [oService?.name || offer.serviceName || "this service"];
+      const offerName = offerNames.join(", ");
       session = await WhatsAppBookingSessionModel.findOneAndUpdate(
         { salonId, waPhone: phone },
         {
@@ -1046,14 +1256,14 @@ async function handleBookingMessage(salonId: string, branchId: string, message: 
             managementAction: null,
             targetAppointmentId: null,
             modifyField: null,
-            category: oService?.category || null,
+            category: null,
             categoryPage: 0,
             servicePage: 0,
             staffPage: 0,
-            serviceId: offer.serviceId || "",
-            serviceName: offerName,
-            serviceIds: offer.serviceId ? [offer.serviceId] : [],
-            serviceNames: [offerName],
+            serviceId: offerServiceIds[0] || "",
+            serviceName: offerNames[0] || offerName,
+            serviceIds: offerServiceIds,
+            serviceNames: offerNames,
             durationMinutes: offerDuration,
             value: offerValue,
             availableSlots: [],
@@ -1068,9 +1278,9 @@ async function handleBookingMessage(salonId: string, branchId: string, message: 
               branchId: offer.branchId || branchId,
               date: offer.date,
               preference: null,
-              services: [offerName],
+              services: offerNames,
               staffs: [{ staffId: offer.staffId, name: offer.staffName || "" }],
-              slots: (offer.expanded || [{ label: offer.label, staffName: offer.staffName }]).map((slot: any) => ({ label: slot.label, startAt })),
+              slots: (offer.expanded || [{ label: offer.label, startAt: offer.startAt, staffName: offer.staffName }]).map((slot: any) => ({ label: slot.label, startAt: slot.startAt || offer.startAt })),
               pick: { staff: 0, slot: 0 }
             }),
             expiresAt: sessionExpiry()
@@ -1092,17 +1302,81 @@ async function handleBookingMessage(salonId: string, branchId: string, message: 
   }
 
   if (idleConversation && sessionValid && session!.pendingReminder) {
-    if (isAcceptOfferIntent(lower)) {
+    const reminderPreference = lower === "1" || /both|all|day.*2|2.*day/.test(lower) ? "both" : lower === "2" || /only.*2|2 hour|two hour|short/.test(lower) ? "short" : lower === "3" || /only.*day|day before|tomorrow/.test(lower) ? "day_before" : lower === "4" || isDeclineOfferIntent(lower) ? "none" : null;
+    if (reminderPreference && reminderPreference !== "none") {
       if (session!.holdAppointmentId) {
-        await AppointmentModel.updateOne({ _id: session!.holdAppointmentId, salonId }, { $set: { reminderOptIn: true } }, { runValidators: true });
+        await AppointmentModel.updateOne({ _id: session!.holdAppointmentId, salonId }, { $set: { reminderOptIn: true, reminderPreference } }, { runValidators: true });
       }
-      await WhatsAppBookingSessionModel.updateOne({ salonId, waPhone: phone }, { $set: { pendingReminder: false } });
-      return { action: "reminder_optin", reply: "You're all set — I'll send you a reminder the day before your appointment." };
+      await WhatsAppBookingSessionModel.updateOne({ salonId, waPhone: phone }, { $set: { pendingReminder: false, reminderPreference } });
+      const label = reminderPreference === "both" ? "the day before and again 2 hours before" : reminderPreference === "short" ? "2 hours before" : "the day before";
+      return { action: "reminder_optin", reply: `You're all set — I'll remind you ${label}.` };
     }
-    if (isDeclineOfferIntent(lower)) {
-      await WhatsAppBookingSessionModel.updateOne({ salonId, waPhone: phone }, { $set: { pendingReminder: false } });
+    if (reminderPreference === "none") {
+      if (session!.holdAppointmentId) await AppointmentModel.updateOne({ _id: session!.holdAppointmentId, salonId }, { $set: { reminderOptIn: false, reminderPreference: "none" } }, { runValidators: true });
+      await WhatsAppBookingSessionModel.updateOne({ salonId, waPhone: phone }, { $set: { pendingReminder: false, reminderPreference: "none" } });
       return { action: "reminder_declined", reply: "Okay, no reminder. Anything else? Send MENU for options." };
     }
+    return { action: "needs_reminder_preference", reply: "Choose reminders:\n1. Day before + 2 hours before\n2. Only 2 hours before\n3. Only day before\n4. No reminders" };
+  }
+
+  if (idleConversation && sessionValid && session!.pendingFeedbackAppointmentId) {
+    const rating = /^\s*([1-5])\s*$/.exec(text)?.[1];
+    const appointmentId = String(session!.pendingFeedbackAppointmentId);
+    const patch: Record<string, unknown> = { feedbackReceivedAt: new Date() };
+    if (rating) patch.feedbackRating = Number(rating);
+    else patch.feedbackComment = text.slice(0, 1000);
+    await AppointmentModel.updateOne({ _id: appointmentId, salonId, customerId: String(customer._id) }, { $set: patch }, { runValidators: true });
+    await WhatsAppBookingSessionModel.updateOne({ salonId, waPhone: phone }, { $set: { pendingFeedbackAppointmentId: null, expiresAt: sessionExpiry() } });
+    if (rating && Number(rating) <= 3) {
+      await NotificationModel.create({ salonId, staffId: null, title: "Low WhatsApp feedback", body: `${customer.name || phone} rated appointment ${appointmentId} ${rating}/5. Follow up quickly.`, status: "unread" });
+      await tagCustomerLead(salonId, phone, ["service_recovery", "negative_feedback"]);
+      return { action: "feedback_captured", reply: "Thanks for telling us. I'm sorry it wasn't perfect — the owner has been notified and we'll follow up." };
+    }
+    if (rating && Number(rating) >= 4) {
+      const settings = await loadWhatsAppPolicySettings(salonId);
+      const review = settings.googleReviewUrl ? `\nReview link: ${settings.googleReviewUrl}` : "";
+      await tagCustomerLead(salonId, phone, ["happy_customer", "rebook_candidate"]);
+      return { action: "feedback_captured", reply: `Thank you! We're glad you liked it. If you have a minute, please share a review on Google — it really helps us.${review}\n\nWant to rebook in a few weeks? Send REBOOK anytime.` };
+    }
+    return { action: "feedback_captured", reply: "Thank you for the feedback. I've shared it with the salon team." };
+  }
+
+  if (idleConversation && /^(book|claim|yes|confirm)$/i.test(lower)) {
+    const offered = await WaitlistModel.findOne({ salonId, customerPhone: phone, status: "offered", notified: true, opportunityExpiresAt: { $gt: new Date() } }).sort({ opportunityExpiresAt: -1 });
+    const appointment = offered?.offeredAppointmentId ? await AppointmentModel.findOne({ _id: offered.offeredAppointmentId, salonId, status: "pending" }) : null;
+    if (offered && appointment) {
+      const deposit = await applyDepositToAppointment({ salonId, branchId: appointment.branchId, appointmentId: String(appointment._id), valuePaise: appointment.value, customerName: appointment.customerName || customer.name || phone, customerPhone: phone });
+      if (deposit.applied) {
+        await WhatsAppBookingSessionModel.findOneAndUpdate({ salonId, waPhone: phone }, { $set: { branchId: appointment.branchId, state: "awaiting_payment", holdAppointmentId: String(appointment._id), expiresAt: sessionExpiry() } }, { upsert: true });
+        return { action: "waitlist_claim_payment", appointment: { id: String(appointment._id) }, reply: `Great — that waitlist slot is held for you. Complete the payment link I sent to confirm it.` };
+      }
+      appointment.status = "confirmed";
+      appointment.holdExpiresAt = null;
+      await appointment.save();
+      await WaitlistModel.updateOne({ _id: offered._id }, { $set: { status: "booked" } });
+      await WhatsAppBookingSessionModel.findOneAndUpdate({ salonId, waPhone: phone }, { $set: { branchId: appointment.branchId, state: "menu", holdAppointmentId: String(appointment._id), pendingReminder: true, expiresAt: sessionExpiry() } }, { upsert: true });
+      return { action: "waitlist_claimed", appointment: { id: String(appointment._id) }, reply: `Booked. Your waitlist slot for ${appointment.serviceNames.join(", ")} is confirmed.\nChoose reminders:\n1. Day before + 2 hours before\n2. Only 2 hours before\n3. Only day before\n4. No reminders` };
+    }
+  }
+
+  if (sessionValid && session!.state === "confirm_hold" && /\b(waitlist|wait list|waiting list|notify me)\b/.test(lower)) {
+    const waitlistDate = session!.date || "";
+    await WaitlistModel.findOneAndUpdate(
+      { salonId, customerId: String(customer._id), status: "waiting", serviceIds: session!.serviceIds || [], date: waitlistDate },
+      {
+        $setOnInsert: {
+          branchId: session!.branchId,
+          staffId: session!.staffId || "",
+          serviceNames: session!.serviceNames || [],
+          preferredTime: session!.startAt ? new Intl.DateTimeFormat("en-GB", { timeZone: loadEnv().SALON_TIMEZONE || "Asia/Kolkata", hour: "2-digit", minute: "2-digit", hour12: false }).format(new Date(session!.startAt)) : "",
+          customerPhone: phone,
+          notified: false
+        }
+      },
+      { upsert: true }
+    );
+    await WhatsAppBookingSessionModel.updateOne({ salonId, waPhone: phone }, { $set: { state: "menu", earliestOffer: "", lastAlternates: "", expiresAt: sessionExpiry() } });
+    return { action: "waitlist_added", reply: `You're on the waitlist for ${(session!.serviceNames || []).join(", ") || "that service"}${waitlistDate ? ` on ${displayDate(waitlistDate)}` : ""}. I'll message you if a spot opens. Send MENU anytime.` };
   }
 
   if (sessionValid && session!.state === "confirm_hold" && session!.lastAlternates && isCorrectionIntent(lower)) {
@@ -1184,50 +1458,84 @@ async function handleBookingMessage(salonId: string, branchId: string, message: 
     }
     if (!matches.length) return null;
     const summary = summarizeServices(matches);
-    const dateInput = parseNaturalDate(text, extremeTz);
-    if (!dateInput) return null;
-    if (dateInput < new Date(new Date().toLocaleString("en-US", { timeZone: extremeTz })).toLocaleDateString("en-CA")) return null;
-    const preference = parseTimePreference(text);
-    if (preference.time == null && preference.after == null && preference.before == null && preference.flexible !== true) return null;
     const duration = summary.duration;
     const eligible = await eligibleStaffForServices(salonId, targetBranchId, matches);
     if (!eligible.length) return null;
-    const resolveSlots = async (staffId: string): Promise<Array<{ label: string; startAt: Date }>> => {
-      const slots = await suggestedSlots(salonId, targetBranchId, staffId, dateInput, duration, undefined, 96);
-      if (!slots.length) return [];
-      const narrowed = filterSlotsByPreference(slots, preference);
-      return (narrowed.length ? narrowed : slots).slice(0, 4);
+    const dateInput = parseNaturalDate(text, extremeTz);
+    const preference = parseTimePreference(text);
+    const setPartialBooking = async (patch: Record<string, unknown>): Promise<void> => {
+      session = await WhatsAppBookingSessionModel.findOneAndUpdate(
+        { salonId, waPhone: phone },
+        {
+          $set: {
+            branchId: targetBranchId,
+            profileName: message.profileName,
+            managementAction: null,
+            targetAppointmentId: null,
+            modifyField: null,
+            category: matches[0]!.category || null,
+            categoryPage: 0,
+            servicePage: 0,
+            staffPage: 0,
+            serviceId: String(matches[0]!._id),
+            serviceName: matches[0]!.name,
+            serviceIds: matches.map((item) => String(item._id)),
+            serviceNames: matches.map((item) => item.name),
+            durationMinutes: duration,
+            value: summary.value,
+            availableSlots: [],
+            staffId: eligible[0]!.staffId,
+            holdAppointmentId: null,
+            customerName: message.profileName || "",
+            expiresAt: sessionExpiry(),
+            ...patch
+          }
+        },
+        { upsert: true, new: true }
+      );
+      await CustomerModel.updateOne({ salonId, normalizedPhone: phone }, { $set: { interactionStatus: "booking_started" } });
     };
-    let staffPick: { staffId: string; name: string } | null = null;
-    let slotPick: { label: string; startAt: Date } | null = null;
-    let pickedSlots: Array<{ label: string; startAt: Date }> = [];
+    if (!dateInput) {
+      await setPartialBooking({ state: "select_date", date: null, startAt: null });
+      return { action: "needs_date", reply: `${summary.names.join(" + ")} selected. What day and time works for you? Try "tomorrow evening" or "Friday 5pm".` };
+    }
+    if (dateInput < new Date(new Date().toLocaleString("en-US", { timeZone: extremeTz })).toLocaleDateString("en-CA")) return null;
+    if (preference.time == null && preference.after == null && preference.before == null && preference.flexible !== true) {
+      const slots = await suggestedSlots(salonId, targetBranchId, eligible[0]!.staffId, dateInput, duration, undefined, 12);
+      if (!slots.length) return { action: "no_slots", reply: `No slots are available on ${displayDate(dateInput)}. Send another day, or MENU.` };
+      await setPartialBooking({ state: "select_time", date: dateInput, availableSlots: slots, startAt: null });
+      return { action: "date_selected", reply: `${summary.names.join(" + ")} selected for ${displayDate(dateInput)}. Available slots:\n${formatOptions(slots.map((slot) => slot.label))}\nReply with a time, or say morning/evening.` };
+    }
     const handStaff = text.match(/\b(?:with|under|by)\s+([a-zA-Z]+(?:\s+[a-zA-Z]+)*)\b/i);
+    let eligibleForSearch = eligible;
     if (handStaff) {
       const match = fuzzyClosestName(eligible.map((item) => item.name), handStaff[1]!.trim().replace(/\.$/, ""));
       if (match && !match.ambiguous) {
         const pickedStaff = eligible.find((item) => item.name === match.name);
-        if (pickedStaff) {
-          const slots = await resolveSlots(pickedStaff.staffId);
-          if (slots.length) { staffPick = pickedStaff; pickedSlots = slots; slotPick = slots[0]!; }
-        }
-      }
-    } else {
-      for (const item of eligible) {
-        const slots = await resolveSlots(item.staffId);
-        if (slots.length) { staffPick = item; pickedSlots = slots; slotPick = slots[0]!; break; }
+        if (pickedStaff) eligibleForSearch = [pickedStaff, ...eligible.filter((item) => item.staffId !== pickedStaff.staffId)];
       }
     }
-    if (!staffPick || !slotPick) return null;
+    const options = await smartSlotOptions({ salonId, branchId: targetBranchId, staff: eligibleForSearch, date: dateInput, durationMinutes: duration, preference, limit: 3 });
+    if (!options.length) {
+      await WaitlistModel.findOneAndUpdate(
+        { salonId, customerId: String(customer._id), status: "waiting", serviceIds: matches.map((item) => String(item._id)), date: dateInput },
+        { $setOnInsert: { branchId: targetBranchId, staffId: eligibleForSearch[0]?.staffId || "", serviceNames: matches.map((item) => item.name), preferredTime: preference.time || "", customerPhone: phone, notified: false } },
+        { upsert: true }
+      );
+      return { action: "waitlist_added", reply: `No free slots matched ${displayDate(dateInput)}${preference.time ? ` around ${preference.time}` : ""}. I added you to the waitlist for ${summary.names.join(", ")}.\nSend another day/time, or I'll message you if a spot opens.` };
+    }
+    const firstOption = options[0]!;
     const alternates = JSON.stringify({
       text: text.slice(0, 200),
       branchId: targetBranchId,
       date: dateInput,
       preference: { time: preference.time ?? null, after: preference.after ?? null, before: preference.before ?? null, flexible: preference.flexible === true },
       services: matches.map((item) => item.name),
-      staffs: eligible.map((item) => ({ staffId: item.staffId, name: item.name })),
-      slots: pickedSlots.slice(0, 4).map((slot) => ({ label: slot.label, startAt: slot.startAt.toISOString() })),
-      pick: { staff: eligible.findIndex((item) => item.staffId === staffPick!.staffId), slot: 0 }
+      staffs: eligibleForSearch.map((item) => ({ staffId: item.staffId, name: item.name })),
+      slots: options.map((slot) => ({ label: slot.label, startAt: slot.startAt.toISOString() })),
+      pick: { staff: eligibleForSearch.findIndex((item) => item.staffId === firstOption.staffId), slot: 0 }
     });
+    const offer = offerFromSmartOptions({ branchId: targetBranchId, date: dateInput, services: matches.map((item) => ({ id: String(item._id), name: item.name, durationMinutes: item.durationMinutes, pricePaise: item.pricePaise, eligibleStaffIds: item.eligibleStaffIds })), summary, options, preference });
     session = await WhatsAppBookingSessionModel.findOneAndUpdate(
       { salonId, waPhone: phone },
       {
@@ -1250,11 +1558,12 @@ async function handleBookingMessage(salonId: string, branchId: string, message: 
           value: summary.value,
           availableSlots: [],
           date: dateInput,
-          startAt: new Date(slotPick.startAt),
-          staffId: staffPick.staffId,
+          startAt: new Date(firstOption.startAt),
+          staffId: firstOption.staffId,
           holdAppointmentId: null,
           customerName: message.profileName || "",
           lastAlternates: alternates,
+          earliestOffer: offer,
           expiresAt: sessionExpiry()
         }
       },
@@ -1263,7 +1572,7 @@ async function handleBookingMessage(salonId: string, branchId: string, message: 
     await CustomerModel.updateOne({ salonId, normalizedPhone: phone }, { $set: { interactionStatus: "booking_started" } });
     return {
       action: "booking_proposal",
-      reply: `${summary.names.join(" + ")} on ${displayDate(dateInput)} at ${slotPick.label} with ${staffPick.name}. Total: ${money(summary.value)}, ${duration} minutes.\nReply CONFIRM to book, or CANCEL to change your mind.`,
+      reply: `I found these for ${summary.names.join(" + ")} on ${displayDate(dateInput)}:\n${formatOptions(options.map((slot) => `${slot.label} with ${slot.staffName}`))}\nReply 1-${options.length}, CONFIRM to book option 1, WAITLIST, or CANCEL. Total: ${money(summary.value)}, ${duration} minutes.`,
       interactive: buttonsInteractive("Book this appointment?", [{ id: "confirm", title: "Confirm" }, { id: "cancel", title: "Cancel" }])
     };
   };
@@ -1284,9 +1593,34 @@ async function handleBookingMessage(salonId: string, branchId: string, message: 
     }).select("name category pricePaise durationMinutes eligibleStaffIds").sort({ name: 1 }).limit(4);
     if (!services.length) return null;
     const dateInput = parseNaturalDate(text, extremeTz);
-    if (!dateInput || dateInput < new Date(new Date().toLocaleString("en-US", { timeZone: extremeTz })).toLocaleDateString("en-CA")) return null;
     const preference = parseTimePreference(text);
-    if (preference.time == null && preference.after == null && preference.before == null && preference.flexible !== true) return null;
+    if (!dateInput || preference.time == null && preference.after == null && preference.before == null && preference.flexible !== true) {
+      const summary = summarizeServices(services);
+      await WhatsAppBookingSessionModel.findOneAndUpdate(
+        { salonId, waPhone: phone },
+        {
+          $set: {
+            branchId: targetBranchId,
+            profileName: message.profileName,
+            state: "select_date",
+            managementAction: null,
+            serviceId: String(services[0]!._id),
+            serviceName: services[0]!.name,
+            serviceIds: services.map((service) => String(service._id)),
+            serviceNames: services.map((service) => service.name),
+            durationMinutes: summary.duration,
+            value: summary.value,
+            date: null,
+            startAt: null,
+            staffId: null,
+            expiresAt: sessionExpiry()
+          }
+        },
+        { upsert: true, new: true }
+      );
+      return { action: "usual_needs_time", reply: `Your usual is ${summary.names.join(" + ")} (${money(summary.value)}, ${summary.duration} minutes). What day/time should I check? Try "tomorrow evening" or "Friday 5pm".` };
+    }
+    if (dateInput < new Date(new Date().toLocaleString("en-US", { timeZone: extremeTz })).toLocaleDateString("en-CA")) return null;
     const summary = summarizeServices(services);
     const eligible = await eligibleStaffForServices(salonId, targetBranchId, services);
     if (!eligible.length) return null;
@@ -1368,6 +1702,18 @@ async function handleBookingMessage(salonId: string, branchId: string, message: 
 
   if (!session || session.expiresAt < new Date() || BOOKING_KEYWORDS.includes(lower)) {
     const hasBookingIntent = BOOKING_KEYWORDS.some((keyword) => lower === keyword || lower.includes(keyword)) || SALON_SERVICE_SIGNAL.test(lower) || (ai.isSalonRelated !== false && (ai.intent === "BOOK_APPOINTMENT" || ai.intent === "SERVICES" || ai.intent === "PRICES"));
+    if (!session) {
+      // Brand-new chat: route through the two-choice gate first. Explicit booking
+      // requests were already handled above by oneMessageBooking; anything else and
+      // any greeting lands here so the customer can pick Book or Menu.
+      session = await WhatsAppBookingSessionModel.findOneAndUpdate(
+        { salonId, waPhone: phone },
+        { $set: { state: "gate", managementAction: null, targetAppointmentId: null, modifyField: null, categoryPage: 0, servicePage: 0, staffPage: 0, expiresAt: sessionExpiry() } },
+        { upsert: true, new: true }
+      );
+      const repeatGreeting = Number(customer.visitCount || 0) > 1 ? `Welcome back${customer.name ? `, ${customer.name}` : ""}! Want the usual or something new?\n\n` : "Hi! I can help you book or manage your appointments.\n\n";
+      return gatePayload(repeatGreeting);
+    }
     if (!hasBookingIntent) {
       const conciergeReply = await concierge();
       if (conciergeReply) return conciergeReply;
@@ -1376,7 +1722,7 @@ async function handleBookingMessage(salonId: string, branchId: string, message: 
         { salonId, waPhone: phone },
         { $set: { state: "menu", managementAction: null, targetAppointmentId: null, modifyField: null, expiresAt: sessionExpiry() } },
         { upsert: true, new: true }
-      );
+      );;
       return { ...mainMenuPayload(), reply: greeting + "Main menu — what would you like to do?\n1. Book appointment\n2. View my bookings\n3. View history\n4. Reschedule booking\n5. Modify booking\n6. Cancel booking\n7. Rebook a service" };
     }
     const aiBranchMatch = ai.branch ? branches.find((branch) => branch.name.toLowerCase() === ai.branch!.toLowerCase() || branch.name.toLowerCase().includes(ai.branch!.toLowerCase())) : null;
@@ -1571,7 +1917,11 @@ async function handleBookingMessage(salonId: string, branchId: string, message: 
     session.state = "add_more_services";
     session.expiresAt = sessionExpiry();
     await session.save();
-    return { action: "service_selected", service: selected.name, reply: `${selected.name} added.\n${summary.label}\nAdd another service? Reply YES, type another service name, or DONE.` };
+    const related = selected.category
+      ? await ServiceModel.findOne({ ...branchServiceFilter(salonId, session.branchId, { category: selected.category }), _id: { $ne: selected._id } }).sort({ pricePaise: 1 }).lean()
+      : null;
+    const upsell = related ? `\nPopular add-on: ${related.name} (${money(related.pricePaise)}, ${related.durationMinutes} min). Type its name to add, or DONE.` : "";
+    return { action: "service_selected", service: selected.name, reply: `${selected.name} added.\n${summary.label}${upsell}\nAdd another service? Reply YES, type another service name, or DONE.` };
   }
 
   if (session.state === "add_more_services") {
@@ -1609,7 +1959,7 @@ async function handleBookingMessage(salonId: string, branchId: string, message: 
     if (!isDoneInput(text)) return { action: "needs_add_more", reply: "Reply YES to add another service, type a service name to search, or DONE to choose staff." };
     const services = await selectedServices({ salonId, branchId: session.branchId, serviceIds: session.serviceIds });
     const staff = await eligibleStaffForServices(salonId, session.branchId, services);
-    if (!staff.length) return { action: "no_staff", reply: "No staff can perform all selected services at this branch. Please start again with 'book appointment'." };
+    if (!staff.length) return { action: "no_staff", reply: `No staff can perform all selected services together at this branch (${(session.serviceNames || []).join(" + ")}). Remove one service, choose a different branch, or start again with 'book appointment'.` };
     session.state = "select_staff";
     session.staffPage = 0;
     session.expiresAt = sessionExpiry();
@@ -1640,6 +1990,7 @@ async function handleBookingMessage(salonId: string, branchId: string, message: 
   }
 
   if (session.state === "select_date") {
+    if (isAcceptOfferIntent(lower) && session.serviceNames?.length) return { action: "needs_date", reply: `${session.serviceNames.join(" + ")} selected. What day/time should I check? Try "tomorrow evening" or "Friday 5pm".` };
     const dateInput = parseNaturalDate(ai.date || text) || null;
     if (!dateInput) return { action: "needs_date", reply: "Please send a date like tomorrow, Friday, or YYYY-MM-DD." };
     if (isPastBusinessDate(dateInput)) return { action: "past_date", reply: "Please choose today or a future date." };
@@ -1695,7 +2046,16 @@ async function handleBookingMessage(salonId: string, branchId: string, message: 
     const endAt = new Date(startAt.getTime() + summary.duration * 60_000);
     if (!session.staffId || !(await isStaffAvailableForBlock({ salonId, branchId: session.branchId, staffId: session.staffId, startAt, endAt, date: session.date || "", timezone }))) {
       const nearby = session.staffId ? await freeNearbySlots(salonId, session.branchId, session.staffId, session.date || "", summary.duration, timeInput) : [];
-      if (nearby.length) return { action: "slot_unavailable", reply: `That slot is booked. Free nearby:\n${formatOptions(nearby.map((slot) => slot.label))}\nReply with one.` };
+      const eligible = await eligibleStaffForServices(salonId, session.branchId, services);
+      const sameTimeOtherStaff: string[] = [];
+      for (const staff of eligible.filter((item) => item.staffId !== session.staffId).slice(0, 5)) {
+        if (await isStaffAvailableForBlock({ salonId, branchId: session.branchId, staffId: staff.staffId, startAt, endAt, date: session.date || "", timezone })) sameTimeOtherStaff.push(staff.name);
+        if (sameTimeOtherStaff.length >= 3) break;
+      }
+      if (sameTimeOtherStaff.length) return { action: "slot_unavailable_other_staff", reply: `That time is booked with your selected staff, but ${timeInput} is free with:\n${formatOptions(sameTimeOtherStaff)}\nSend "book ${summary.names[0] || "service"} ${displayDate(session.date || "")} at ${timeInput} with ${sameTimeOtherStaff[0]}", or pick a nearby time:\n${formatOptions(nearby.map((slot) => slot.label))}` };
+      if (nearby.length) return { action: "slot_unavailable", reply: `That slot is booked. Free nearby with the same staff:\n${formatOptions(nearby.map((slot) => slot.label))}\nReply with one.` };
+      const allOptions = await smartSlotOptions({ salonId, branchId: session.branchId, staff: eligible, date: session.date || "", durationMinutes: summary.duration, preference: null, limit: 3 });
+      if (allOptions.length) return { action: "slot_unavailable_alternates", reply: `That slot is no longer available. Closest options I can do:\n${formatOptions(allOptions.map((slot) => `${slot.label} with ${slot.staffName}`))}\nReply with a time or staff name.` };
       return { action: "slot_unavailable", reply: "That slot is no longer available. Please send another date to see fresh slots." };
     }
     const availability = session.serviceId ? await findAvailableStaff({ salonId, branchId: session.branchId, serviceId: session.serviceId, startAt, preferredStaffId: session.staffId || undefined, excludeAppointmentId: rescheduleTarget ? String(rescheduleTarget._id) : undefined }) : null;
@@ -1733,6 +2093,23 @@ async function handleBookingMessage(salonId: string, branchId: string, message: 
   }
 
   if (session.state === "awaiting_payment") {
+    const hold = session.holdAppointmentId ? await AppointmentModel.findOne({ _id: session.holdAppointmentId, salonId }).lean() : null;
+    if (/(paid|done|completed|i'?ve paid|payment done|paid now)/.test(lower)) {
+      if (hold?.status === "confirmed" && hold.paymentStatus === "paid") return { action: "payment_confirmed", reply: "Payment is confirmed and your appointment is booked. Send MENU anytime to manage it." };
+      if (hold) {
+        const checked = await verifyOrRefreshDepositLink({ salonId, appointmentId: String(hold._id), customerName: hold.customerName || customer.name || phone, customerPhone: phone });
+        if (checked.status === "paid") {
+          session.state = "menu";
+          session.pendingReminder = true;
+          await session.save();
+          return { action: "payment_confirmed", reply: "Payment is confirmed and your appointment is booked. Choose reminders:\n1. Day before + 2 hours before\n2. Only 2 hours before\n3. Only day before\n4. No reminders" };
+        }
+        if (checked.status === "refreshed" && checked.paymentLink) return { action: "payment_link_refreshed", reply: `The old payment hold expired, so I created a fresh payment link and held the slot again for 30 minutes.\n${checked.paymentLink}`, interactive: buttonsInteractive("Payment options", [{ id: "paid", title: "I've paid" }, { id: "menu", title: "Menu" }]) };
+      }
+      if (hold?.paymentLink) return { action: "payment_pending", reply: `I don't see the payment confirmed yet. Razorpay can take a minute to notify us.\nIf needed, complete it here again: ${hold.paymentLink}`, interactive: buttonsInteractive("Payment options", [{ id: "paid", title: "I've paid" }, { id: "menu", title: "Menu" }]) };
+      return { action: "payment_pending", reply: "I don't see the payment confirmed yet. Please wait a minute and send PAID again, or send MENU to start over." };
+    }
+    if (hold?.paymentLink) return { action: "awaiting_payment", reply: `Your slot is held. Please complete the Razorpay payment link and I'll confirm automatically after server verification.\n${hold.paymentLink}`, interactive: buttonsInteractive("Payment options", [{ id: "paid", title: "I've paid" }, { id: "menu", title: "Menu" }]) };
     return { action: "awaiting_payment", reply: "Your slot is held. Please complete the Razorpay payment link. I will confirm automatically after server verification." };
   }
 
@@ -1755,25 +2132,47 @@ async function handleBookingMessage(salonId: string, branchId: string, message: 
       throw error;
     }
     publishRealtimeEvent(salonId, "appointment.created", { id: String(appointment._id), branchId: appointment.branchId, staffId: appointment.staffId, startAt: appointment.startAt.toISOString(), endAt: appointment.endAt.toISOString(), status: appointment.status, source: "whatsapp" });
+    session.holdAppointmentId = String(appointment._id);
+    session.lastAlternates = "";
+    session.earliestOffer = "";
+    session.expiresAt = sessionExpiry();
+
+    const deposit = await applyDepositToAppointment({
+      salonId,
+      branchId: session.branchId,
+      appointmentId: String(appointment._id),
+      valuePaise: appointment.value,
+      customerName: appointment.customerName || session.customerName || phone,
+      customerPhone: phone
+    });
+
+    if (deposit.applied) {
+      session.state = "awaiting_payment";
+      await session.save();
+      void notifyStaffByStaffId(salonId, appointment.staffId, {
+        title: "New appointment (awaiting deposit)",
+        body: `${appointment.customerName} — ${appointment.serviceNames.join(", ")} at ${appointment.startAt.toLocaleString("en-IN", { timeZone: timezone })}`,
+        tag: `appointment-${String(appointment._id)}`,
+        data: { appointmentId: String(appointment._id), type: "appointment.created" }
+      });
+      return { action: "awaiting_payment", appointment: { id: String(appointment._id) }, reply: `Your slot is held while we process the advance deposit.\n${bookingSummaryLines({ bookingId: String(appointment._id), serviceNames: summary.names, staffName: await staffNameOf(salonId, session.staffId!), branchName: branch?.name || session.branchId, startAt: session.startAt, timezone, durationMinutes: summary.duration, value: summary.value })}\nComplete the payment link I just sent. The slot will be released in 30 minutes if not paid.` };
+    }
+
+    session.state = "menu";
+    session.pendingReminder = true;
+    await session.save();
     void notifyStaffByStaffId(salonId, appointment.staffId, {
       title: "New appointment",
       body: `${appointment.customerName} — ${appointment.serviceNames.join(", ")} at ${appointment.startAt.toLocaleString("en-IN", { timeZone: timezone })}`,
       tag: `appointment-${String(appointment._id)}`,
       data: { appointmentId: String(appointment._id), type: "appointment.created" }
     });
-    session.holdAppointmentId = String(appointment._id);
-    session.state = "menu";
-    session.pendingReminder = true;
-    session.lastAlternates = "";
-    session.earliestOffer = "";
-    session.expiresAt = sessionExpiry();
-    await session.save();
     await recordCustomerBooking(salonId, phone, { staffId: appointment.staffId, serviceIds: appointment.serviceIds, startAt: appointment.startAt });
     const staffTitle = await staffNameOf(salonId, session.staffId!);
     return {
       action: "appointment_created",
       appointment: { id: String(appointment._id) },
-      reply: withSuccessTip(`Your appointment is booked.\n${bookingSummaryLines({ bookingId: String(appointment._id), serviceNames: summary.names, staffName: staffTitle, branchName: branch?.name || session.branchId, startAt: session.startAt, timezone, durationMinutes: summary.duration, value: summary.value })}\nWant a reminder the day before? Reply YES or NO.`)
+      reply: withSuccessTip(`Your appointment is booked.\n${bookingSummaryLines({ bookingId: String(appointment._id), serviceNames: summary.names, staffName: staffTitle, branchName: branch?.name || session.branchId, startAt: session.startAt, timezone, durationMinutes: summary.duration, value: summary.value })}\nChoose reminders:\n1. Day before + 2 hours before\n2. Only 2 hours before\n3. Only day before\n4. No reminders`)
     };
   }
 
@@ -1797,7 +2196,27 @@ async function handleBookingMessage(salonId: string, branchId: string, message: 
     session.pendingReminder = true;
     session.expiresAt = sessionExpiry();
     await session.save();
-    return { action: "appointment_created", appointment: { id: String(hold._id) }, reply: withSuccessTip(`Your appointment is confirmed.\nService: ${hold.serviceNames.join(", ")}\nDate: ${hold.startAt.toLocaleString("en-IN", { timeZone: "Asia/Kolkata" })}\nPrice: ${money(hold.value)}\nWant a reminder the day before? Reply YES or NO.`) };
+    return { action: "appointment_created", appointment: { id: String(hold._id) }, reply: withSuccessTip(`Your appointment is confirmed.\nService: ${hold.serviceNames.join(", ")}\nDate: ${hold.startAt.toLocaleString("en-IN", { timeZone: "Asia/Kolkata" })}\nPrice: ${money(hold.value)}\nChoose reminders:\n1. Day before + 2 hours before\n2. Only 2 hours before\n3. Only day before\n4. No reminders`) };
+  }
+
+  if (session.state === "gate") {
+    const menuAction = menuActionFor(text);
+    if (menuAction === "book_appointment" || menuAction === "book" || lower === "book" || lower === "1") {
+      session.state = "cancelled";
+      session.managementAction = null;
+      session.expiresAt = sessionExpiry();
+      await session.save();
+      return await startBookingFromMenuIn({ salonId, branchId, branches, message, phone });
+    }
+    if (menuAction === "menu" || lower === "menu" || lower === "2") {
+      session = await WhatsAppBookingSessionModel.findOneAndUpdate(
+        { salonId, waPhone: phone },
+        { $set: { state: "menu", managementAction: null, targetAppointmentId: null, modifyField: null, expiresAt: sessionExpiry() } },
+        { upsert: true, new: true }
+      );
+      return mainMenuPayload();
+    }
+    return gatePayload("Welcome! What would you like to do?\n\n");
   }
 
   const conciergeReply = await concierge();
@@ -1832,9 +2251,9 @@ function managementIntent(lower: string, ai: { intent?: string }): string | null
   if (["menu", "main menu", "options", "help", "back_to_menu"].includes(lower)) return "menu";
   if (["view_bookings", "my bookings", "my booking", "view bookings", "upcoming", "upcoming bookings", "my appointments", "see bookings", "bookings"].includes(lower) || isViewBookingsIntent(lower)) return "view_bookings";
   if (["view_history", "history", "view history", "past bookings", "my history", "previous bookings", "old bookings"].includes(lower) || /(past|history|completed) bookings?/.test(lower)) return "view_history";
-  if (ai.intent === "CANCEL_APPOINTMENT" || ["cancel_booking", "cancel", "cancel booking", "cancel my appointment", "cancel appointment"].includes(lower) || isAppointmentCancelIntent(lower)) return "cancel";
-  if (ai.intent === "RESCHEDULE_APPOINTMENT" || ["reschedule_booking", "reschedule", "reschedule booking"].includes(lower) || isAppointmentRescheduleIntent(lower)) return "reschedule";
-  if (["modify_booking", "modify", "modify booking", "modify my booking", "modify appointment"].includes(lower) || isAppointmentModifyIntent(lower)) return "modify";
+  if (ai.intent === "CANCEL_APPOINTMENT" || ["cancel_booking", "cancel", "cancle", "cncel", "cancel booking", "cancel my appointment", "cancel appointment"].includes(lower) || isAppointmentCancelIntent(lower)) return "cancel";
+  if (ai.intent === "RESCHEDULE_APPOINTMENT" || ["reschedule_booking", "reschedule", "reschedul", "reshedul", "reschedule booking"].includes(lower) || isAppointmentRescheduleIntent(lower)) return "reschedule";
+  if (["modify_booking", "modify", "modfy", "modifiy", "modify booking", "modify my booking", "modify appointment"].includes(lower) || isAppointmentModifyIntent(lower)) return "modify";
   if (["rebook_service", "rebook", "same again", "book again", "repeat", "repeat booking", "book previous", "rebook service"].includes(lower) || /rebook|same again|book (that|it|again)/.test(lower)) return "rebook";
   return null;
 }
@@ -1848,6 +2267,19 @@ function mgmtTimeLine(date: Date | string | number, timezone: string): string {
 function bookingLine(appointment: any, timezone: string): string {
   const status = appointment.status && appointment.status !== "confirmed" ? ` [${appointment.status.replace("_", " ")}]` : "";
   return `${mgmtTimeLine(appointment.startAt, timezone)} — ${(appointment.serviceNames || []).join(", ")}${appointment.value ? ` (${money(appointment.value)})` : ""}${status}`;
+}
+
+/** Two-choice entry gate shown to a brand-new chat. Book goes straight into the
+ *  booking flow; Menu opens the full management menu (modify/reschedule/cancel). */
+function gatePayload(greeting = ""): Record<string, unknown> {
+  return {
+    action: "gate",
+    reply: `${greeting}Welcome! What would you like to do?\n1. Book appointment\n2. Menu`,
+    interactive: buttonsInteractive("What would you like to do?", [
+      { id: "book_appointment", title: "Book appointment" },
+      { id: "menu", title: "Menu" }
+    ])
+  };
 }
 
 /** Standardized booking summary for confirmations (requirement: service/staff/date/time/duration/price/Booking ID/status). */
@@ -1970,10 +2402,16 @@ async function handleManagementState(ctx: ManagementContext, command: string | n
   };
 
   const confirmCancelFor = async (appointment: any): Promise<Record<string, unknown>> => {
+    const settings = await loadWhatsAppPolicySettings(salonId);
+    const remainingHours = hoursUntil(appointment.startAt);
+    if (settings.enforceCancellationCutoff && remainingHours < settings.cancellationCutoffHours) {
+      return { action: "cancellation_blocked", reply: `This appointment is within the ${settings.cancellationCutoffHours}-hour cancellation cutoff. Please call the salon to cancel manually.` };
+    }
     await setSession({ managementAction: "cancel", targetAppointmentId: String(appointment._id), state: "confirm_cancel" });
+    const policy = `${remainingHours <= settings.cancellationCutoffHours ? `\nNote: this is within ${settings.cancellationCutoffHours} hours of your appointment, so late-cancellation rules may apply.` : ""}${appointment.depositAmountPaise ? `\nAdvance paid: ${money(appointment.depositAmountPaise)}. ${settings.depositRefundPolicy}` : ""}`;
     return {
       action: "needs_cancel_confirm",
-      reply: `Cancel ${(appointment.serviceNames || []).join(", ")} on ${mgmtTimeLine(appointment.startAt, timezone)}?\nReply CONFIRM to cancel, or CANCEL to back out.`,
+      reply: `Cancel ${(appointment.serviceNames || []).join(", ")} on ${mgmtTimeLine(appointment.startAt, timezone)}?${policy}\nReply CONFIRM to cancel, or CANCEL to back out.`,
       interactive: buttonsInteractive("Cancel this booking?", [
         { id: "confirm", title: "Yes, cancel" },
         { id: "back", title: "Keep booking" }
@@ -2055,6 +2493,10 @@ async function handleManagementState(ctx: ManagementContext, command: string | n
   };
 
   const startReschedule = async (appointment: any): Promise<Record<string, unknown>> => {
+    const settings = await loadWhatsAppPolicySettings(salonId);
+    if (settings.enforceRescheduleCutoff && hoursUntil(appointment.startAt) < settings.rescheduleCutoffHours) {
+      return { action: "reschedule_blocked", reply: `This appointment is within the ${settings.rescheduleCutoffHours}-hour reschedule cutoff. Please call the salon to move it manually.` };
+    }
     await setSession({
       managementAction: "reschedule",
       targetAppointmentId: String(appointment._id),
@@ -2069,7 +2511,8 @@ async function handleManagementState(ctx: ManagementContext, command: string | n
       availableSlots: [],
       state: "reschedule_date"
     });
-    return { action: "reschedule_started", reply: `${(appointment.serviceNames || []).join(", ")} is booked for ${mgmtTimeLine(appointment.startAt, timezone)}.\nWhat date would you like instead? (e.g. tomorrow, Friday, or YYYY-MM-DD)` };
+    const policy = hoursUntil(appointment.startAt) <= settings.rescheduleCutoffHours ? `\nNote: this is within ${settings.rescheduleCutoffHours} hours of your appointment, so salon reschedule rules may apply.` : "";
+    return { action: "reschedule_started", reply: `${(appointment.serviceNames || []).join(", ")} is booked for ${mgmtTimeLine(appointment.startAt, timezone)}.${policy}\nWhat date would you like instead? (e.g. tomorrow, Friday, or YYYY-MM-DD)` };
   };
 
   const startModify = async (appointment: any): Promise<Record<string, unknown>> => {
@@ -2213,6 +2656,32 @@ async function handleManagementState(ctx: ManagementContext, command: string | n
     return { action: "rebook_staff", reply: `Rebooking ${(appointment.serviceNames || []).join(", ")}. Which staff do you prefer?\n${pageReply("Staff:", page.pageItems.map((item) => item.name), page.hasNext)}`, interactive: listInteractive("Choose staff:", "Staff", [...page.pageItems.map((item) => ({ id: item.staffId, title: item.name.slice(0, 24) })), ...(page.hasNext ? [{ id: "more", title: "More" }] : [])]) };
   };
 
+  const addToWaitlist = async (): Promise<Record<string, unknown>> => {
+    const lastAppointment = await AppointmentModel.findOne({ salonId, customerId: String(customer._id), status: { $in: ["completed", "cancelled", "expired", "no_show"] } }).sort({ startAt: -1 }).lean();
+    if (!lastAppointment || !lastAppointment.serviceIds?.length) {
+      return { action: "waitlist_need_booking", reply: "I can add you to the waitlist once you've booked a service. Send 'Book appointment' to get started." };
+    }
+    const existing = await WaitlistModel.findOne({ salonId, customerId: String(customer._id), status: "waiting", serviceIds: lastAppointment.serviceIds });
+    if (existing) {
+      return { action: "waitlist_exists", reply: `You're already on the waitlist for ${(lastAppointment.serviceNames || []).join(", ")}. I'll message you the moment a spot opens.` };
+    }
+    await WaitlistModel.create({
+      salonId,
+      branchId: lastAppointment.branchId,
+      staffId: lastAppointment.staffId,
+      serviceIds: lastAppointment.serviceIds.map(String),
+      serviceNames: lastAppointment.serviceNames || [],
+      date: "",
+      preferredTime: "",
+      customerId: String(customer._id),
+      customerPhone: phone,
+      status: "waiting",
+      notified: false
+    });
+    await setSession({ state: "menu" });
+    return { action: "waitlist_added", reply: `You're on the waitlist for ${(lastAppointment.serviceNames || []).join(", ")}. I'll notify you here the moment a slot opens — just reply BOOK to claim it within 15 minutes.` };
+  };
+
   const startBookingFromMenu = async (): Promise<Record<string, unknown>> => {
     const selectedBranchId = branches.length === 1 ? branches[0]!._id : ctx.branchId;
     await setSession({
@@ -2245,6 +2714,135 @@ async function handleManagementState(ctx: ManagementContext, command: string | n
     const categories = [...new Set((await ServiceModel.find(branchServiceFilter(salonId, selectedBranchId)).select("category name")).map((item) => item.category || "Services"))];
     const page = pagedOptions(categories, 0);
     return { action: "booking_started", reply: `${pageReply("What service would you like?", page.pageItems, page.hasNext)}\n\nOr type a service name to search, like massage or facial.`, interactive: listInteractive("Categories:", "Categories", [...page.pageItems.map((category) => ({ id: category, title: category })), ...(page.hasNext ? [{ id: "more", title: "More" }] : [])]) };
+  };
+
+  const faqReply = async (): Promise<Record<string, unknown> | null> => {
+    const [cfg, salon, settingsDoc] = await Promise.all([
+      ctx.branchId ? BranchModel.findOne({ _id: ctx.branchId, salonId }).lean() : Promise.resolve(null),
+      SalonModel.findOne({ _id: salonId }).lean(),
+      OwnerSettingsModel.findOne({ salonId, branchId: "" }).lean()
+    ]);
+    const botSettings = (settingsDoc?.settings as { whatsappBot?: { personality?: "friendly" | "luxury" | "quick" | "hinglish"; address?: string; contact?: string; instagram?: string; paymentModes?: string[]; parking?: string; customAnswers?: Array<{ question: string; answer: string; keywords?: string[]; enabled?: boolean }> } } | undefined)?.whatsappBot || {};
+    const branchDocs = await BranchModel.find({ salonId, status: "active" }).lean();
+    const services = await ServiceModel.find(branchServiceFilter(salonId, cfg?._id || ctx.branchId)).select("name pricePaise durationMinutes").sort({ pricePaise: 1 }).limit(60).lean();
+    const staff = await UserModel.find({ salonId, status: "active", ...(cfg?._id ? { branchIds: cfg._id } : {}) }).select("name").sort({ name: 1 }).limit(12).lean();
+    const faqCtx: FaqContext = {
+      salonName: salon?.name || undefined,
+      personality: botSettings.personality || undefined,
+      address: botSettings.address || undefined,
+      contact: botSettings.contact || undefined,
+      branches: branchDocs.map((branch) => ({
+        name: branch.name,
+        timezone: branch.timezone,
+        hours: (branch.hours || []).map((h) => ({ weekday: h.weekday, open: h.open, close: h.close, closed: !!h.closed }))
+      })),
+      services: services.map((service) => ({ name: service.name, pricePaise: service.pricePaise, durationMinutes: service.durationMinutes })),
+      staff: staff.map((person) => ({ name: person.name })),
+      customAnswers: botSettings.customAnswers || []
+    };
+    const faq = answerFaq(text, faqCtx);
+    if (!faq) return null;
+    if (faq.matched === "price") await tagCustomerLead(salonId, phone, ["price_shopper"]);
+    return { action: faq.action, reply: `${faq.answer}\n\nSend MENU for other options, or BOOK to make an appointment.` };
+  };
+
+  const policyReply = async (): Promise<Record<string, unknown> | null> => {
+    if (!/\b(policy|policies|cancel(?:lation)?|refund|deposit|advance|late|reschedule|cutoff|no show|no-show)\b/.test(lower)) return null;
+    const settings = await loadWhatsAppPolicySettings(salonId);
+    if (/\b(cancel|cancellation)\b/.test(lower)) {
+      return { action: "faq_cancellation_policy", reply: `Cancellation policy: ${settings.enforceCancellationCutoff ? `online cancellation is blocked within ${settings.cancellationCutoffHours} hours of the appointment.` : `late-cancellation rules may apply within ${settings.cancellationCutoffHours} hours.`}\nDeposit/refund: ${settings.depositRefundPolicy}\n\nSend MENU for options.` };
+    }
+    if (/\b(reschedule|move|shift)\b/.test(lower)) {
+      return { action: "faq_reschedule_policy", reply: `Reschedule policy: ${settings.enforceRescheduleCutoff ? `online reschedule is blocked within ${settings.rescheduleCutoffHours} hours of the appointment.` : `reschedule rules may apply within ${settings.rescheduleCutoffHours} hours.`}\n\nSend RESCHEDULE to move an upcoming booking.` };
+    }
+    if (/\b(deposit|advance|refund)\b/.test(lower)) {
+      return { action: "faq_deposit_policy", reply: `Deposit/refund policy: ${settings.depositRefundPolicy}\n\nIf an advance is needed, I'll send the payment link during booking.` };
+    }
+    return { action: "faq_policy", reply: `Salon policy summary:\nCancellation cutoff: ${settings.cancellationCutoffHours} hours${settings.enforceCancellationCutoff ? " (enforced online)" : ""}\nReschedule cutoff: ${settings.rescheduleCutoffHours} hours${settings.enforceRescheduleCutoff ? " (enforced online)" : ""}\nDeposit/refund: ${settings.depositRefundPolicy}` };
+  };
+
+  const serviceContextFromMessage = async (): Promise<Record<string, unknown> | null> => {
+    if (!/\b(price|prices|rate|rates|cost|charge|kitna|kitne|kitni|fees|duration|how long|kitni der|kitna time|minutes?|mins?|takes?)\b/.test(lower)) return null;
+    const targetBranchId = branches.length === 1 ? branches[0]!._id : ctx.branchId;
+    const resolved = await resolveServiceIntents({ text, salonId, branchId: targetBranchId });
+    if (resolved.matched.length !== 1 || resolved.ambiguousNames.length) return null;
+    const picked = resolved.matched[0]!.service;
+    await setSession({
+      state: "select_date",
+      managementAction: null,
+      targetAppointmentId: null,
+      modifyField: null,
+      branchId: targetBranchId,
+      category: picked.category || null,
+      serviceId: String(picked._id),
+      serviceName: picked.name,
+      serviceIds: [String(picked._id)],
+      serviceNames: [picked.name],
+      durationMinutes: picked.durationMinutes,
+      value: picked.pricePaise,
+      availableSlots: [],
+      date: null,
+      startAt: null,
+      staffId: null
+    });
+    await tagCustomerLead(salonId, phone, ["price_shopper", "hot_lead"]);
+    return {
+      action: "service_context_ready",
+      reply: `${picked.name} is ${money(picked.pricePaise)} and takes ${picked.durationMinutes} minutes. Want to book it? Send a day/time like "tomorrow evening" or "Friday 5pm".`,
+      interactive: buttonsInteractive("Book this service?", [{ id: "yes", title: "Yes" }, { id: "menu", title: "Menu" }])
+    };
+  };
+
+  const staffAvailabilityReply = async (): Promise<Record<string, unknown> | null> => {
+    if (!/\b(available|availability|free|slot|slots|khali|milega|mil sakta|hai kya)\b/.test(lower)) return null;
+    const date = parseNaturalDate(text, timezone);
+    if (!date) return null;
+    const targetBranchId = branches.length === 1 ? branches[0]!._id : ctx.branchId;
+    const users = await UserModel.find({ salonId, branchIds: targetBranchId, status: "active", staffId: { $ne: null } }).select("name staffId").sort({ name: 1 }).lean();
+    const staff = users.filter((user) => user.staffId).map((user) => ({ staffId: user.staffId!, name: user.name }));
+    const pickedStaff = resolveStaffIntent(text, staff);
+    if (!pickedStaff) return null;
+    const serviceHint = await resolveServiceIntents({ text, salonId, branchId: targetBranchId });
+    const services = serviceHint.matched.length && !serviceHint.ambiguousNames.length
+      ? serviceHint.matched.map((entry) => entry.service)
+      : await ServiceModel.find(branchServiceFilter(salonId, targetBranchId)).select("name category pricePaise durationMinutes eligibleStaffIds").sort({ durationMinutes: 1 }).limit(1).lean();
+    const summary = summarizeServices(services.map((service) => ({ name: service.name, durationMinutes: service.durationMinutes, pricePaise: service.pricePaise })));
+    const slots = await suggestedSlots(salonId, targetBranchId, pickedStaff.staffId, date, summary.duration || 45, undefined, 12);
+    const narrowed = filterSlotsByPreference(slots, parseTimePreference(text));
+    const shown = (narrowed.length ? narrowed : slots).slice(0, 5);
+    if (!shown.length) return { action: "staff_no_slots", reply: `${pickedStaff.name} has no free slots on ${displayDate(date)}. Send another day/time, or BOOK to choose another staff member.` };
+    await tagCustomerLead(salonId, phone, ["availability_shopper", "hot_lead"]);
+    return {
+      action: "staff_availability",
+      reply: `${pickedStaff.name} is free on ${displayDate(date)} at:\n${formatOptions(shown.map((slot) => slot.label))}\nReply "book ${services[0]?.name || "service"} ${displayDate(date)} at ${shown[0]!.label} with ${pickedStaff.name}" to lock one.`,
+      interactive: buttonsInteractive("Want to book?", [{ id: "book_appointment", title: "Book appointment" }, { id: "menu", title: "Menu" }])
+    };
+  };
+
+  const packageReply = async (): Promise<Record<string, unknown> | null> => {
+    if (!/\b(combo|package|deal|offer|together|and|with|plus|\+)\b/.test(lower)) return null;
+    const targetBranchId = branches.length === 1 ? branches[0]!._id : ctx.branchId;
+    const resolved = await resolveServiceIntents({ text, salonId, branchId: targetBranchId });
+    if (resolved.matched.length < 2 || resolved.ambiguousNames.length) return null;
+    const services = resolved.matched.slice(0, 4).map((entry) => entry.service);
+    const summary = summarizeServices(services.map((service) => ({ name: service.name, durationMinutes: service.durationMinutes, pricePaise: service.pricePaise })));
+    await setSession({
+      state: "select_date",
+      branchId: targetBranchId,
+      managementAction: null,
+      serviceId: String(services[0]!._id),
+      serviceName: services[0]!.name,
+      serviceIds: services.map((service) => String(service._id)),
+      serviceNames: services.map((service) => service.name),
+      durationMinutes: summary.duration,
+      value: summary.value,
+      date: null,
+      startAt: null,
+      staffId: null,
+      availableSlots: []
+    });
+    await tagCustomerLead(salonId, phone, ["combo_interest", "hot_lead"]);
+    return { action: "combo_context_ready", reply: `I can book ${summary.names.join(" + ")} together. Total: ${money(summary.value)}, ${summary.duration} minutes. Send a day/time like "tomorrow evening" to check slots.`, interactive: buttonsInteractive("Book combo?", [{ id: "yes", title: "Yes" }, { id: "menu", title: "Menu" }]) };
   };
 
   try {
@@ -2328,7 +2926,19 @@ async function handleManagementState(ctx: ManagementContext, command: string | n
         if (menuAction === "cancel_booking") return await relistUpcoming("Which appointment should I cancel? Reply with a number.", "select_cancel_booking");
         if (menuAction === "rebook_service") return await relistHistory();
         if (menuAction === "menu") return await menuReply();
-        return await menuReply();
+        if (/waitlist|wait list|waiting list|notify me/.test(lower)) return await addToWaitlist();
+        const policy = await policyReply();
+        if (policy) return policy;
+        const pkg = await packageReply();
+        if (pkg) return pkg;
+        const staffAvailability = await staffAvailabilityReply();
+        if (staffAvailability) return staffAvailability;
+        const serviceContext = await serviceContextFromMessage();
+        if (serviceContext) return serviceContext;
+        const faq = await faqReply();
+        if (faq) return faq;
+        const menu = mainMenuPayload();
+        return { ...menu, action: "menu_recovery", reply: `I didn't catch that. You can type things like:\n- book haircut tomorrow 5pm\n- haircut price\n- timings\n- my bookings\n\n${menu.reply}` };
       }
 
       case "view_bookings": {
@@ -2349,17 +2959,7 @@ async function handleManagementState(ctx: ManagementContext, command: string | n
         const manageAction = manageActionFor(text);
         if (manageAction === "reschedule") return await startReschedule(target);
         if (manageAction === "modify") return await startModify(target);
-        if (manageAction === "cancel") {
-          await setSession({ managementAction: "cancel", targetAppointmentId: String(target._id), state: "confirm_cancel" });
-          return {
-            action: "needs_cancel_confirm",
-            reply: `Cancel ${(target.serviceNames || []).join(", ")} on ${mgmtTimeLine(target.startAt, timezone)}?\nReply CONFIRM to cancel, or CANCEL to back out.`,
-            interactive: buttonsInteractive("Cancel this booking?", [
-              { id: "confirm", title: "Yes, cancel" },
-              { id: "back", title: "Keep booking" }
-            ])
-          };
-        }
+        if (manageAction === "cancel") return await confirmCancelFor(target);
         if (manageAction === "rebook") return await startRebook(target);
         if (manageAction === "back" || lower === "back") return await relistUpcoming("Your upcoming bookings — reply with a number to manage that booking:", "view_bookings");
         return {
@@ -2379,15 +2979,7 @@ async function handleManagementState(ctx: ManagementContext, command: string | n
         const bookings = await upcomingBookings(salonId, customerId, 10);
         const picked = pickBooking(text, bookings);
         if (!picked) return { action: "needs_booking", reply: `Please reply with a valid booking number.\n${formatOptions(bookings.map((booking) => bookingLine(booking, timezone)))}` };
-        await setSession({ managementAction: "cancel", targetAppointmentId: String(picked._id), state: "confirm_cancel" });
-        return {
-          action: "needs_cancel_confirm",
-          reply: `Cancel ${(picked.serviceNames || []).join(", ")} on ${mgmtTimeLine(picked.startAt, timezone)}?\nReply CONFIRM to cancel, or CANCEL to back out.`,
-          interactive: buttonsInteractive("Cancel this booking?", [
-            { id: "confirm", title: "Yes, cancel" },
-            { id: "back", title: "Keep booking" }
-          ])
-        };
+        return await confirmCancelFor(picked);
       }
 
       case "confirm_cancel": {
@@ -2895,12 +3487,31 @@ async function confirmRebookReply(customerId: string, salonId: string, session: 
   });
   const staffName = await staffNameOf(salonId, session.staffId);
   const branchTitle = branch?.name || (await branchNameOf(salonId, session.branchId));
+
+  const deposit = await applyDepositToAppointment({
+    salonId,
+    branchId: session.branchId,
+    appointmentId: String(appointment._id),
+    valuePaise: appointment.value,
+    customerName: customer.name,
+    customerPhone: session.waPhone
+  });
+  if (deposit.applied) {
+    await setSession({ state: "awaiting_payment" });
+    await finishManagementSession(session);
+    return {
+      action: "awaiting_payment",
+      appointment: { id: String(appointment._id) },
+      reply: `Your slot is held while we process the advance deposit.\n${bookingSummaryLines({ bookingId: String(appointment._id), serviceNames: summary.names, staffName, branchName: branchTitle, startAt: session.startAt, timezone: zone, durationMinutes: summary.duration, value: summary.value })}\nComplete the payment link I just sent. The slot will be released in 30 minutes if not paid.`
+    };
+  }
+
   await setSession({ state: "menu", pendingReminder: true });
   await finishManagementSession(session);
   return {
     action: "appointment_created",
     appointment: { id: String(appointment._id) },
-    reply: withSuccessTip(`Your appointment is rebooked.\n${bookingSummaryLines({ bookingId: String(appointment._id), serviceNames: summary.names, staffName, branchName: branchTitle, startAt: session.startAt, timezone: zone, durationMinutes: summary.duration, value: summary.value })}\nWant a reminder the day before? Reply YES or NO.`)
+    reply: withSuccessTip(`Your appointment is rebooked.\n${bookingSummaryLines({ bookingId: String(appointment._id), serviceNames: summary.names, staffName, branchName: branchTitle, startAt: session.startAt, timezone: zone, durationMinutes: summary.duration, value: summary.value })}\nChoose reminders:\n1. Day before + 2 hours before\n2. Only 2 hours before\n3. Only day before\n4. No reminders`)
   };
 }
 
@@ -2957,7 +3568,42 @@ const receiveWebhook = asyncHandler(async (req, res) => {
     }
 
     const branchId = await defaultBranchId(String(salonId));
-    const result = message.flowResponse ? await handleBookingFlowCompletion(String(salonId), message) : await handleBookingMessage(String(salonId), branchId, message);
+
+    const optOutText = message.text?.trim().toUpperCase() || "";
+    if (optOutText === "STOP" || optOutText === "UNSUBSCRIBE" || optOutText === "OPT OUT" || optOutText === "STOP ALL") {
+      const normalizedPhone = normalizePhone(message.waPhone);
+      await CustomerModel.updateOne({ salonId: String(salonId), normalizedPhone }, { $set: { marketingOptOut: true } }, { upsert: true });
+      await sendWhatsAppMessage({
+        salonId: String(salonId),
+        toPhone: normalizedPhone,
+        type: "utility",
+        body: "You're unsubscribed from promotional messages. You'll still receive booking confirmations and reminders. Reply START to opt back in."
+      });
+      await WhatsAppInboundModel.create({ salonId: String(salonId), waPhone: normalizedPhone, profileName: message.profileName, messageId: message.messageId, text: message.text, receivedAt: new Date(message.timestampMs), appointmentId: null });
+      await WhatsAppWebhookEventModel.updateOne({ eventId }, { $set: { status: "processed", processedAt: new Date() } });
+      ok(res, { successHandled: true, action: "opted_out" });
+      return;
+    }
+    if (optOutText === "START") {
+      const normalizedPhone = normalizePhone(message.waPhone);
+      await CustomerModel.updateOne({ salonId: String(salonId), normalizedPhone }, { $set: { marketingOptOut: false } }, { upsert: true });
+      await sendWhatsAppMessage({ salonId: String(salonId), toPhone: normalizedPhone, type: "utility", body: "You're back on our list for booking confirmations, reminders, and offers." });
+      await WhatsAppInboundModel.create({ salonId: String(salonId), waPhone: normalizedPhone, profileName: message.profileName, messageId: message.messageId, text: message.text, receivedAt: new Date(message.timestampMs), appointmentId: null });
+      await WhatsAppWebhookEventModel.updateOne({ eventId }, { $set: { status: "processed", processedAt: new Date() } });
+      ok(res, { successHandled: true, action: "opted_in" });
+      return;
+    }
+
+    const normalizedPhone = normalizePhone(message.waPhone);
+    let result: Record<string, unknown>;
+    if (!["text", "interactive"].includes(message.messageType)) {
+      const mediaTag = message.messageType === "audio" ? "voice_note" : message.messageType === "image" || message.messageType === "document" ? "payment_review" : "manual_review";
+      await tagCustomerLead(String(salonId), normalizedPhone, [mediaTag, "manual_review"]);
+      await NotificationModel.create({ salonId: String(salonId), staffId: null, title: "WhatsApp manual review", body: `${message.profileName || normalizedPhone} sent ${message.messageType}. Open WhatsApp inbox to review it.`, status: "unread" });
+      result = { action: "manual_review", reply: message.messageType === "audio" ? "I can't listen to voice notes yet. Please type your service, day and time, or send MENU." : "I've shared this with the salon team for review. For booking, please type your service, day and time, or send MENU." };
+    } else {
+      result = message.flowResponse ? await handleBookingFlowCompletion(String(salonId), message) : await handleBookingMessage(String(salonId), branchId, message);
+    }
 
     if (message.text && !message.flowResponse) {
       const missActions = new Set(["needs_menu", "needs_manage_action", "needs_category", "needs_service", "needs_staff", "needs_date", "needs_time", "needs_booking", "needs_cancel_confirm", "needs_reschedule_confirm", "needs_more_changes", "needs_modify_field", "needs_slot"]);
@@ -2993,16 +3639,17 @@ const receiveWebhook = asyncHandler(async (req, res) => {
     if (result.reply) {
       await sendWhatsAppMessage({
         salonId: String(salonId),
-        toPhone: normalizePhone(message.waPhone),
+          toPhone: normalizedPhone,
         type: "utility",
         body: String(result.reply),
         interactive: (result.interactive as Record<string, unknown> | undefined) || null,
+        metadata: { dedupeKey: `bot_reply:${message.messageId || `${message.waPhone}:${message.timestampMs}`}`, source: "bot_reply", action: String(result.action || "unknown"), hasInteractive: !!result.interactive },
         appointmentId: result.action === "appointment_created" ? String((result.appointment as { id?: string }).id || "") : null
       });
     }
     await WhatsAppInboundModel.create({
       salonId: salonId,
-      waPhone: normalizePhone(message.waPhone),
+      waPhone: normalizedPhone,
       profileName: message.profileName,
       messageId: message.messageId,
       text: message.text,

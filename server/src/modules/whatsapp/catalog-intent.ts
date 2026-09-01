@@ -27,18 +27,18 @@ export interface SynonymGroup {
  *  `name` is used as the fuzzy query against the real catalogue; aliases are
  *  matched against user text. Order matters: more specific groups first. */
 export const SERVICE_SYNONYM_GROUPS: SynonymGroup[] = [
-  { name: "Haircut", aliases: ["baal kaatna", "baal katna", "baal kaat", "baal kat", "kaatna", "katna", "kaat do", "kat do", "kaatwa do", "kaat", "kat", "haircut", "hair cut", "haircutting", "trim", "hair trim", "baal trim", "trimmer"] },
-  { name: "Beard", aliases: ["beard", "beard trim", "beard grooming", "dhaadi", "daari", "dari", "shave", "shaving", "clean shave", "moustache", "mooch"] },
-  { name: "Facial", aliases: ["facial", "face clean", "faceclean", "cleanup", "clean up", "chamkila", "face polish", "face pack", "glow facial", "facial karao"] },
+  { name: "Haircut", aliases: ["baal kaatna", "baal katna", "baal kaat", "baal kat", "baal katwana", "baal katvaane", "baal katvane", "baal cut", "kaatna", "katna", "kaat do", "kat do", "kaatwa do", "katwa do", "kaat", "kat", "haircut", "hair cut", "hairct", "hair ct", "haircutting", "trim", "hair trim", "baal trim", "trimmer"] },
+  { name: "Beard", aliases: ["beard", "beard trim", "beard grooming", "dhaadi", "dadhi", "daadhi", "daari", "dari", "shave", "shaving", "clean shave", "moustache", "mooch"] },
+  { name: "Facial", aliases: ["facial", "facil", "face clean", "faceclean", "cleanup", "clean up", "chamkila", "face polish", "face pack", "glow facial", "facial karao", "face glow"] },
   { name: "Hair Colour", aliases: ["hair colour", "hair color", "haar colour", "baal ka colour", "baal warna", "colour", "color", "dye", "dying", "tint", "warna", "pigmentation"] },
   { name: "Massage", aliases: ["massage", "champi", "body massage", "oil massage", "head massage", "back massage", "full body massage", "spa massage", "ayurvedic massage"] },
   { name: "Hair Spa", aliases: ["hair spa", "spa treatment", "scalp", "dandruff", "hair treatment", "scalp treatment"] },
   { name: "Keratin", aliases: ["keratin", "keratin treatment", "keratin smoothing", "keratin spa"] },
   { name: "Straightening", aliases: ["straightening", "rebond", "rebonding", "hair straightening", "straight"] },
   { name: "Manicure", aliases: ["manicure", "hand pamper", "hand spa", "nail", "nails", "naakhun", "naakhun polish"] },
-  { name: "Pedicure", aliases: ["pedicure", "foot spa", "feet clean", "paune", "foot massage"] },
+  { name: "Pedicure", aliases: ["pedicure", "pedicur", "foot spa", "feet clean", "pair saaf", "paune", "foot massage"] },
   { name: "Waxing", aliases: ["waxing", "wax", "wax karao", "wax karana", "sugaring", "full body wax", "legs wax"] },
-  { name: "Threading", aliases: ["threading", "thread", "eyebrow", "eyebrows", "brows", "eyebrow threading", "brow", "braiding"] },
+  { name: "Threading", aliases: ["threading", "thread", "threadin", "eyebrow", "eyebrows", "brows", "eyebrow threading", "brow", "braiding"] },
   { name: "Bleach", aliases: ["bleach", "bleaching", "fairness", "whitening", "de tan", "detan", "glow bleach", "skin glow"] },
   { name: "Makeup", aliases: ["makeup", "make up", "party makeup", "bridal makeup", "engagement makeup"] },
   { name: "Mehendi", aliases: ["mehendi", "mehndi", "henna", "bridal mehendi", "arabic mehendi"] },

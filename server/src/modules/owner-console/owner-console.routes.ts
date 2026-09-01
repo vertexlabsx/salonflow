@@ -1,4 +1,4 @@
-import { Router } from "express";
+import { Router, type Request } from "express";
 import { z } from "zod";
 import { Types } from "mongoose";
 import bcrypt from "bcryptjs";
@@ -15,17 +15,46 @@ import { AttendanceModel } from "../../models/attendance.model";
 import { PayrollRunModel, type PayrollRun } from "../../models/payroll-run.model";
 import { ServiceModel } from "../../models/service.model";
 import { UserModel } from "../../models/user.model";
+import { NotificationModel } from "../../models/notification.model";
 import { createAppointment, transitionAppointment } from "../appointments/appointment.service";
 import { publishRealtimeEvent } from "../realtime/realtime.service";
+import { sendWhatsAppMessage } from "../whatsapp/whatsapp.service";
 import { AuditLogModel } from "../../models/audit-log.model";
 import { audit } from "../../shared/audit";
 import { buildTextPdf } from "../../shared/pdf";
+import { decideOwnerLeave, listOwnerLeaves, ownerLeaveDetail } from "./owner-people-leaves.service";
+import { listOwnerStaff } from "./owner-people-staff.service";
+import {
+  createOwnerPrivateConversation,
+  ownerConversationMessages,
+  ownerConversations,
+  searchOwnerConversationMessages,
+  sendOwnerConversationMessage,
+  updateOwnerConversationReceipts
+} from "./owner-chats.service";
+import { createPromo, listPromos, promoRedemptions, redeemPromo, setPromoStatus } from "./promo-code.service";
+import { createExpense, deleteExpense, gstReport, listExpenses, updateExpense } from "./finance.service";
+import { EXPENSE_CATEGORIES, ExpenseModel, type Expense } from "../../models/expense.model";
+import { GiftCardModel } from "../../models/gift-card.model";
+import { BundleDealModel } from "../../models/bundle-deal.model";
+import { ClientPhotoModel } from "../../models/client-photo.model";
+import { PurchaseOrderModel } from "../../models/purchase-order.model";
+import { TipModel } from "../../models/tip.model";
+import { WhatsAppInboundModel } from "../../models/whatsapp-inbound.model";
+import { WhatsAppOutboundModel } from "../../models/whatsapp-outbound.model";
+import { WhatsAppBookingSessionModel } from "../../models/whatsapp-booking-session.model";
+import { WhatsAppTemplateModel } from "../../models/whatsapp-template.model";
+import { WaitlistModel } from "../../models/waitlist.model";
 
 export const ownerConsoleRouter = Router();
 ownerConsoleRouter.use(requireAuth);
 
 const READ = "read:appointments";
 const WRITE = { any: ["create:appointments", "update:appointments", "admin:*"] };
+const CLIENT_WRITE = { any: ["create:clients", "update:clients", "admin:*"] };
+const PROMO_READ = { any: ["read:appointments", "read:clients", "admin:*"] };
+const PROMO_WRITE = { any: ["admin:*"] };
+const WHATSAPP_TEMPLATE_NAMES = ["solastio_feedback", "solastio_birthday", "solastio_rebooking", "solastio_loyalty"];
 const timezone = "Asia/Kolkata" as const;
 
 function page(limit: number, offset: number, total: number) {
@@ -77,10 +106,13 @@ function defaultSettings(branchId: string) {
       branchBehavior: { rememberLastBranch: true, requireBranchSelection: false, allowBranchSwitch: true },
       dateTime: { dateFormat: "dd MMM yyyy", timeFormat: "12h", businessDayStartHour: 10, weekStartsOn: "monday" },
       interface: { compactMode: false, showModuleBadges: true, enableCommandSearch: true },
-      defaults: { refreshReportsOnOpen: true, ownerNotifications: true, staffHints: true }
+      defaults: { refreshReportsOnOpen: true, ownerNotifications: true, staffHints: true },
+      whatsappNudges: { birthdayOfferPercent: 20, feedbackDelayMinutes: 60, rebookingWeeks: 4, loyaltyStep: 100, noShowEnabled: true, abandonedEnabled: true, birthdayEnabled: true, feedbackEnabled: true, rebookingEnabled: true, loyaltyEnabled: true },
+      whatsappPolicy: { cancellationCutoffHours: 2, enforceCancellationCutoff: false, rescheduleCutoffHours: 2, enforceRescheduleCutoff: false, depositRefundPolicy: "Refunds and adjustments follow salon policy.", googleReviewUrl: "" },
+      booking: { depositsEnabled: false, depositMode: "percent", depositPercent: 10, depositFixedPaise: 0, depositMinimumPaise: 0 }
     },
     audit: { lastChangedBy: "system", lastChangedAt: new Date().toISOString() },
-    supportedSections: ["workspace", "localization", "branchBehavior", "dateTime", "interface", "defaults"],
+    supportedSections: ["workspace", "localization", "branchBehavior", "dateTime", "interface", "defaults", "whatsappNudges", "whatsappPolicy", "booking"],
     unavailableSections: {}
   };
 }
@@ -242,16 +274,35 @@ ownerConsoleRouter.get("/appointments/:id", requirePermissions(READ), asyncHandl
   ok(res, await appointmentDetailResponse(req.context!.salonId, doc));
 }));
 
-const writeSchema = z.object({ branchId: z.string(), clientId: z.string(), staffId: z.string().optional(), serviceIds: z.array(z.string()).min(1), startAt: z.string().datetime(), source: z.string().default("crm") });
+const writeSchema = z.object({ branchId: z.string(), clientId: z.string(), staffId: z.string().optional(), serviceIds: z.array(z.string()).min(1), startAt: z.string().datetime(), source: z.string().default("crm"), recurrence: z.object({ frequency: z.enum(["none", "weekly", "monthly"]).default("none"), interval: z.coerce.number().int().min(1).max(12).default(1), count: z.coerce.number().int().min(1).max(52).default(1), until: z.string().datetime().optional() }).optional() });
 ownerConsoleRouter.post("/appointments", requirePermissions(WRITE), asyncHandler(async (req, res) => {
   const body = writeSchema.parse(req.body ?? {});
   const customer = Types.ObjectId.isValid(body.clientId) ? await CustomerModel.findOne({ _id: body.clientId, salonId: req.context!.salonId }) : null;
-  const created = await createAppointment({ salonId: req.context!.salonId, branchId: body.branchId, serviceId: body.serviceIds[0]!, startAt: new Date(body.startAt), customerName: customer?.name || "", normalizedPhone: customer?.normalizedPhone, source: body.source === "walk_in" ? "walk_in" : "crm", preferredStaffId: body.staffId });
+  const starts = recurrenceStarts(new Date(body.startAt), body.recurrence);
+  const createdItems = [] as Awaited<ReturnType<typeof createAppointment>>[];
+  for (const startAt of starts) createdItems.push(await createAppointment({ salonId: req.context!.salonId, branchId: body.branchId, serviceId: body.serviceIds[0]!, startAt, customerName: customer?.name || "", normalizedPhone: customer?.normalizedPhone, source: body.source === "walk_in" ? "walk_in" : "crm", preferredStaffId: body.staffId }));
+  const created = createdItems[0]!;
   const doc = await AppointmentModel.findById(created.id);
   if (!doc) throw new ApiError(500, "Appointment was created but could not be loaded.");
-  await audit(req, "appointment.create", "appointment", String(doc._id), { source: body.source });
-  ok(res, await appointmentDetailResponse(req.context!.salonId, doc), 201);
+  await audit(req, "appointment.create", "appointment", String(doc._id), { source: body.source, recurrenceCount: createdItems.length });
+  ok(res, { ...(await appointmentDetailResponse(req.context!.salonId, doc)), recurrence: { created: createdItems.length, appointmentIds: createdItems.map((item) => item.id) } }, 201);
 }));
+
+function recurrenceStarts(first: Date, recurrence?: { frequency?: "none" | "weekly" | "monthly"; interval?: number; count?: number; until?: string }) {
+  if (!recurrence || recurrence.frequency === "none") return [first];
+  const starts: Date[] = [];
+  const count = Math.max(1, Math.min(52, recurrence.count || 1));
+  const interval = Math.max(1, Math.min(12, recurrence.interval || 1));
+  const until = recurrence.until ? new Date(recurrence.until) : null;
+  for (let i = 0; i < count; i++) {
+    const next = new Date(first);
+    if (recurrence.frequency === "weekly") next.setDate(first.getDate() + i * interval * 7);
+    else next.setMonth(first.getMonth() + i * interval);
+    if (until && next > until) break;
+    starts.push(next);
+  }
+  return starts.length ? starts : [first];
+}
 
 ownerConsoleRouter.patch("/appointments/:id", requirePermissions(WRITE), asyncHandler(async (req, res) => {
   const body = writeSchema.partial().extend({ version: z.coerce.number().int().optional() }).parse(req.body ?? {});
@@ -321,8 +372,9 @@ ownerConsoleRouter.post("/appointments/:id/status", requirePermissions(WRITE), a
 
 ownerConsoleRouter.get("/operations/clients", requirePermissions(READ), asyncHandler(async (req, res) => {
   const query = z.object({ page: z.coerce.number().int().min(1).default(1), pageSize: z.coerce.number().int().min(1).max(100).default(25), search: z.string().optional(), branchId: z.string().default("all"), relationship: z.string().optional(), outstanding: z.string().optional(), lastVisit: z.string().optional(), from: z.string().optional(), to: z.string().optional() }).parse(req.query);
-  const filter: Record<string, unknown> = { salonId: req.context!.salonId };
-  if (query.branchId !== "all") filter.branchId = query.branchId;
+  const allowedBranches = resolveAuthorizedBranchIds(req.context!);
+  const effectiveBranches = query.branchId !== "all" && allowedBranches.includes(query.branchId) ? [query.branchId] : allowedBranches;
+  const filter: Record<string, unknown> = { salonId: req.context!.salonId, branchId: { $in: effectiveBranches } };
   if (query.search) {
     const search = escapeRegex(query.search.trim());
     const phone = query.search.replace(/\D/g, "");
@@ -371,14 +423,16 @@ ownerConsoleRouter.get("/operations/clients", requirePermissions(READ), asyncHan
 
 ownerConsoleRouter.get("/operations/clients/:id", requirePermissions(READ), asyncHandler(async (req, res) => {
   if (!Types.ObjectId.isValid(req.params.id)) throw ApiError.notFound("Client not found.");
-  const c = await CustomerModel.findOne({ _id: req.params.id, salonId: req.context!.salonId });
+  const allowedBranches = resolveAuthorizedBranchIds(req.context!);
+  const c = await CustomerModel.findOne({ _id: req.params.id, salonId: req.context!.salonId, branchId: { $in: allowedBranches } });
   if (!c) throw ApiError.notFound("Client not found.");
   const branchFilter = String(req.query.branchId || "all");
   const scoped = branchFilter !== "all" ? { branchId: branchFilter } : {};
-  const [appointments, invoices, branches] = await Promise.all([
+  const [appointments, invoices, branches, photos] = await Promise.all([
     AppointmentModel.find({ salonId: req.context!.salonId, customerId: String(c._id), ...scoped }).sort({ startAt: -1 }).limit(200),
     InvoiceModel.find({ salonId: req.context!.salonId, customerId: String(c._id), status: { $ne: "void" }, ...scoped }).sort({ createdAt: -1 }).limit(200),
-    BranchModel.find({ salonId: req.context!.salonId })
+    BranchModel.find({ salonId: req.context!.salonId }),
+    ClientPhotoModel.find({ salonId: req.context!.salonId, customerId: String(c._id), ...scoped }).sort({ createdAt: -1 }).limit(100).lean()
   ]);
   const branchNames = new Map(branches.map((b) => [b._id, b.name]));
   const staffIds = [...new Set(appointments.map((a) => a.staffId).filter(Boolean))];
@@ -391,37 +445,92 @@ ownerConsoleRouter.get("/operations/clients/:id", requirePermissions(READ), asyn
     client,
     appointments: appointments.map((a) => ({ id: String(a._id), branchId: a.branchId, branchName: branchNames.get(a.branchId) || a.branchId, startAt: iso(a.startAt), endAt: iso(a.endAt), status: a.status, serviceIds: a.serviceIds, notes: a.serviceNames.join(", "), staffId: a.staffId, staffName: staffNames.get(a.staffId) || a.staffId, spendPaise: a.value, createdAt: iso(a.createdAt) })),
     purchases: invoices.map((i) => ({ id: String(i._id), branchId: i.branchId, branchName: branchNames.get(i.branchId) || i.branchId, items: i.lines, totalPaise: i.grandTotalPaise, paidPaise: i.paidAmountPaise, balancePaise: i.dueAmountPaise, status: i.paymentStatus, createdAt: iso(i.createdAt), invoiceId: String(i._id), invoiceNumber: i.invoiceNumber })),
+    photos: photos.map((p) => ({ id: String(p._id), branchId: p.branchId, branchName: branchNames.get(p.branchId) || p.branchId, appointmentId: p.appointmentId || "", beforeUrl: p.beforeUrl, afterUrl: p.afterUrl, caption: p.caption, serviceNames: p.serviceNames || [], createdAt: p.createdAt?.toISOString() || "" })),
     membership: c.membershipPlanName ? { id: c.membershipId || String(c._id), planName: c.membershipPlanName, planCredits: c.membershipCredits || 0, creditsRemaining: c.membershipCreditsRemaining || 0, validityDate: c.membershipValidUntil || "", status: c.membershipStatus || "active", branchId: c.branchId } : null,
     metadata: { timezone, partial: false, unavailableSources: [], branchRelationship: [...new Set([c.branchId, ...appointments.map((a) => a.branchId), ...invoices.map((i) => i.branchId)])] }
   });
 }));
 
-ownerConsoleRouter.post("/operations/clients", requirePermissions(WRITE), asyncHandler(async (req, res) => {
+async function notifyOwnerClientChange(req: Request, customer: { _id: unknown; name?: string; normalizedPhone?: string }, action: "created" | "updated", fields: string[] = []): Promise<void> {
+  const actor = req.context!.user;
+  const role = String(actor.role || "").toLowerCase();
+  if (["owner", "admin", "superadmin"].includes(role)) return;
+  const clientName = customer.name || customer.normalizedPhone || String(customer._id);
+  const suffix = fields.length ? ` Fields: ${fields.join(", ")}.` : "";
+  await NotificationModel.create({
+    salonId: req.context!.salonId,
+    staffId: null,
+    title: `Client ${action} by ${actor.name}`,
+    body: `${actor.name} (${actor.role}) ${action} client ${clientName}.${suffix}`,
+    status: "unread"
+  });
+}
+
+ownerConsoleRouter.post("/operations/clients", requirePermissions(CLIENT_WRITE), asyncHandler(async (req, res) => {
   const benefitSchema = { walletBalancePaise: z.coerce.number().int().min(0).optional(), loyaltyPoints: z.coerce.number().int().min(0).optional(), membershipPlanName: z.string().trim().max(120).optional(), membershipCredits: z.coerce.number().int().min(0).optional(), membershipCreditsRemaining: z.coerce.number().int().min(0).optional(), membershipValidUntil: z.string().trim().max(10).optional(), membershipStatus: z.string().trim().max(40).optional(), packageName: z.string().trim().max(120).optional(), packageCreditsRemaining: z.coerce.number().int().min(0).optional(), subscriptionName: z.string().trim().max(120).optional(), subscriptionStatus: z.string().trim().max(40).optional() };
   const body = z.object({ branchId: z.string().min(1), name: z.string().trim().min(1).max(160), phone: z.string().trim().min(5), email: z.string().trim().email().or(z.literal("")).optional(), gender: z.string().trim().max(40).optional(), birthday: z.string().trim().max(10).optional(), anniversary: z.string().trim().max(10).optional(), tags: z.array(z.string().trim().max(40)).max(30).optional(), notes: z.string().trim().max(2000).optional(), address: z.string().trim().max(500).optional(), ...benefitSchema }).parse(req.body ?? {});
+  const allowedBranches = resolveAuthorizedBranchIds(req.context!);
+  if (!allowedBranches.includes(body.branchId)) throw ApiError.forbidden("Client is outside your branch access.");
   const normalizedPhone = body.phone.replace(/\D/g, "");
   const customer = await CustomerModel.findOneAndUpdate({ salonId: req.context!.salonId, normalizedPhone }, { $setOnInsert: { source: "owner" }, $set: { branchId: body.branchId, name: body.name, email: body.email || "", gender: body.gender || "", birthday: body.birthday || "", anniversary: body.anniversary || "", tags: body.tags || [], notes: body.notes || "", address: body.address || "", walletBalancePaise: body.walletBalancePaise || 0, loyaltyPoints: body.loyaltyPoints || 0, membershipPlanName: body.membershipPlanName || "", membershipCredits: body.membershipCredits || 0, membershipCreditsRemaining: body.membershipCreditsRemaining || 0, membershipValidUntil: body.membershipValidUntil || "", membershipStatus: body.membershipStatus || "", packageName: body.packageName || "", packageCreditsRemaining: body.packageCreditsRemaining || 0, subscriptionName: body.subscriptionName || "", subscriptionStatus: body.subscriptionStatus || "", interactionStatus: "active" } }, { upsert: true, new: true });
   await audit(req, "client.create", "customer", String(customer._id), { branchId: body.branchId });
+  await notifyOwnerClientChange(req, customer, "created", Object.keys(body));
   ok(res, { id: String(customer._id) }, 201);
 }));
 
-ownerConsoleRouter.patch("/operations/clients/:id", requirePermissions(WRITE), asyncHandler(async (req, res) => {
+ownerConsoleRouter.patch("/operations/clients/:id", requirePermissions(CLIENT_WRITE), asyncHandler(async (req, res) => {
   if (!Types.ObjectId.isValid(req.params.id)) throw ApiError.notFound("Client not found.");
   const benefitSchema = { walletBalancePaise: z.coerce.number().int().min(0).optional(), loyaltyPoints: z.coerce.number().int().min(0).optional(), membershipPlanName: z.string().trim().max(120).optional(), membershipCredits: z.coerce.number().int().min(0).optional(), membershipCreditsRemaining: z.coerce.number().int().min(0).optional(), membershipValidUntil: z.string().trim().max(10).optional(), membershipStatus: z.string().trim().max(40).optional(), packageName: z.string().trim().max(120).optional(), packageCreditsRemaining: z.coerce.number().int().min(0).optional(), subscriptionName: z.string().trim().max(120).optional(), subscriptionStatus: z.string().trim().max(40).optional() };
   const body = z.object({ name: z.string().trim().min(1).max(160).optional(), email: z.string().trim().email().or(z.literal("")).optional(), gender: z.string().trim().max(40).optional(), birthday: z.string().trim().max(10).optional(), anniversary: z.string().trim().max(10).optional(), tags: z.array(z.string().trim().max(40)).max(30).optional(), notes: z.string().trim().max(2000).optional(), address: z.string().trim().max(500).optional(), ...benefitSchema }).parse(req.body ?? {});
   const update = Object.fromEntries(Object.entries(body).filter(([, value]) => value !== undefined));
-  const c = await CustomerModel.findOneAndUpdate({ _id: req.params.id, salonId: req.context!.salonId }, { $set: update }, { new: true });
+  const allowedBranches = resolveAuthorizedBranchIds(req.context!);
+  const c = await CustomerModel.findOneAndUpdate({ _id: req.params.id, salonId: req.context!.salonId, branchId: { $in: allowedBranches } }, { $set: update }, { new: true });
   if (!c) throw ApiError.notFound("Client not found.");
   await audit(req, "client.update", "customer", String(c._id), { fields: Object.keys(update) });
+  await notifyOwnerClientChange(req, c, "updated", Object.keys(update));
   ok(res, { id: String(c._id), updatedAt: iso(c.updatedAt) });
 }));
 
-ownerConsoleRouter.patch("/operations/clients/:id/opt-out", requirePermissions(WRITE), asyncHandler(async (req, res) => {
+ownerConsoleRouter.patch("/operations/clients/:id/opt-out", requirePermissions(CLIENT_WRITE), asyncHandler(async (req, res) => {
   const body = z.object({ optedOut: z.boolean() }).parse(req.body ?? {});
   const c = await CustomerModel.findOneAndUpdate({ _id: req.params.id, salonId: req.context!.salonId }, { $set: { marketingOptOut: body.optedOut } }, { new: true });
   if (!c) throw ApiError.notFound("Client not found.");
   await audit(req, "client.opt_out", "customer", String(c._id), { optedOut: body.optedOut });
   ok(res, { id: String(c._id), marketingOptOut: c.marketingOptOut });
+}));
+
+ownerConsoleRouter.post("/operations/clients/:id/review-request", requirePermissions(CLIENT_WRITE), asyncHandler(async (req, res) => {
+  if (!Types.ObjectId.isValid(req.params.id)) throw ApiError.notFound("Client not found.");
+  const body = z.object({ reviewUrl: z.string().trim().url(), message: z.string().trim().max(300).optional() }).parse(req.body ?? {});
+  const allowedBranches = resolveAuthorizedBranchIds(req.context!);
+  const c = await CustomerModel.findOne({ _id: req.params.id, salonId: req.context!.salonId, branchId: { $in: allowedBranches } });
+  if (!c) throw ApiError.notFound("Client not found.");
+  if (!c.normalizedPhone) throw ApiError.badRequest("Client does not have a WhatsApp-capable phone number.");
+  const message = body.message || `Thank you for visiting our salon. Please share your review: ${body.reviewUrl}`;
+  await sendWhatsAppMessage({ salonId: req.context!.salonId, toPhone: c.normalizedPhone, type: "utility", body: message });
+  await audit(req, "client.review_request", "customer", String(c._id), { reviewUrl: body.reviewUrl });
+  ok(res, { id: String(c._id), sent: true });
+}));
+
+ownerConsoleRouter.post("/operations/clients/:id/photos", requirePermissions(CLIENT_WRITE), asyncHandler(async (req, res) => {
+  if (!Types.ObjectId.isValid(req.params.id)) throw ApiError.notFound("Client not found.");
+  const body = z.object({ branchId: z.string().min(1), appointmentId: z.string().trim().max(120).default(""), beforeUrl: z.string().trim().url().or(z.literal("")).default(""), afterUrl: z.string().trim().url().or(z.literal("")).default(""), caption: z.string().trim().max(500).default(""), serviceNames: z.array(z.string().trim().max(120)).max(20).default([]) }).parse(req.body ?? {});
+  if (!body.beforeUrl && !body.afterUrl) throw ApiError.badRequest("Add at least one before or after photo URL.");
+  const allowedBranches = resolveAuthorizedBranchIds(req.context!);
+  if (!allowedBranches.includes(body.branchId)) throw ApiError.forbidden("Client is outside your branch access.");
+  const customer = await CustomerModel.findOne({ _id: req.params.id, salonId: req.context!.salonId, branchId: { $in: allowedBranches } });
+  if (!customer) throw ApiError.notFound("Client not found.");
+  const doc = await ClientPhotoModel.create({ salonId: req.context!.salonId, customerId: String(customer._id), branchId: body.branchId, appointmentId: body.appointmentId, beforeUrl: body.beforeUrl, afterUrl: body.afterUrl, caption: body.caption, serviceNames: body.serviceNames, createdByUserId: req.context!.userId });
+  await audit(req, "client.photo.create", "customer", String(customer._id), { photoId: String(doc._id) });
+  ok(res, { photo: { id: String(doc._id), branchId: doc.branchId, beforeUrl: doc.beforeUrl, afterUrl: doc.afterUrl, caption: doc.caption, serviceNames: doc.serviceNames, createdAt: doc.createdAt?.toISOString() || "" } }, 201);
+}));
+
+ownerConsoleRouter.delete("/operations/clients/:id/photos/:photoId", requirePermissions(CLIENT_WRITE), asyncHandler(async (req, res) => {
+  const allowedBranches = resolveAuthorizedBranchIds(req.context!);
+  const doc = await ClientPhotoModel.findOneAndDelete({ _id: req.params.photoId, salonId: req.context!.salonId, customerId: req.params.id, branchId: { $in: allowedBranches } });
+  if (!doc) throw ApiError.notFound("Photo record not found.");
+  await audit(req, "client.photo.delete", "customer", req.params.id, { photoId: req.params.photoId });
+  ok(res, { id: req.params.photoId });
 }));
 
 function csvEscape(value: string): string {
@@ -453,6 +562,38 @@ ownerConsoleRouter.get("/administration/audit-logs/export", requirePermissions(R
   res.setHeader("Content-Type", "text/csv; charset=utf-8");
   res.setHeader("Content-Disposition", `attachment; filename="audit-logs-${new Date().toISOString().slice(0, 10)}.csv"`);
   res.send([header.join(","), ...rows].join("\n"));
+}));
+
+ownerConsoleRouter.get("/billing/invoices", requirePermissions(READ), asyncHandler(async (req, res) => {
+  const query = z.object({ branchId: z.string().default("all"), from: z.string().regex(/^\d{4}-\d{2}-\d{2}$/), to: z.string().regex(/^\d{4}-\d{2}-\d{2}$/), page: z.coerce.number().int().min(1).default(1), pageSize: z.coerce.number().int().min(1).max(100).default(25), search: z.string().trim().default(""), status: z.string().trim().default(""), paymentStatus: z.string().trim().default("") }).parse(req.query);
+  const allowed = resolveAuthorizedBranchIds(req.context!);
+  if (query.branchId !== "all" && !allowed.includes(query.branchId)) throw ApiError.forbidden("You do not have access to this branch.");
+  const dateFilter = { $gte: new Date(`${query.from}T00:00:00.000Z`), $lte: new Date(`${query.to}T23:59:59.999Z`) };
+  const filter: Record<string, unknown> = { salonId: req.context!.salonId, branchId: { $in: query.branchId === "all" ? allowed : [query.branchId] }, createdAt: dateFilter };
+  if (query.status) filter.status = query.status === "finalized" ? "issued" : query.status;
+  if (query.paymentStatus) filter.paymentStatus = query.paymentStatus === "partially_paid" ? "partial" : query.paymentStatus;
+  if (query.search) filter.$or = [{ invoiceNumber: { $regex: escapeRegex(query.search), $options: "i" } }, { customerId: { $regex: escapeRegex(query.search), $options: "i" } }];
+  const [total, docs, branches, customers, all] = await Promise.all([
+    InvoiceModel.countDocuments(filter),
+    InvoiceModel.find(filter).sort({ createdAt: -1 }).skip((query.page - 1) * query.pageSize).limit(query.pageSize).lean(),
+    BranchModel.find({ salonId: req.context!.salonId }).lean(),
+    CustomerModel.find({ salonId: req.context!.salonId }).lean(),
+    InvoiceModel.find({ salonId: req.context!.salonId, branchId: { $in: query.branchId === "all" ? allowed : [query.branchId] }, createdAt: dateFilter }).lean()
+  ]);
+  const branchNames = new Map(branches.map((b) => [b._id, b.name]));
+  const customersById = new Map(customers.map((c) => [String(c._id), c]));
+  const summary = all.reduce((acc, invoice) => ({ invoiceCount: acc.invoiceCount + 1, billedPaise: acc.billedPaise + invoice.grandTotalPaise, paidPaise: acc.paidPaise + invoice.paidAmountPaise, outstandingPaise: acc.outstandingPaise + invoice.dueAmountPaise, overduePaise: acc.overduePaise }), { invoiceCount: 0, billedPaise: 0, paidPaise: 0, outstandingPaise: 0, overduePaise: 0 });
+  const items = docs.map((i) => { const customer = customersById.get(i.customerId || ""); return { id: String(i._id), invoiceNumber: i.invoiceNumber, branchId: i.branchId, branchName: branchNames.get(i.branchId) || i.branchId, customerId: i.customerId || "", customerName: customer?.name || "", status: i.status === "issued" ? "finalized" : i.status, paymentStatus: i.paymentStatus === "partial" ? "partially_paid" : i.paymentStatus, grandTotalPaise: i.grandTotalPaise, paidAmountPaise: i.paidAmountPaise, dueAmountPaise: i.dueAmountPaise, currency: i.currency, dueDate: "", createdAt: i.createdAt?.toISOString() || "", finalizedAt: i.issuedAt?.toISOString() || "", updatedAt: i.updatedAt?.toISOString() || "" }; });
+  ok(res, { context: { branchId: query.branchId, branchIds: allowed, from: query.from, to: query.to, timezone }, summary, items, page: { page: query.page, pageSize: query.pageSize, total, pages: Math.max(1, Math.ceil(total / query.pageSize)), hasMore: query.page * query.pageSize < total }, capabilities: { recordPayment: true, void: true, recordTip: true } });
+}));
+
+ownerConsoleRouter.get("/billing/invoices/:id", requirePermissions(READ), asyncHandler(async (req, res) => {
+  const allowed = resolveAuthorizedBranchIds(req.context!);
+  const i = await InvoiceModel.findOne({ _id: req.params.id, salonId: req.context!.salonId, branchId: { $in: allowed } }).lean();
+  if (!i) throw ApiError.notFound("Invoice not found.");
+  const [branch, customer, tips] = await Promise.all([BranchModel.findOne({ salonId: req.context!.salonId, _id: i.branchId }).lean(), i.customerId ? CustomerModel.findOne({ _id: i.customerId, salonId: req.context!.salonId }).lean() : null, TipModel.find({ salonId: req.context!.salonId, invoiceId: String(i._id) }).sort({ createdAt: -1 }).lean()]);
+  const invoice = { id: String(i._id), invoiceNumber: i.invoiceNumber, branchId: i.branchId, branchName: branch?.name || i.branchId, customerId: i.customerId || "", customerName: customer?.name || "", status: i.status === "issued" ? "finalized" : i.status, paymentStatus: i.paymentStatus === "partial" ? "partially_paid" : i.paymentStatus, grandTotalPaise: i.grandTotalPaise, paidAmountPaise: i.paidAmountPaise, dueAmountPaise: i.dueAmountPaise, currency: i.currency, dueDate: "", createdAt: i.createdAt?.toISOString() || "", finalizedAt: i.issuedAt?.toISOString() || "", updatedAt: i.updatedAt?.toISOString() || "" };
+  ok(res, { invoice, items: i.lines.map((line, idx) => ({ id: String(idx), name: line.description, type: line.serviceId ? "service" : line.productId ? "product" : "line", quantity: line.quantity, unitPricePaise: line.unitAmountPaise, discountAmountPaise: 0, taxAmountPaise: Math.round((line.unitAmountPaise * line.quantity * line.taxRateBps) / 10000), totalAmountPaise: line.totalPaise })), taxes: [{ id: "gst", type: "GST", rate: 0, amountPaise: i.taxPaise }], payments: i.payments.map((p, idx) => ({ id: String(idx), method: p.method, status: "paid", reference: p.reference, amountPaise: p.amountPaise, paidAt: p.receivedAt.toISOString(), createdAt: p.receivedAt.toISOString() })), tips: tips.map((t) => ({ id: String(t._id), staffId: t.staffId, amountPaise: t.amountPaise, method: t.method, reference: t.reference, createdAt: t.createdAt?.toISOString() || "" })), events: [], capabilities: { recordPayment: i.status !== "void" && i.dueAmountPaise > 0, void: i.status !== "void", recordTip: i.status !== "void" } });
 }));
 
 ownerConsoleRouter.get("/finance/invoices", requirePermissions(READ), asyncHandler(async (req, res) => {
@@ -530,6 +671,22 @@ ownerConsoleRouter.post("/finance/invoices/:id/payments", requirePermissions(WRI
   ok(res, { invoice: invoiceDetailDto(doc) }, 201);
 }));
 
+ownerConsoleRouter.post("/finance/invoices/:id/tips", requirePermissions(WRITE), asyncHandler(async (req, res) => {
+  const body = z.object({ method: z.enum(["cash", "card", "upi", "bank_transfer", "other"]), amountPaise: z.coerce.number().int().min(1), reference: z.string().trim().max(120).default(""), staffId: z.string().trim().max(120).default("") }).parse(req.body ?? {});
+  const allowed = resolveAuthorizedBranchIds(req.context!);
+  const invoice = await InvoiceModel.findOne({ _id: req.params.id, salonId: req.context!.salonId, branchId: { $in: allowed } });
+  if (!invoice) throw ApiError.notFound("Invoice not found.");
+  if (invoice.status === "void") throw ApiError.badRequest("Cannot record a tip on a voided invoice.");
+  let staffId = body.staffId;
+  if (!staffId && invoice.appointmentId) {
+    const appointment = await AppointmentModel.findOne({ _id: invoice.appointmentId, salonId: req.context!.salonId }, { staffId: 1 }).lean();
+    staffId = appointment?.staffId || "";
+  }
+  const tip = await TipModel.create({ salonId: req.context!.salonId, branchId: invoice.branchId, invoiceId: String(invoice._id), appointmentId: invoice.appointmentId || "", staffId, amountPaise: body.amountPaise, method: body.method, reference: body.reference, recordedByUserId: req.context!.userId });
+  await audit(req, "invoice.tip", "invoice", String(invoice._id), { tipId: String(tip._id), amountPaise: body.amountPaise, staffId });
+  ok(res, { tip: { id: String(tip._id), amountPaise: tip.amountPaise, method: tip.method, staffId: tip.staffId, createdAt: tip.createdAt?.toISOString() || "" } }, 201);
+}));
+
 ownerConsoleRouter.post("/finance/invoices/:id/void", requirePermissions(WRITE), asyncHandler(async (req, res) => {
   const body = z.object({ reason: z.string().trim().min(3).max(500) }).parse(req.body ?? {});
   const doc = await InvoiceModel.findOneAndUpdate(
@@ -544,6 +701,91 @@ ownerConsoleRouter.post("/finance/invoices/:id/void", requirePermissions(WRITE),
   await audit(req, "invoice.void", "invoice", String(doc._id), { reason: body.reason });
   ok(res, { invoice: invoiceDetailDto(doc) });
 }));
+
+ownerConsoleRouter.get("/finance/expenses", requirePermissions(READ), asyncHandler(async (req, res) => {
+  const query = z
+    .object({
+      branchId: z.string().default("all"),
+      fromDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).default("2000-01-01"),
+      toDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).default("2999-12-31"),
+      category: z.string().default("all"),
+      offset: z.coerce.number().int().min(0).default(0),
+      limit: z.coerce.number().int().min(1).max(200).default(50)
+    })
+    .parse(req.query);
+  const authorized = await resolveAuthorizedBranchIds(req.context!);
+  if (query.branchId !== "all" && !authorized.includes(query.branchId)) throw ApiError.forbidden("You do not have access to this branch.");
+  const data = await listExpenses(req.context!.salonId, { ...query, branchId: query.branchId === "all" ? "all" : query.branchId });
+  ok(res, { ...data, page: page(data.limit, data.offset, data.total), metadata: { timezone, moneyUnit: "paise" } });
+}));
+
+const expenseSchemaZ = z.object({
+  branchId: z.string().min(1),
+  date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+  category: z.enum(EXPENSE_CATEGORIES),
+  vendor: z.string().trim().max(160).default(""),
+  description: z.string().trim().max(300).default(""),
+  amountPaise: z.coerce.number().int().min(0),
+  taxRateBps: z.coerce.number().int().min(0).max(10000).default(0),
+  notes: z.string().trim().max(600).default("")
+});
+
+ownerConsoleRouter.post("/finance/expenses", requirePermissions(WRITE), asyncHandler(async (req, res) => {
+  const body = expenseSchemaZ.parse(req.body ?? {});
+  await requireBranchAccess(req, body.branchId);
+  const expense = await createExpense(req.context!.salonId, req.context!.userId, { ...body, date: body.date });
+  await audit(req, "expense.create", "expense", expense.id, { branchId: body.branchId, amountPaise: body.amountPaise, category: body.category });
+  ok(res, { expense }, 201);
+}));
+
+ownerConsoleRouter.put("/finance/expenses/:id", requirePermissions(WRITE), asyncHandler(async (req, res) => {
+  const body = expenseSchemaZ.parse(req.body ?? {});
+  await requireBranchAccess(req, body.branchId);
+  const expense = await updateExpense(req.context!.salonId, req.params.id, { ...body, date: body.date });
+  await audit(req, "expense.update", "expense", expense.id, { branchId: body.branchId });
+  ok(res, { expense });
+}));
+
+ownerConsoleRouter.delete("/finance/expenses/:id", requirePermissions(WRITE), asyncHandler(async (req, res) => {
+  const result = await deleteExpense(req.context!.salonId, req.params.id);
+  await audit(req, "expense.delete", "expense", result.id);
+  ok(res, { id: result.id });
+}));
+
+ownerConsoleRouter.get("/finance/gst-report", requirePermissions(READ), asyncHandler(async (req, res) => {
+  const query = z
+    .object({
+      branchId: z.string().default("all"),
+      fromDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+      toDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/)
+    })
+    .parse(req.query);
+  const authorized = await resolveAuthorizedBranchIds(req.context!);
+  if (query.branchId !== "all" && !authorized.includes(query.branchId)) throw ApiError.forbidden("You do not have access to this branch.");
+  const report = await gstReport(req.context!.salonId, query);
+  ok(res, { report, metadata: { timezone, moneyUnit: "paise" } });
+}));
+
+ownerConsoleRouter.get("/analytics/busy-hours", requirePermissions(READ), asyncHandler(async (req, res) => {
+  const query = z.object({ branchId: z.string().default("all"), fromDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/), toDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/) }).parse(req.query);
+  const allowed = resolveAuthorizedBranchIds(req.context!);
+  if (query.branchId !== "all" && !allowed.includes(query.branchId)) throw ApiError.forbidden("You do not have access to this branch.");
+  const filter: Record<string, unknown> = { salonId: req.context!.salonId, branchId: { $in: query.branchId === "all" ? allowed : [query.branchId] }, status: { $nin: ["cancelled", "no_show"] }, startAt: { $gte: new Date(`${query.fromDate}T00:00:00.000Z`), $lte: new Date(`${query.toDate}T23:59:59.999Z`) } };
+  const rows = await AppointmentModel.aggregate([
+    { $match: filter },
+    { $project: { value: 1, dayOfWeek: { $dayOfWeek: { date: "$startAt", timezone } }, hour: { $hour: { date: "$startAt", timezone } } } },
+    { $group: { _id: { dayOfWeek: "$dayOfWeek", hour: "$hour" }, appointments: { $sum: 1 }, valuePaise: { $sum: "$value" } } },
+    { $sort: { "_id.dayOfWeek": 1, "_id.hour": 1 } }
+  ]);
+  const cells = rows.map((row) => ({ dayOfWeek: row._id.dayOfWeek, hour: row._id.hour, appointments: row.appointments, valuePaise: row.valuePaise, intensity: row.appointments }));
+  const maxAppointments = cells.reduce((max, cell) => Math.max(max, cell.appointments), 0);
+  ok(res, { cells: cells.map((cell) => ({ ...cell, intensity: maxAppointments ? Math.round((cell.appointments / maxAppointments) * 100) : 0 })), metadata: { timezone, fromDate: query.fromDate, toDate: query.toDate, branchId: query.branchId } });
+}));
+
+async function requireBranchAccess(req: Request, branchId: string) {
+  const authorized = await resolveAuthorizedBranchIds(req.context!);
+  if (!authorized.includes(branchId)) throw ApiError.forbidden("You do not have access to this branch.");
+}
 
 async function payrollRunDto(salonId: string, doc: PayrollRun & { _id: unknown }) {
   const users = await UserModel.find({ salonId }, { name: 1, staffId: 1, role: 1 }).lean();
@@ -633,6 +875,110 @@ ownerConsoleRouter.get("/people/payroll/runs/:id/payslips/:staffId.pdf", require
   res.send(pdf);
 }));
 
+ownerConsoleRouter.get("/people/staff", requirePermissions(READ), asyncHandler(async (req, res) => {
+  const query = z.object({
+    branchId: z.string().optional(),
+    search: z.string().optional(),
+    status: z.string().optional(),
+    role: z.string().optional(),
+    employmentStatus: z.string().optional(),
+    attendanceStatus: z.string().optional(),
+    limit: z.coerce.number().int().min(1).max(200).optional(),
+    offset: z.coerce.number().int().min(0).optional()
+  }).parse(req.query);
+  ok(res, await listOwnerStaff(req.context!, query));
+}));
+
+ownerConsoleRouter.get("/people/leaves", requirePermissions(READ), asyncHandler(async (req, res) => {
+  const query = z.object({
+    branchId: z.string().optional(),
+    from: z.string().optional(),
+    to: z.string().optional(),
+    view: z.enum(["pending", "approved", "rejected", "upcoming", "past"]).optional(),
+    search: z.string().optional(),
+    limit: z.coerce.number().int().min(1).max(200).optional(),
+    offset: z.coerce.number().int().min(0).optional()
+  }).parse(req.query);
+  ok(res, await listOwnerLeaves(req.context!, query));
+}));
+
+ownerConsoleRouter.get("/people/leaves/:id", requirePermissions(READ), asyncHandler(async (req, res) => {
+  const params = z.object({ id: z.string().trim().min(1).max(80) }).parse(req.params);
+  ok(res, await ownerLeaveDetail(req.context!, params.id));
+}));
+
+ownerConsoleRouter.patch("/people/leaves/:id/approve", requirePermissions({ any: ["admin:*"] }), asyncHandler(async (req, res) => {
+  const params = z.object({ id: z.string().trim().min(1).max(80) }).parse(req.params);
+  const body = z.object({ version: z.coerce.number().int().min(0).optional(), reason: z.string().trim().max(500).optional() }).parse(req.body ?? {});
+  const leave = await decideOwnerLeave(req.context!, params.id, "approve", body);
+  await audit(req, "leave.approve", "leave", params.id);
+  ok(res, leave);
+}));
+
+ownerConsoleRouter.patch("/people/leaves/:id/reject", requirePermissions({ any: ["admin:*"] }), asyncHandler(async (req, res) => {
+  const params = z.object({ id: z.string().trim().min(1).max(80) }).parse(req.params);
+  const body = z.object({ version: z.coerce.number().int().min(0).optional(), reason: z.string().trim().max(500).optional() }).parse(req.body ?? {});
+  const leave = await decideOwnerLeave(req.context!, params.id, "reject", body);
+  await audit(req, "leave.reject", "leave", params.id);
+  ok(res, leave);
+}));
+
+const chatBranchQuery = z.object({ branchId: z.string().optional() });
+
+ownerConsoleRouter.get("/operations/chats", requirePermissions(READ), asyncHandler(async (req, res) => {
+  const query = z.object({
+    branchId: z.string().optional(),
+    page: z.coerce.number().int().min(1).optional(),
+    pageSize: z.coerce.number().int().min(1).max(100).optional(),
+    search: z.string().optional()
+  }).parse(req.query);
+  ok(res, await ownerConversations(req.context!, query));
+}));
+
+ownerConsoleRouter.get("/operations/chats/search", requirePermissions(READ), asyncHandler(async (req, res) => {
+  const query = z.object({ q: z.string().trim().min(1).max(200), branchId: z.string().optional() }).parse(req.query);
+  ok(res, await searchOwnerConversationMessages(req.context!, query.q, query.branchId));
+}));
+
+ownerConsoleRouter.get("/operations/chats/:id/search", requirePermissions(READ), asyncHandler(async (req, res) => {
+  const params = z.object({ id: z.string().trim().min(1).max(80) }).parse(req.params);
+  const query = z.object({ q: z.string().trim().min(1).max(200), branchId: z.string().optional() }).parse(req.query);
+  ok(res, await searchOwnerConversationMessages(req.context!, query.q, query.branchId, params.id));
+}));
+
+ownerConsoleRouter.get("/operations/chats/:id/messages", requirePermissions(READ), asyncHandler(async (req, res) => {
+  const params = z.object({ id: z.string().trim().min(1).max(80) }).parse(req.params);
+  const query = chatBranchQuery.parse(req.query);
+  ok(res, await ownerConversationMessages(req.context!, params.id, query.branchId));
+}));
+
+ownerConsoleRouter.post("/operations/chats/private", requirePermissions(WRITE), asyncHandler(async (req, res) => {
+  const body = z.object({ branchId: z.string().trim().min(1).max(120), staffId: z.string().trim().min(1).max(120) }).parse(req.body ?? {});
+  const conversation = (await createOwnerPrivateConversation(req.context!, body.branchId, body.staffId)) as { id: string };
+  await audit(req, "chat.private-create", "conversation", String(conversation.id));
+  ok(res, conversation, 201);
+}));
+
+ownerConsoleRouter.post("/operations/chats/:id/messages", requirePermissions(WRITE), asyncHandler(async (req, res) => {
+  const params = z.object({ id: z.string().trim().min(1).max(80) }).parse(req.params);
+  const body = z.object({ branchId: z.string().trim().min(1).max(120).optional(), body: z.string().trim().min(1).max(4000) }).parse(req.body ?? {});
+  const message = await sendOwnerConversationMessage(req.context!, params.id, body.branchId ?? req.context!.branchId, body.body);
+  await audit(req, "chat.message.send", "conversation", params.id);
+  ok(res, message, 201);
+}));
+
+ownerConsoleRouter.post("/operations/chats/:id/receipts", requirePermissions(WRITE), asyncHandler(async (req, res) => {
+  const params = z.object({ id: z.string().trim().min(1).max(80) }).parse(req.params);
+  const body = z.object({
+    branchId: z.string().trim().min(1).max(120).optional(),
+    messageIds: z.array(z.string().trim().min(1).max(120)).max(500),
+    status: z.enum(["delivered", "read"])
+  }).parse(req.body ?? {});
+  const result = (await updateOwnerConversationReceipts(req.context!, params.id, body.branchId ?? req.context!.branchId, body.messageIds, body.status)) as { receipts: unknown[] };
+  await audit(req, "chat.receipts", "conversation", params.id, { status: body.status, count: result.receipts.length });
+  ok(res, result);
+}));
+
 ownerConsoleRouter.get("/administration/branches", requirePermissions(READ), asyncHandler(async (req, res) => {
   const docs = await BranchModel.find({ salonId: req.context!.salonId }).sort({ name: 1 });
   ok(res, { items: docs.map(toBranchAdministration), capabilities: { create: true, update: true, deactivate: true, hardDelete: false, creatorAssignment: true }, availability: {} });
@@ -665,12 +1011,12 @@ ownerConsoleRouter.patch("/administration/branches/:id/status", requirePermissio
 
 async function accessResponse(salonId: string) {
   const [branches, users] = await Promise.all([BranchModel.find({ salonId }).sort({ name: 1 }), UserModel.find({ salonId }).sort({ name: 1 })]);
-  const defaultPermissions = ["read:appointments", "create:appointments", "update:appointments", "read:clients"];
+  const defaultPermissions = ["read:appointments", "create:appointments", "update:appointments", "read:clients", "create:clients", "update:clients"];
   const permissionGroups = [
     { key: "appointments", label: "Appointments", items: ["read:appointments", "create:appointments", "update:appointments"].map((key) => ({ key, label: key, resource: "appointments", action: key.split(":")[0], sensitive: false })) },
-    { key: "clients", label: "Clients", items: ["read:clients"].map((key) => ({ key, label: key, resource: "clients", action: key.split(":")[0], sensitive: true })) }
+    { key: "clients", label: "Clients", items: ["read:clients", "create:clients", "update:clients"].map((key) => ({ key, label: key, resource: "clients", action: key.split(":")[0], sensitive: true })) }
   ];
-  const roles = ["owner", "admin", "receptionist", "stylist"].map((role) => ({ role, name: role[0]!.toUpperCase() + role.slice(1), description: "Default access role", isSystem: true, status: "active", permissionKeys: defaultPermissions, editable: role !== "owner", configuredKeys: [], inheritedKeys: [], effectiveKeys: defaultPermissions, allowKeys: [], denyKeys: [], policyMode: "inherited" as const, policySource: "default", editablePolicy: role !== "owner", kind: "system" as const, assignedUserCount: users.filter((u) => u.role === role).length, activeAssignedUserCount: users.filter((u) => u.role === role && u.status === "active").length }));
+  const roles = ["owner", "admin", "manager", "receptionist", "stylist"].map((role) => ({ role, name: role[0]!.toUpperCase() + role.slice(1), description: "Default access role", isSystem: true, status: "active", permissionKeys: defaultPermissions, editable: role !== "owner", configuredKeys: [], inheritedKeys: [], effectiveKeys: defaultPermissions, allowKeys: [], denyKeys: [], policyMode: "inherited" as const, policySource: "default", editablePolicy: role !== "owner", kind: "system" as const, assignedUserCount: users.filter((u) => u.role === role).length, activeAssignedUserCount: users.filter((u) => u.role === role && u.status === "active").length }));
   return { branches: branches.map(toBranchAdministration), roles, users: users.map((u) => ({ id: String(u._id), name: u.name, loginId: u.loginId, email: u.email || "", role: u.role, branchIds: u.branchIds.length ? u.branchIds : [u.branchId], status: u.status, isLocked: false, permissionVersion: 1, lastLoginAt: "", activeSessions: 0, staffId: u.staffId })), permissionGroups, capabilities: { createRole: true, editCustomRole: true, editBuiltinStaffAppPolicy: false, restoreRoleDefaults: true, duplicateRole: true, setCustomRoleStatus: true, createUser: true, updateUser: true, disableUser: true }, safeguards: { lastActiveOwner: true, ownerEssentialAccess: true, assignmentsLimitedToOwnerBranches: true, permissionVersionInvalidation: true } };
 }
 
@@ -685,7 +1031,8 @@ ownerConsoleRouter.post("/administration/users", requirePermissions(WRITE), asyn
   const body = userWriteSchema.parse(req.body ?? {});
   const loginIdNormalized = body.loginId.trim().toLowerCase();
   const passwordHash = await bcrypt.hash(body.password || `Temp-${Date.now()}-${loginIdNormalized}`, 12);
-  const user = await UserModel.create({ salonId: req.context!.salonId, loginId: body.loginId, loginIdNormalized, email: body.email || undefined, name: body.name, passwordHash, role: body.role, roleDisplayName: body.role, staffId: body.role === "owner" ? undefined : `${loginIdNormalized}_staff`, branchId: body.branchIds[0], branchIds: body.branchIds, staffAppPermissions: ["read:appointments", "create:appointments", "update:appointments", "read:clients"], crmPermissions: ["read:appointments", "create:appointments", "update:appointments", "read:clients"], status: body.status, totpEnabled: false, webauthnCredentials: [], refreshTokens: [] });
+  const defaultUserPermissions = ["read:appointments", "create:appointments", "update:appointments", "read:clients", "create:clients", "update:clients"];
+  const user = await UserModel.create({ salonId: req.context!.salonId, loginId: body.loginId, loginIdNormalized, email: body.email || undefined, name: body.name, passwordHash, role: body.role, roleDisplayName: body.role, staffId: body.role === "owner" ? undefined : `${loginIdNormalized}_staff`, branchId: body.branchIds[0], branchIds: body.branchIds, staffAppPermissions: defaultUserPermissions, crmPermissions: defaultUserPermissions, status: body.status, totpEnabled: false, webauthnCredentials: [], refreshTokens: [] });
   await audit(req, "user.create", "user", String(user._id), { role: body.role });
   ok(res, { user: userDto(user), access: await accessResponse(req.context!.salonId) }, 201);
 }));
@@ -726,4 +1073,192 @@ ownerConsoleRouter.put("/administration/settings", requirePermissions(WRITE), as
   const doc = await OwnerSettingsModel.findOneAndUpdate({ salonId: req.context!.salonId, branchId }, { $set: { settings, lastChangedBy: req.context!.userId } }, { upsert: true, new: true, setDefaultsOnInsert: true });
   await audit(req, "settings.update", "settings", branchId || "tenant");
   ok(res, settingsResponse(branchId, doc.settings, doc.lastChangedBy, doc.updatedAt?.toISOString()));
+}));
+
+const botSettingsSchema = z.object({
+  personality: z.enum(["friendly", "luxury", "quick", "hinglish"]).optional(),
+  address: z.string().trim().max(500).optional(),
+  contact: z.string().trim().max(80).optional(),
+  instagram: z.string().trim().max(160).optional(),
+  parking: z.string().trim().max(300).optional(),
+  paymentModes: z.array(z.string().trim().max(40)).max(12).optional(),
+  customAnswers: z.array(z.object({ question: z.string().trim().min(1).max(180), answer: z.string().trim().min(1).max(1000), keywords: z.array(z.string().trim().max(40)).max(20).optional(), enabled: z.boolean().optional() })).max(50).optional(),
+  features: z.object({ upsells: z.boolean().optional(), hinglishReplies: z.boolean().optional(), groupBooking: z.boolean().optional(), abandonedRecovery: z.boolean().optional(), reviewPrompts: z.boolean().optional() }).partial().optional()
+}).partial();
+
+ownerConsoleRouter.get("/whatsapp/intelligence", requirePermissions(READ), asyncHandler(async (req, res) => {
+  const salonId = req.context!.salonId;
+  const since = new Date(Date.now() - Math.max(1, Math.min(Number(req.query.days || 30), 365)) * 24 * 60 * 60_000);
+  const [outbound, inbound, sessions, customers, templates, waitlist] = await Promise.all([
+    WhatsAppOutboundModel.find({ salonId, createdAt: { $gte: since } }).select("type status metadata createdAt").lean(),
+    WhatsAppInboundModel.find({ salonId, receivedAt: { $gte: since } }).select("waPhone profileName text receivedAt").sort({ receivedAt: -1 }).lean(),
+    WhatsAppBookingSessionModel.find({ salonId }).select("state consecutiveFailures expiresAt serviceNames updatedAt").lean(),
+    CustomerModel.find({ salonId, tags: { $exists: true, $ne: [] } }).select("name normalizedPhone tags preferredStaffIds favoriteServiceIds visitCount lastBookedAt interactionStatus").sort({ updatedAt: -1 }).limit(100).lean(),
+    WhatsAppTemplateModel.find({ salonId }).select("name language status category lastSyncedAt").lean(),
+    WaitlistModel.find({ salonId, status: { $in: ["waiting", "offered"] } }).select("branchId staffId serviceNames date preferredTime customerPhone status notified opportunityExpiresAt createdAt").sort({ createdAt: -1 }).limit(100).lean()
+  ]);
+  const actionCounts: Record<string, number> = {};
+  const statusCounts: Record<string, number> = {};
+  for (const row of outbound) {
+    const action = String((row.metadata as { action?: unknown } | null)?.action || row.type || "unknown");
+    actionCounts[action] = (actionCounts[action] || 0) + 1;
+    statusCounts[row.status] = (statusCounts[row.status] || 0) + 1;
+  }
+  const topServices: Record<string, number> = {};
+  for (const row of inbound) {
+    for (const word of String(row.text || "").toLowerCase().match(/haircut|hair spa|hair colour|facial|beard|massage|wax|threading|manicure|pedicure/g) || []) topServices[word] = (topServices[word] || 0) + 1;
+  }
+  const required = WHATSAPP_TEMPLATE_NAMES.map((name) => ({ name, ready: templates.some((t) => t.name === name && /^approved$/i.test(t.status)), templates: templates.filter((t) => t.name === name) }));
+  const tagged = customers.map((c) => ({ id: String(c._id), name: c.name || c.normalizedPhone, phone: c.normalizedPhone, tags: c.tags || [], preferredStaffIds: c.preferredStaffIds || [], favoriteServiceIds: c.favoriteServiceIds || [], visitCount: c.visitCount || 0, lastBookedAt: iso(c.lastBookedAt), interactionStatus: c.interactionStatus }));
+  const segmentMap: Record<string, string[]> = { hot_leads: ["hot_lead", "walk_in_interest", "availability_shopper"], price_shoppers: ["price_shopper"], rebook_candidates: ["rebook_candidate", "whatsapp_booked"], service_recovery: ["service_recovery", "negative_feedback"], group_bookings: ["group_booking"] };
+  ok(res, {
+    analytics: { since: since.toISOString(), inboundCount: inbound.length, outboundCount: outbound.length, actionCounts, statusCounts, topServices: Object.entries(topServices).sort((a, b) => b[1] - a[1]).slice(0, 10).map(([name, count]) => ({ name, count })) },
+    health: { failedSends: outbound.filter((o) => o.status === "failed").length, stuckSessions: sessions.filter((s) => s.expiresAt < new Date() && s.state !== "menu").length, repeatedMisunderstandings: sessions.filter((s) => Number(s.consecutiveFailures || 0) >= 2).length },
+    templateReadiness: required,
+    waitlist: waitlist.map((w) => ({ id: String(w._id), branchId: w.branchId, staffId: w.staffId, serviceNames: w.serviceNames || [], date: w.date, preferredTime: w.preferredTime, customerPhone: w.customerPhone, status: w.status, notified: !!w.notified, opportunityExpiresAt: iso(w.opportunityExpiresAt), createdAt: iso(w.createdAt) })),
+    qualityQueue: inbound.filter((row) => /^\[(audio|image|document|video|unsupported)\]/i.test(row.text || "")).slice(0, 25).map((row) => ({ id: String(row._id), phone: row.waPhone, name: row.profileName || row.waPhone, text: row.text, receivedAt: iso(row.receivedAt), reason: "manual_review" })),
+    campaignSegments: Object.entries(segmentMap).map(([key, tags]) => ({ key, tags, count: tagged.filter((customer) => tags.some((tag) => customer.tags.includes(tag))).length })),
+    customers: tagged
+  });
+}));
+
+ownerConsoleRouter.get("/whatsapp/bot-settings", requirePermissions(READ), asyncHandler(async (req, res) => {
+  const branchId = typeof req.query.branchId === "string" ? req.query.branchId : "";
+  const doc = await OwnerSettingsModel.findOne({ salonId: req.context!.salonId, branchId }).lean();
+  ok(res, { branchId, settings: ((doc?.settings as { whatsappBot?: unknown } | undefined)?.whatsappBot || {}) });
+}));
+
+ownerConsoleRouter.put("/whatsapp/bot-settings", requirePermissions(WRITE), asyncHandler(async (req, res) => {
+  const branchId = typeof req.body?.branchId === "string" ? req.body.branchId : "";
+  const settings = botSettingsSchema.parse(req.body?.settings || {});
+  const doc = await OwnerSettingsModel.findOneAndUpdate({ salonId: req.context!.salonId, branchId }, { $set: { "settings.whatsappBot": settings, lastChangedBy: req.context!.userId } }, { upsert: true, new: true, setDefaultsOnInsert: true });
+  await audit(req, "whatsapp_bot_settings.update", "settings", branchId || "tenant");
+  ok(res, { branchId, settings: (doc.settings as { whatsappBot?: unknown }).whatsappBot || {} });
+}));
+
+ownerConsoleRouter.get("/promos", requirePermissions(PROMO_READ), asyncHandler(async (req, res) => {
+  ok(res, await listPromos(req.context!, {
+    kind: typeof req.query.kind === "string" ? (req.query.kind as "coupon" | "referral") : undefined,
+    status: typeof req.query.status === "string" ? req.query.status : undefined,
+    search: typeof req.query.search === "string" ? req.query.search : undefined,
+    branchId: typeof req.query.branchId === "string" ? req.query.branchId : "all",
+    page: Number(req.query.page ?? 1),
+    pageSize: Number(req.query.pageSize ?? 30)
+  }));
+}));
+
+ownerConsoleRouter.post("/promos", requirePermissions(PROMO_WRITE), asyncHandler(async (req, res) => {
+  ok(res, { promo: await createPromo(req.context!, req.body || {}) }, 201);
+}));
+
+ownerConsoleRouter.get("/promos/:id/redemptions", requirePermissions(PROMO_READ), asyncHandler(async (req, res) => {
+  ok(res, await promoRedemptions(req.context!, String(req.params.id), {
+    page: Number(req.query.page ?? 1),
+    pageSize: Number(req.query.pageSize ?? 30)
+  }));
+}));
+
+ownerConsoleRouter.patch("/promos/:id/status", requirePermissions(PROMO_WRITE), asyncHandler(async (req, res) => {
+  const status: "active" | "paused" = req.body?.status === "active" ? "active" : "paused";
+  ok(res, { promo: await setPromoStatus(req.context!, String(req.params.id), status), status });
+}));
+
+ownerConsoleRouter.post("/promos/redeem", requirePermissions({ any: ["admin:*", "update:clients", "create:appointments", "update:appointments", "read:billing"] }), asyncHandler(async (req, res) => {
+  ok(res, await redeemPromo(req.context!, {
+    code: req.body?.code,
+    customerId: req.body?.customerId,
+    customerPhone: req.body?.customerPhone,
+    valuePaise: Number(req.body?.valuePaise ?? 0),
+    branchId: req.body?.branchId,
+    appointmentId: req.body?.appointmentId,
+    invoiceId: req.body?.invoiceId
+  }));
+}));
+
+const giftCardSchema = z.object({ purchaserName: z.string().trim().max(160).default(""), recipientName: z.string().trim().max(160).default(""), recipientPhone: z.string().trim().max(32).default(""), initialValuePaise: z.coerce.number().int().min(1), expiresAt: z.string().datetime().optional() });
+ownerConsoleRouter.get("/commerce/gift-cards", requirePermissions(PROMO_READ), asyncHandler(async (req, res) => {
+  const status = typeof req.query.status === "string" && req.query.status ? req.query.status : undefined;
+  const filter: Record<string, unknown> = { salonId: req.context!.salonId, ...(status ? { status } : {}) };
+  const docs = await GiftCardModel.find(filter).sort({ createdAt: -1 }).limit(200).lean();
+  ok(res, { items: docs.map((d) => ({ id: String(d._id), code: d.code, purchaserName: d.purchaserName, recipientName: d.recipientName, recipientPhone: d.recipientPhone, initialValuePaise: d.initialValuePaise, balancePaise: d.balancePaise, expiresAt: d.expiresAt?.toISOString() || "", status: d.status, createdAt: d.createdAt?.toISOString() || "" })) });
+}));
+
+ownerConsoleRouter.post("/commerce/gift-cards", requirePermissions(PROMO_WRITE), asyncHandler(async (req, res) => {
+  const body = giftCardSchema.parse(req.body ?? {});
+  const code = `GC${Date.now().toString(36).toUpperCase()}${Math.random().toString(36).slice(2, 6).toUpperCase()}`;
+  const doc = await GiftCardModel.create({ salonId: req.context!.salonId, code, purchaserName: body.purchaserName, recipientName: body.recipientName, recipientPhone: body.recipientPhone, initialValuePaise: body.initialValuePaise, balancePaise: body.initialValuePaise, expiresAt: body.expiresAt ? new Date(body.expiresAt) : null, status: "active", createdByUserId: req.context!.userId });
+  await audit(req, "gift_card.create", "gift_card", String(doc._id), { code, initialValuePaise: body.initialValuePaise });
+  ok(res, { giftCard: { id: String(doc._id), code: doc.code, status: doc.status, balancePaise: doc.balancePaise } }, 201);
+}));
+
+ownerConsoleRouter.patch("/commerce/gift-cards/:id/status", requirePermissions(PROMO_WRITE), asyncHandler(async (req, res) => {
+  const body = z.object({ status: z.enum(["active", "redeemed", "expired", "void"]) }).parse(req.body ?? {});
+  const doc = await GiftCardModel.findOneAndUpdate({ _id: req.params.id, salonId: req.context!.salonId }, { $set: { status: body.status } }, { new: true });
+  if (!doc) throw ApiError.notFound("Gift card not found.");
+  await audit(req, "gift_card.status", "gift_card", String(doc._id), { status: body.status });
+  ok(res, { id: String(doc._id), status: doc.status });
+}));
+
+ownerConsoleRouter.post("/commerce/gift-cards/:id/redeem", requirePermissions({ any: ["admin:*", "read:billing", "update:clients"] }), asyncHandler(async (req, res) => {
+  const body = z.object({ amountPaise: z.coerce.number().int().min(1), reference: z.string().trim().max(120).default("") }).parse(req.body ?? {});
+  const doc = await GiftCardModel.findOne({ _id: req.params.id, salonId: req.context!.salonId, status: "active" });
+  if (!doc) throw ApiError.notFound("Active gift card not found.");
+  if (body.amountPaise > doc.balancePaise) throw ApiError.badRequest("Redemption exceeds gift card balance.");
+  doc.balancePaise -= body.amountPaise;
+  if (doc.balancePaise === 0) doc.status = "redeemed";
+  await doc.save();
+  await audit(req, "gift_card.redeem", "gift_card", String(doc._id), { amountPaise: body.amountPaise, reference: body.reference });
+  ok(res, { giftCard: { id: String(doc._id), code: doc.code, balancePaise: doc.balancePaise, status: doc.status } });
+}));
+
+const bundleSchema = z.object({ name: z.string().trim().min(1).max(160), description: z.string().trim().max(600).default(""), items: z.array(z.object({ serviceId: z.string().min(1), quantity: z.coerce.number().int().min(1).max(50).default(1) })).min(1), pricePaise: z.coerce.number().int().min(0), startsAt: z.string().datetime().optional(), expiresAt: z.string().datetime().optional(), status: z.enum(["active", "paused"]).default("active") });
+ownerConsoleRouter.get("/commerce/bundles", requirePermissions(PROMO_READ), asyncHandler(async (req, res) => {
+  const docs = await BundleDealModel.find({ salonId: req.context!.salonId }).sort({ createdAt: -1 }).limit(200).lean();
+  ok(res, { items: docs.map((d) => ({ id: String(d._id), name: d.name, description: d.description, items: d.items, pricePaise: d.pricePaise, startsAt: d.startsAt?.toISOString() || "", expiresAt: d.expiresAt?.toISOString() || "", status: d.status, createdAt: d.createdAt?.toISOString() || "" })) });
+}));
+
+ownerConsoleRouter.post("/commerce/bundles", requirePermissions(PROMO_WRITE), asyncHandler(async (req, res) => {
+  const body = bundleSchema.parse(req.body ?? {});
+  const doc = await BundleDealModel.create({ ...body, salonId: req.context!.salonId, startsAt: body.startsAt ? new Date(body.startsAt) : null, expiresAt: body.expiresAt ? new Date(body.expiresAt) : null, createdByUserId: req.context!.userId });
+  await audit(req, "bundle.create", "bundle", String(doc._id), { pricePaise: body.pricePaise });
+  ok(res, { bundle: { id: String(doc._id), name: doc.name, status: doc.status, pricePaise: doc.pricePaise } }, 201);
+}));
+
+ownerConsoleRouter.patch("/commerce/bundles/:id/status", requirePermissions(PROMO_WRITE), asyncHandler(async (req, res) => {
+  const body = z.object({ status: z.enum(["active", "paused"]) }).parse(req.body ?? {});
+  const doc = await BundleDealModel.findOneAndUpdate({ _id: req.params.id, salonId: req.context!.salonId }, { $set: { status: body.status } }, { new: true });
+  if (!doc) throw ApiError.notFound("Bundle not found.");
+  await audit(req, "bundle.status", "bundle", String(doc._id), { status: body.status });
+  ok(res, { id: String(doc._id), status: doc.status });
+}));
+
+const purchaseOrderSchema = z.object({ branchId: z.string().min(1), supplierName: z.string().trim().min(1).max(180), supplierPhone: z.string().trim().max(32).default(""), expectedAt: z.string().datetime().optional(), taxPaise: z.coerce.number().int().min(0).default(0), notes: z.string().trim().max(800).default(""), lines: z.array(z.object({ itemName: z.string().trim().min(1).max(180), sku: z.string().trim().max(80).default(""), quantity: z.coerce.number().int().min(1).max(10000), unitCostPaise: z.coerce.number().int().min(0) })).min(1) });
+ownerConsoleRouter.get("/operations/purchase-orders", requirePermissions(READ), asyncHandler(async (req, res) => {
+  const query = z.object({ branchId: z.string().default("all"), status: z.string().default("all") }).parse(req.query);
+  const allowed = resolveAuthorizedBranchIds(req.context!);
+  const filter: Record<string, unknown> = { salonId: req.context!.salonId, branchId: { $in: query.branchId === "all" ? allowed : [query.branchId] } };
+  if (query.branchId !== "all" && !allowed.includes(query.branchId)) throw ApiError.forbidden("You do not have access to this branch.");
+  if (query.status !== "all") filter.status = query.status;
+  const docs = await PurchaseOrderModel.find(filter).sort({ createdAt: -1 }).limit(200).lean();
+  ok(res, { items: docs.map((d) => ({ id: String(d._id), branchId: d.branchId, poNumber: d.poNumber, supplierName: d.supplierName, supplierPhone: d.supplierPhone, status: d.status, expectedAt: d.expectedAt?.toISOString() || "", lines: d.lines, subtotalPaise: d.subtotalPaise, taxPaise: d.taxPaise, totalPaise: d.totalPaise, notes: d.notes, createdAt: d.createdAt?.toISOString() || "" })) });
+}));
+
+ownerConsoleRouter.post("/operations/purchase-orders", requirePermissions(WRITE), asyncHandler(async (req, res) => {
+  const body = purchaseOrderSchema.parse(req.body ?? {});
+  await requireBranchAccess(req, body.branchId);
+  const lines = body.lines.map((line) => ({ ...line, totalPaise: line.quantity * line.unitCostPaise }));
+  const subtotalPaise = lines.reduce((sum, line) => sum + line.totalPaise, 0);
+  const poNumber = `${body.branchId}-${new Date().toISOString().slice(0, 10).replace(/-/g, "")}-${Date.now().toString(36).toUpperCase().slice(-5)}`;
+  const doc = await PurchaseOrderModel.create({ salonId: req.context!.salonId, branchId: body.branchId, poNumber, supplierName: body.supplierName, supplierPhone: body.supplierPhone, status: "draft", expectedAt: body.expectedAt ? new Date(body.expectedAt) : null, lines, subtotalPaise, taxPaise: body.taxPaise, totalPaise: subtotalPaise + body.taxPaise, notes: body.notes, createdByUserId: req.context!.userId });
+  await audit(req, "purchase_order.create", "purchase_order", String(doc._id), { poNumber });
+  ok(res, { purchaseOrder: { id: String(doc._id), poNumber: doc.poNumber, status: doc.status, totalPaise: doc.totalPaise } }, 201);
+}));
+
+ownerConsoleRouter.patch("/operations/purchase-orders/:id/status", requirePermissions(WRITE), asyncHandler(async (req, res) => {
+  const body = z.object({ status: z.enum(["draft", "sent", "received", "cancelled"]) }).parse(req.body ?? {});
+  const allowed = resolveAuthorizedBranchIds(req.context!);
+  const doc = await PurchaseOrderModel.findOneAndUpdate({ _id: req.params.id, salonId: req.context!.salonId, branchId: { $in: allowed } }, { $set: { status: body.status } }, { new: true });
+  if (!doc) throw ApiError.notFound("Purchase order not found.");
+  await audit(req, "purchase_order.status", "purchase_order", String(doc._id), { status: body.status });
+  ok(res, { id: String(doc._id), status: doc.status });
 }));

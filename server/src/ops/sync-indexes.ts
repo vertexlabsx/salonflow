@@ -26,6 +26,7 @@ import { TargetModel } from "../models/target.model";
 import { TaskModel } from "../models/task.model";
 import { UserModel } from "../models/user.model";
 import { WhatsAppBookingSessionModel } from "../models/whatsapp-booking-session.model";
+import { WaitlistModel } from "../models/waitlist.model";
 import { WhatsAppConnectionModel } from "../models/whatsapp-connection.model";
 import { WhatsAppInboundModel } from "../models/whatsapp-inbound.model";
 import { WhatsAppOutboundModel } from "../models/whatsapp-outbound.model";
@@ -60,6 +61,7 @@ const models = [
   TargetModel,
   TaskModel,
   UserModel,
+  WaitlistModel,
   WhatsAppBookingSessionModel,
   WhatsAppConnectionModel,
   WhatsAppInboundModel,

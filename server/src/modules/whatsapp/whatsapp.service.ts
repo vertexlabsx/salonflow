@@ -7,6 +7,16 @@ import { decryptSecret } from "../../shared/secret-box";
 
 export const WHATSAPP_MAX_RETRIES = 5;
 
+const MARKETING_TYPES = new Set(["reminder", "birthday", "loyalty", "feedback", "rebooking"]);
+
+/** Appends a compliance opt-out footer to marketing-type outbound message bodies. */
+export function withOptOutFooter(type: string, body: string): string {
+  if (!MARKETING_TYPES.has(type)) return body;
+  const footer = "\n\nReply STOP to opt out.";
+  if (body.includes("Reply STOP to opt out")) return body;
+  return `${body}${footer}`;
+}
+
 async function attemptMetaSend(row: Pick<WhatsAppOutbound, "salonId" | "toPhone" | "type" | "body" | "interactive" | "templatePayload">): Promise<{ providerMessageId: string }> {
   const env = loadEnv();
   let token = env.META_WHATSAPP_TOKEN || "";
@@ -38,7 +48,7 @@ export async function sendWhatsAppMessage(input: {
   salonId: string;
   appointmentId?: string | null;
   toPhone: string;
-  type: "confirmation" | "reminder" | "cancellation" | "reschedule" | "utility";
+  type: "confirmation" | "reminder" | "cancellation" | "reschedule" | "utility" | "deposit" | "payment_failed" | "feedback" | "birthday" | "rebooking" | "loyalty" | "no_show" | "waitlist" | "abandoned";
   body: string;
   interactive?: Record<string, unknown> | null;
   metadata?: Record<string, unknown> | null;
@@ -46,7 +56,7 @@ export async function sendWhatsAppMessage(input: {
   const env = loadEnv();
   const provider = env.WHATSAPP_PROVIDER;
 
-  if (input.type === "reminder") {
+  if (input.type === "reminder" || input.type === "birthday" || input.type === "loyalty" || input.type === "feedback" || input.type === "rebooking") {
     const customer = await CustomerModel.findOne({ salonId: input.salonId, normalizedPhone: input.toPhone }, { marketingOptOut: 1 });
     if (customer?.marketingOptOut) {
       await WhatsAppOutboundModel.create({ ...input, appointmentId: input.appointmentId || null, provider, status: "failed", error: "recipient_opted_out", lastAttemptAt: new Date() });
@@ -55,7 +65,7 @@ export async function sendWhatsAppMessage(input: {
     }
   }
 
-  const row = await WhatsAppOutboundModel.create({ ...input, interactive: input.interactive || null, metadata: input.metadata || null, appointmentId: input.appointmentId || null, provider, status: "queued", lastAttemptAt: new Date() });
+  const row = await WhatsAppOutboundModel.create({ ...input, body: withOptOutFooter(input.type, input.body), interactive: input.interactive || null, metadata: input.metadata || null, appointmentId: input.appointmentId || null, provider, status: "queued", lastAttemptAt: new Date() });
 
   if (provider === "mock") {
     row.status = "sent";

@@ -80,10 +80,11 @@ type ClientMode = "view" | "edit" | "create";
           <article [class.warning]="data.client.outstandingPaise > 0"><span>Outstanding</span><strong>{{data.client.outstandingPaise|paiseInr}}</strong><small>{{ data.client.outstandingPaise > 0 ? 'Needs follow-up' : 'Clear balance' }}</small></article>
           <article><span>Last visit</span><strong>{{data.client.lastVisitAt?date(data.client.lastVisitAt):'Never'}}</strong><small>{{data.membership?.planName||'No membership'}}</small></article>
         </section>
-        <section class="client-quick-actions" aria-label="Client quick actions"><a [href]="phoneLink(data.client.phone)">Call</a><a [href]="whatsappLink(data.client.phone)" target="_blank" rel="noreferrer">WhatsApp</a><a [href]="emailLink(data.client.email)">Email</a></section>
+        <section class="client-quick-actions" aria-label="Client quick actions"><a [href]="phoneLink(data.client.phone)">Call</a><a [href]="whatsappLink(data.client.phone)" target="_blank" rel="noreferrer">WhatsApp</a><a [href]="emailLink(data.client.email)">Email</a><button type="button" (click)="sendReview(data.client.id)">Review link</button></section>
         <section class="ops-detail-section"><h3>Relationship</h3><dl class="ops-detail-grid"><div><dt>Wallet</dt><dd>{{data.client.walletBalancePaise|paiseInr}}</dd></div><div><dt>Rewards</dt><dd>{{data.client.loyaltyPoints}} points</dd></div><div><dt>Membership</dt><dd>{{data.membership?.planName||'None recorded'}}</dd></div><div><dt>Package</dt><dd>{{data.client.packageName || 'None'}} · {{data.client.packageCreditsRemaining || 0}} credits</dd></div><div><dt>Subscription</dt><dd>{{data.client.subscriptionName || 'None'}} · {{data.client.subscriptionStatus || 'inactive'}}</dd></div><div><dt>Status</dt><dd>{{data.client.status}}</dd></div></dl></section>
         <section class="ops-detail-section"><h3>Profile</h3><dl class="ops-detail-grid"><div><dt>Gender</dt><dd>{{data.client.gender || 'Not set'}}</dd></div><div><dt>Birthday</dt><dd>{{data.client.birthday ? date(data.client.birthday) : 'Not set'}}</dd></div><div><dt>Anniversary</dt><dd>{{data.client.anniversary ? date(data.client.anniversary) : 'Not set'}}</dd></div><div><dt>Address</dt><dd>{{data.client.address || 'Not set'}}</dd></div></dl></section>
         @if(data.client.notes){<section class="ops-detail-section"><h3>Notes</h3><p>{{data.client.notes}}</p></section>}
+        <section class="ops-detail-section"><h3>Before / after photos</h3><form class="photo-form" (ngSubmit)="addPhoto(data.client.id)"><input name="beforeUrl" [(ngModel)]="photo.beforeUrl" placeholder="Before photo URL"><input name="afterUrl" [(ngModel)]="photo.afterUrl" placeholder="After photo URL"><input name="caption" [(ngModel)]="photo.caption" placeholder="Caption"><button class="ops-button" type="submit" [disabled]="saving()">Add photos</button></form><div class="photo-grid">@for(photo of data.photos;track photo.id){<article><div>@if(photo.beforeUrl){<img [src]="photo.beforeUrl" alt="Before photo">}@if(photo.afterUrl){<img [src]="photo.afterUrl" alt="After photo">}</div><strong>{{photo.caption||'Photo record'}}</strong><small>{{dateTime(photo.createdAt)}} · {{photo.branchName}}</small><button class="ops-button" type="button" (click)="deletePhoto(data.client.id, photo.id)">Delete</button></article>}@empty{<p>No photo records yet.</p>}</div></section>
         <section class="ops-detail-section"><h3>Appointments</h3><div class="client-timeline">@for(item of data.appointments;track item.id){<article><time>{{dateTime(item.startAt)}}</time><strong>{{item.notes || 'Service visit'}}</strong><p>{{item.staffName || 'Unassigned'}} · {{item.branchName}}</p><span>{{item.status}}</span></article>}@empty{<p>No saved appointments in the accessible branch scope.</p>}</div></section>
         <section class="ops-detail-section"><h3>Purchases</h3><div class="client-timeline">@for(item of data.purchases;track item.id){<article><time>{{dateTime(item.createdAt)}}</time><strong>{{item.invoiceNumber||'Sale'}} · {{item.totalPaise|paiseInr}}</strong><p>{{item.branchName}} · Balance {{item.balancePaise|paiseInr}}</p><span>{{item.status}}</span></article>}@empty{<p>No saved purchases in the accessible branch scope.</p>}</div></section>
       }
@@ -125,11 +126,12 @@ type ClientMode = "view" | "edit" | "create";
     .client-avatar{display:grid;place-items:center;width:68px;height:68px;border:1px solid color-mix(in srgb,var(--owner-accent) 40%,var(--owner-line));border-radius:20px;background:linear-gradient(145deg,var(--owner-accent),var(--owner-accent-strong));color:#fff;font-family:Georgia,serif;font-size:1.28rem;font-weight:600;letter-spacing:.02em;box-shadow:0 14px 30px color-mix(in srgb,var(--owner-accent) 24%,transparent)}
     .client-hero-copy{display:grid;min-width:0;gap:3px}.client-hero-copy span{color:var(--owner-accent-strong);font-size:.57rem;font-weight:850;letter-spacing:.11em;text-transform:uppercase}.client-hero-copy strong{overflow:hidden;color:var(--owner-text);font-family:Georgia,serif;font-size:1.55rem;font-weight:500;letter-spacing:-.03em;text-overflow:ellipsis;white-space:nowrap}.client-hero-copy p{margin:0;color:var(--owner-muted);font-size:.64rem}
     .client-signal-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:9px;margin-top:12px}.client-signal-grid article{display:grid;gap:5px;min-height:104px;border:1px solid var(--owner-line);border-radius:16px;padding:13px;background:var(--owner-panel)}.client-signal-grid article.warning{border-color:color-mix(in srgb,var(--owner-warning) 38%,var(--owner-line));background:color-mix(in srgb,var(--owner-warning) 9%,var(--owner-panel))}.client-signal-grid span{color:var(--owner-faint);font-size:.54rem;font-weight:850;letter-spacing:.08em;text-transform:uppercase}.client-signal-grid strong{color:var(--owner-text);font-family:Inter,system-ui,sans-serif;font-size:1.05rem;font-weight:800;letter-spacing:-.03em}.client-signal-grid small{color:var(--owner-muted);font-size:.56rem;line-height:1.35}
-    .client-quick-actions{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:10px}.client-quick-actions a{display:grid;place-items:center;min-height:42px;border:1px solid var(--owner-line);border-radius:13px;background:var(--owner-panel);color:var(--owner-accent-strong);font-size:.62rem;font-weight:850;text-decoration:none}.client-quick-actions a:hover{border-color:var(--owner-accent);background:var(--owner-accent-soft)}
+    .client-quick-actions{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-top:10px}.client-quick-actions a,.client-quick-actions button{display:grid;place-items:center;min-height:42px;border:1px solid var(--owner-line);border-radius:13px;background:var(--owner-panel);color:var(--owner-accent-strong);font-size:.62rem;font-weight:850;text-decoration:none}.client-quick-actions a:hover,.client-quick-actions button:hover{border-color:var(--owner-accent);background:var(--owner-accent-soft)}
+    .photo-form{display:grid;grid-template-columns:1fr 1fr;gap:8px}.photo-form input{min-height:42px;border:1px solid var(--owner-line);border-radius:12px;background:var(--owner-panel);color:var(--owner-text);padding:0 10px}.photo-form button{grid-column:1/-1}.photo-grid{display:grid;gap:10px;margin-top:10px}.photo-grid article{border:1px solid var(--owner-line);border-radius:15px;padding:10px;background:var(--owner-panel);display:grid;gap:8px}.photo-grid article div{display:grid;grid-template-columns:1fr 1fr;gap:8px}.photo-grid img{width:100%;aspect-ratio:1.2;object-fit:cover;border-radius:12px;border:1px solid var(--owner-line)}
     .client-tag-row{display:flex;flex-wrap:wrap;gap:6px;margin:10px 0}.client-tag-row span{border:1px solid var(--owner-line);border-radius:999px;padding:4px 8px;background:var(--owner-panel);color:var(--owner-muted);font-size:.55rem;font-weight:750}
     .client-timeline{display:grid;gap:9px}.client-timeline article{position:relative;display:grid;gap:4px;border:1px solid var(--owner-line);border-radius:15px;padding:12px 12px 12px 16px;background:linear-gradient(90deg,var(--owner-panel-2),var(--owner-panel))}.client-timeline article:before{content:"";position:absolute;left:0;top:13px;bottom:13px;width:3px;border-radius:999px;background:var(--owner-accent)}.client-timeline time{color:var(--owner-faint);font-size:.52rem;font-weight:800;letter-spacing:.06em;text-transform:uppercase}.client-timeline strong{color:var(--owner-text);font-size:.7rem}.client-timeline p{margin:0;color:var(--owner-muted);font-size:.6rem;line-height:1.4}.client-timeline span{justify-self:start;border:1px solid var(--owner-line);border-radius:999px;padding:3px 7px;color:var(--owner-muted);font-size:.5rem;font-weight:800;text-transform:capitalize}
     .client-form{display:grid;grid-template-columns:1fr 1fr;gap:12px}.client-form-intro{grid-column:1/-1;border:1px solid color-mix(in srgb,var(--owner-accent) 28%,var(--owner-line));border-radius:18px;padding:15px;background:linear-gradient(135deg,var(--owner-accent-soft),var(--owner-panel))}.client-form-intro span{color:var(--owner-accent-strong);font-size:.55rem;font-weight:850;letter-spacing:.1em;text-transform:uppercase}.client-form-intro strong{display:block;margin-top:5px;font-family:Georgia,serif;font-size:1.25rem;font-weight:500}.client-form-intro p{margin:5px 0 0;color:var(--owner-muted);font-size:.62rem;line-height:1.45}.client-form textarea{min-height:110px;padding:12px;resize:vertical}.client-form-wide,.client-form-actions{grid-column:1/-1}.client-form-actions{display:flex;justify-content:flex-end;gap:9px;position:sticky;bottom:-90px;margin-top:4px;border-top:1px solid var(--owner-line);padding-top:12px;background:var(--owner-panel)}
-    @media(max-width:600px){.client-360-hero{grid-template-columns:54px minmax(0,1fr);padding:14px}.client-360-hero .ops-button{grid-column:1/-1}.client-avatar{width:54px;height:54px;border-radius:16px;font-size:1rem}.client-signal-grid{grid-template-columns:1fr}.client-form{grid-template-columns:1fr}.client-form-actions{bottom:-90px}}
+    @media(max-width:600px){.client-360-hero{grid-template-columns:54px minmax(0,1fr);padding:14px}.client-360-hero .ops-button{grid-column:1/-1}.client-avatar{width:54px;height:54px;border-radius:16px;font-size:1rem}.client-signal-grid{grid-template-columns:1fr}.client-quick-actions,.photo-form{grid-template-columns:1fr 1fr}.client-form{grid-template-columns:1fr}.client-form-actions{bottom:-90px}}
   `]
 })
 export class OwnerClientsPage implements OnDestroy {
@@ -157,6 +159,7 @@ export class OwnerClientsPage implements OnDestroy {
   readonly drawerTitle = computed(() => this.mode() === "create" ? "Create client" : this.detail()?.client.name || this.selected()?.name || "Client profile");
 
 form = emptyClientForm();
+  photo = { beforeUrl: "", afterUrl: "", caption: "" };
   private requestId = 0;
   private detailRequestId = 0;
   private timer?: ReturnType<typeof setTimeout>;
@@ -253,6 +256,35 @@ form = emptyClientForm();
         await this.load();
       }
     } catch (error) { this.formError.set(error instanceof Error ? error.message : "Client could not be saved. Try again."); }
+    finally { this.saving.set(false); }
+  }
+
+  async sendReview(clientId: string) {
+    const reviewUrl = prompt("Paste your Google review link or public review URL");
+    if (!reviewUrl) return;
+    this.saving.set(true); this.formError.set("");
+    try { await this.owner.sendOwnerReviewRequest(clientId, { reviewUrl }); }
+    catch { this.formError.set("Review request could not be sent."); }
+    finally { this.saving.set(false); }
+  }
+
+  async addPhoto(clientId: string) {
+    const detail = this.detail();
+    const branchId = this.context.selectedBranchId() || detail?.client.branchId || "";
+    if (!branchId || (!this.photo.beforeUrl.trim() && !this.photo.afterUrl.trim())) { this.formError.set("Add a before or after photo URL."); return; }
+    this.saving.set(true); this.formError.set("");
+    try {
+      await this.owner.createOwnerClientPhoto(clientId, { branchId, beforeUrl: this.photo.beforeUrl.trim(), afterUrl: this.photo.afterUrl.trim(), caption: this.photo.caption.trim() });
+      this.photo = { beforeUrl: "", afterUrl: "", caption: "" };
+      const selected = this.selected(); if (selected) await this.open(selected, { currentTarget: this.trigger || document.body } as unknown as Event);
+    } catch { this.formError.set("Photo record could not be saved."); }
+    finally { this.saving.set(false); }
+  }
+
+  async deletePhoto(clientId: string, photoId: string) {
+    this.saving.set(true); this.formError.set("");
+    try { await this.owner.deleteOwnerClientPhoto(clientId, photoId); const selected = this.selected(); if (selected) await this.open(selected, { currentTarget: this.trigger || document.body } as unknown as Event); }
+    catch { this.formError.set("Photo record could not be deleted."); }
     finally { this.saving.set(false); }
   }
 

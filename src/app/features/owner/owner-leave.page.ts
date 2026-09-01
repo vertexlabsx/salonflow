@@ -193,7 +193,7 @@ import { OwnerLeave, OwnerLeaveDetail, OwnerPageInfo } from "./owner-people.mode
               <label
                 >Decision note<textarea
                   [(ngModel)]="reason"
-                  placeholder="Required for rejection"
+                  placeholder="Optional for approval, required for rejection"
                 ></textarea>
               </label>
             }
@@ -348,7 +348,7 @@ export class OwnerLeavePage implements OnDestroy {
     try {
       await this.api.decideOwnerLeave(row.id, d, {
         version: row.version,
-        reason: d === "reject" ? this.reason : undefined,
+        reason: this.reason.trim() || undefined,
       });
       this.message.set(`Leave ${d === "approve" ? "approved" : "rejected"}.`);
       this.isError.set(false);

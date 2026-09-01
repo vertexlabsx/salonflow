@@ -187,6 +187,7 @@ export interface OwnerAppointmentWritePayload {
   status?: string;
   source?: string;
   version?: number;
+  recurrence?: { frequency: "none" | "weekly" | "monthly"; interval: number; count: number; until?: string };
 }
 
 export interface OwnerAppointmentReschedulePayload {
@@ -220,6 +221,10 @@ export interface OwnerAppointmentFormValue {
   notes: string;
   status: string;
   source: string;
+  recurrenceFrequency: "none" | "weekly" | "monthly";
+  recurrenceInterval: number;
+  recurrenceCount: number;
+  recurrenceUntil: string;
 }
 
 export interface OwnerAppointmentRescheduleFormValue {

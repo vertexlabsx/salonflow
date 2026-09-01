@@ -33,7 +33,13 @@ export interface Appointment {
   version: number;
   whatsappConfirmationSentAt?: Date | null;
   whatsappReminderSentAt?: Date | null;
+  whatsappShortReminderSentAt?: Date | null;
   reminderOptIn?: boolean;
+  reminderPreference?: "both" | "day_before" | "short" | "none";
+  paymentHoldReminderSentAt?: Date | null;
+  feedbackRating?: number | null;
+  feedbackComment?: string;
+  feedbackReceivedAt?: Date | null;
   createdAt?: Date;
   updatedAt?: Date;
 }
@@ -68,7 +74,13 @@ const appointmentSchema = new Schema<Appointment>(
     version: { type: Number, default: 1 },
     whatsappConfirmationSentAt: { type: Date, default: null },
     whatsappReminderSentAt: { type: Date, default: null },
-    reminderOptIn: { type: Boolean, default: false }
+    whatsappShortReminderSentAt: { type: Date, default: null },
+    reminderOptIn: { type: Boolean, default: false },
+    reminderPreference: { type: String, enum: ["both", "day_before", "short", "none"], default: "both" },
+    paymentHoldReminderSentAt: { type: Date, default: null },
+    feedbackRating: { type: Number, min: 1, max: 5, default: null },
+    feedbackComment: { type: String, maxlength: 1000, default: "" },
+    feedbackReceivedAt: { type: Date, default: null }
   },
   { timestamps: true, minimize: false }
 );

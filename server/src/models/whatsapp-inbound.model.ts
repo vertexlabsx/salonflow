@@ -27,6 +27,7 @@ const whatsAppInboundSchema = new Schema<WhatsAppInbound>(
 );
 
 whatsAppInboundSchema.index({ salonId: 1, messageId: 1 }, { unique: true });
+whatsAppInboundSchema.index({ salonId: 1, waPhone: 1, receivedAt: -1 });
 
 export const WhatsAppInboundModel: Model<WhatsAppInbound> =
   (mongoose.models.WhatsAppInbound as Model<WhatsAppInbound>) ||

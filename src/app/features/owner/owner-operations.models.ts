@@ -10,8 +10,9 @@ export interface OwnerClient {
 }
 export interface OwnerClientAppointment { id: string; branchId: string; branchName: string; startAt: string; endAt: string; status: string; serviceIds: string[]; notes: string; staffId?: string; staffName?: string; spendPaise?: number; createdAt: string; }
 export interface OwnerClientPurchase { id: string; branchId: string; branchName: string; items: unknown[]; totalPaise: number; paidPaise: number; balancePaise: number; status: string; createdAt: string; invoiceId: string; invoiceNumber: string; }
+export interface OwnerClientPhoto { id: string; branchId: string; branchName: string; appointmentId: string; beforeUrl: string; afterUrl: string; caption: string; serviceNames: string[]; createdAt: string; }
 export interface OwnerClientMembership { id: string; planName: string; planCredits: number; creditsRemaining: number; validityDate: string; status: string; branchId: string; }
-export interface OwnerClientDetail { client: OwnerClient & { gender: string; birthday: string; anniversary: string; tags: string[]; notes: string; address?: string }; appointments: OwnerClientAppointment[]; purchases: OwnerClientPurchase[]; membership: OwnerClientMembership | null; metadata: OwnerOperationsMetadata & { branchRelationship: string[] }; }
+export interface OwnerClientDetail { client: OwnerClient & { gender: string; birthday: string; anniversary: string; tags: string[]; notes: string; address?: string }; appointments: OwnerClientAppointment[]; purchases: OwnerClientPurchase[]; photos: OwnerClientPhoto[]; membership: OwnerClientMembership | null; metadata: OwnerOperationsMetadata & { branchRelationship: string[] }; }
 
 export interface OwnerInventoryProduct { id: string; name: string; sku: string; category: string; supplier: string; branchId: string; branchName: string; stock: number; lowStockThreshold: number; expiryDate: string; unitCostPaise: number; pricePaise: number; stockValuePaise: number; status: string; updatedAt: string; }
 export interface OwnerInventoryMetrics { products: number; lowStock: number; outOfStock: number; reorderCount: number; stockValuePaise: number; }

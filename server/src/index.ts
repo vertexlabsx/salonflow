@@ -6,6 +6,7 @@ import { createApp } from "./app";
 import { logger } from "./shared/logger";
 import { startShopifyAutomationScheduler } from "./jobs/shopify-automation";
 import { startWhatsAppReminderScheduler } from "./jobs/whatsapp-reminders";
+import { startWhatsAppNudgesScheduler } from "./jobs/whatsapp-nudges";
 import { ShopifyUserModel } from "./models/shopify-user.model";
 
 async function ensureShopifyUsers(): Promise<void> {
@@ -51,11 +52,13 @@ async function main(): Promise<void> {
   });
   const shopifyAutomationTimer = startShopifyAutomationScheduler();
   const reminderSchedulerTimer = startWhatsAppReminderScheduler();
+  const nudgeSchedulerTimer = startWhatsAppNudgesScheduler();
 
   const shutdown = (signal: string) => {
     logger.info(`${signal} received — shutting down`);
     clearInterval(shopifyAutomationTimer);
     clearInterval(reminderSchedulerTimer);
+    clearInterval(nudgeSchedulerTimer);
     server.close(() => {
       disconnectMongo()
         .catch((error) => logger.error("MongoDB disconnect failed", { error: String(error) }))

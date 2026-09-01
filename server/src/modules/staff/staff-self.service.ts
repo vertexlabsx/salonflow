@@ -9,6 +9,7 @@ import { ConversationModel } from "../../models/conversation.model";
 import { ConversationMessageModel } from "../../models/conversation-message.model";
 import { UserModel } from "../../models/user.model";
 import { withTransaction } from "../../config/mongo";
+import { publishRealtimeEvent } from "../../modules/realtime/realtime.service";
 import { requireContext } from "../../middleware/tenant-context";
 import { loadEnv } from "../../config/env";
 
@@ -400,4 +401,91 @@ export async function updateReceipts(context: Context, conversationId: string, m
     { _id: { $in: messageIds.filter((mid) => Types.ObjectId.isValid(mid)) }, conversationId: conversation._id },
     { $inc: { [field]: 1 } }
   );
+}
+
+/** Persists a team/private-owner conversation message and broadcasts it over realtime. */
+export async function sendConversationMessage(context: Context, conversationId: string, body: string): Promise<unknown> {
+  const conversation = await assertConversationVisible(context, conversationId);
+  const message = await withTransaction(async (session) => {
+    const [created] = await ConversationMessageModel.create(
+      [
+        {
+          salonId: context.salonId,
+          conversationId: conversation._id,
+          type: conversation.type,
+          senderUserId: context.userId,
+          senderName: context.user?.name || "",
+          body,
+          deliveredCount: 0,
+          readCount: 0
+        }
+      ],
+      { session }
+    );
+    await ConversationModel.updateOne({ _id: conversation._id }, { $set: { lastMessageAt: created.createdAt ?? new Date() } }, { session });
+    return created!;
+  });
+  const payload = {
+    id: String(message._id),
+    conversationId: String(message.conversationId),
+    type: message.type,
+    senderUserId: message.senderUserId,
+    senderName: message.senderName,
+    body: message.body,
+    createdAt: (message.createdAt ?? new Date()).toISOString(),
+    receipt: { deliveredCount: message.deliveredCount, readCount: message.readCount }
+  };
+  publishRealtimeEvent(context.salonId, "staff-self.chat_message", { message: payload });
+  return payload;
+}
+
+/** Server-side message search across every conversation visible to the caller. */
+export async function searchConversationMessages(context: Context, q: string, conversationId?: string): Promise<unknown> {
+  const term = q.trim();
+  if (!term) return { items: [], total: 0 };
+
+  const branchIds = context.branchIds.length ? context.branchIds : [context.branchId];
+  const visibleFilter: Record<string, unknown> = {
+    salonId: context.salonId,
+    branchId: { $in: branchIds },
+    $or: [{ type: "team" }, { type: "private-owner", participantUserIds: context.userId }]
+  };
+
+  let convFilter: Record<string, unknown> = {};
+  if (conversationId) {
+    const conversation = await assertConversationVisible(context, conversationId);
+    convFilter = { conversationId: conversation._id };
+  } else {
+    const visible = await ConversationModel.find(visibleFilter);
+    if (!visible.length) return { items: [], total: 0 };
+    convFilter = { conversationId: { $in: visible.map((c) => c._id) } };
+  }
+
+  const docs = await ConversationMessageModel.find(
+    { salonId: context.salonId, ...convFilter, $text: { $search: term } },
+    { score: { $meta: "textScore" } }
+  )
+    .sort({ score: { $meta: "textScore" } } as { [key: string]: { $meta: "textScore" } })
+    .limit(50);
+
+  const conversations = await ConversationModel.find({
+    salonId: context.salonId,
+    _id: { $in: [...new Set(docs.map((d) => String(d.conversationId)))] }
+  });
+  const meta = new Map(conversations.map((c) => [String(c._id), { title: c.title, type: c.type, branchId: c.branchId }]));
+
+  return {
+    items: docs.map((doc) => ({
+      id: String(doc._id),
+      conversationId: String(doc.conversationId),
+      conversationTitle: meta.get(String(doc.conversationId))?.title || "Conversation",
+      conversationType: meta.get(String(doc.conversationId))?.type || "team",
+      branchId: meta.get(String(doc.conversationId))?.branchId || context.branchId,
+      senderUserId: doc.senderUserId,
+      senderName: doc.senderName,
+      body: doc.body,
+      createdAt: (doc.createdAt ?? new Date()).toISOString()
+    })),
+    total: docs.length
+  };
 }

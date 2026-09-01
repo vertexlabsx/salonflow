@@ -10,6 +10,10 @@ export interface Leave {
   reason: string;
   status: string;
   days: number;
+  version: number;
+  decisionNote: string;
+  decidedBy: string;
+  decidedAt?: Date;
   createdAt?: Date;
   updatedAt?: Date;
 }
@@ -23,7 +27,11 @@ const leaveSchema = new Schema<Leave>(
     endDate: { type: String, required: true },
     reason: { type: String, maxlength: 500, default: "" },
     status: { type: String, enum: ["pending", "approved", "rejected"], default: "pending" },
-    days: { type: Number, required: true, min: 0 }
+    days: { type: Number, required: true, min: 0 },
+    version: { type: Number, default: 1 },
+    decisionNote: { type: String, maxlength: 500, default: "" },
+    decidedBy: { type: String, maxlength: 160, default: "" },
+    decidedAt: { type: Date, default: null }
   },
   { timestamps: true }
 );

@@ -1,0 +1,47 @@
+.gst-page { display: grid; gap: 18px; padding-bottom: max(24px, env(safe-area-inset-bottom)); }
+.gst-summary { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; }
+.gst-summary article, .gst-card { border: 1px solid var(--owner-border); background: var(--owner-surface); border-radius: 22px; box-shadow: var(--owner-shadow); }
+.gst-summary article { padding: 16px; display: grid; gap: 8px; }
+.gst-summary span, .gst-card header p, .expense-list small, .expense-list aside span { color: var(--owner-muted); font-size: .82rem; }
+.gst-summary strong { font-size: clamp(1.25rem, 4vw, 2rem); }
+.gst-summary .payable { background: linear-gradient(135deg, rgba(31, 103, 224, .12), rgba(16, 185, 129, .12)); }
+.gst-card { padding: 16px; display: grid; gap: 14px; min-width: 0; }
+.gst-card header { display: flex; justify-content: space-between; gap: 12px; align-items: start; }
+.gst-card header h2 { margin: 2px 0 0; font-size: 1.05rem; }
+.gst-card header select { min-height: 44px; border-radius: 14px; border: 1px solid var(--owner-border); background: var(--owner-bg); color: var(--owner-text); padding: 0 12px; }
+.gst-split { display: flex; flex-wrap: wrap; gap: 8px; }
+.gst-split span { min-height: 38px; display: inline-flex; align-items: center; padding: 0 12px; border-radius: 999px; background: var(--owner-bg); border: 1px solid var(--owner-border); }
+.gst-grid { display: grid; grid-template-columns: minmax(0, .9fr) minmax(0, 1.1fr); gap: 16px; align-items: start; }
+.expense-form { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.expense-form label { display: grid; gap: 6px; font-size: .82rem; color: var(--owner-muted); }
+.expense-form label.wide { grid-column: 1 / -1; }
+.expense-form input, .expense-form select, .expense-form textarea { width: 100%; min-height: 44px; border-radius: 14px; border: 1px solid var(--owner-border); background: var(--owner-bg); color: var(--owner-text); padding: 10px 12px; font: inherit; }
+.expense-form textarea { resize: vertical; }
+.sticky-actions { display: flex; gap: 10px; justify-content: flex-end; flex-wrap: wrap; }
+.sticky-actions button, .expense-list button { min-height: 44px; border: 0; border-radius: 14px; background: var(--owner-accent); color: #fff; padding: 0 14px; font-weight: 700; }
+.sticky-actions .ghost, .expense-list button { background: var(--owner-bg); color: var(--owner-text); border: 1px solid var(--owner-border); }
+.expense-list { display: grid; gap: 10px; }
+.expense-list article { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 12px; padding: 12px; border: 1px solid var(--owner-border); border-radius: 18px; background: var(--owner-bg); }
+.expense-list article > div { display: grid; gap: 4px; min-width: 0; }
+.expense-list article strong, .expense-list article small { overflow-wrap: anywhere; }
+.expense-list aside { display: grid; gap: 6px; justify-items: end; }
+.expense-list .danger { border-color: rgba(220, 38, 38, .25); color: #b91c1c; }
+.responsive-table.small { overflow-x: auto; }
+.responsive-table.small table { width: 100%; border-collapse: collapse; }
+.responsive-table.small th, .responsive-table.small td { text-align: left; padding: 10px; border-bottom: 1px solid var(--owner-border); }
+.empty-state { margin: 0; color: var(--owner-muted); }
+
+@media (max-width: 860px) {
+  .gst-grid { grid-template-columns: 1fr; }
+}
+
+@media (max-width: 560px) {
+  .gst-page { gap: 14px; }
+  .gst-summary { grid-template-columns: 1fr 1fr; gap: 10px; }
+  .gst-card { border-radius: 18px; padding: 14px; }
+  .gst-card header, .expense-list article { grid-template-columns: 1fr; }
+  .expense-form { grid-template-columns: 1fr; }
+  .sticky-actions { position: sticky; bottom: 0; background: var(--owner-surface); padding-top: 8px; }
+  .sticky-actions button { flex: 1; }
+  .expense-list aside { justify-items: stretch; }
+}

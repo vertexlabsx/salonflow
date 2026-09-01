@@ -21,15 +21,17 @@ import { shopifyAutomationRouter, shopifyWebhookRouter } from "./modules/shopify
 import { shopifyProductAuthRouter } from "./modules/shopify-product/shopify-product-auth.routes";
 import { shopifyProductAdminRouter } from "./modules/shopify-product/shopify-product-admin.routes";
 import { shopifyProductClientRouter } from "./modules/shopify-product/shopify-product-client.routes";
+import { selfBookingRouter } from "./modules/self-booking/self-booking.routes";
 import { ok } from "./shared/http";
 
-/** Mutating endpoints that cannot carry CSRF headers (native app refresh/logout, provider webhooks). */
+/** Mutating endpoints that cannot carry CSRF headers (native app refresh/logout, provider webhooks, public self-booking). */
 const CSRF_EXEMPT_PATHS = [
   /^\/auth\/refresh$/,
   /^\/auth\/logout$/,
   /^\/shopify-api\/auth(?:\/|$)/,
   /^\/whatsapp(?:\/|$)/,
-  /^\/shopify-automation\/webhooks(?:\/|$)/
+  /^\/shopify-automation\/webhooks(?:\/|$)/,
+  /^\/self-booking(?:\/|$)/
 ];
 
 function corsOptions() {
@@ -90,6 +92,7 @@ export function createApp(): Express {
   api.use("/shopify-api/auth", shopifyProductAuthRouter);
   api.use("/shopify-api/admin", shopifyProductAdminRouter);
   api.use("/shopify-api/client", shopifyProductClientRouter);
+  api.use("/self-booking", selfBookingRouter);
 
   app.use("/api/v1", api);
   app.use("/webhook", metaWebhookRouter);

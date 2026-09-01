@@ -12,6 +12,7 @@ import { loadEnv, setEnvForTesting } from "../src/config/env";
 import { createHmac } from "node:crypto";
 import { encryptSecret } from "../src/shared/secret-box";
 import { sendWhatsAppMessage } from "../src/modules/whatsapp/whatsapp.service";
+import { sendWhatsAppSimMessage } from "./helpers/whatsapp-simulator";
 
 let app: Express;
 
@@ -141,6 +142,37 @@ describe("multi-tenant WhatsApp onboarding", () => {
     }
     expect(await CustomerModel.findOne({ salonId: "tenant_b", normalizedPhone: "919999000000" })).toBeTruthy();
     expect(await CustomerModel.findOne({ salonId: TENANT, normalizedPhone: "919999000000" })).toBeFalsy();
+  });
+
+  it("simulates a no-AI customer flow through gate, menu, and FAQ", async () => {
+    setEnvForTesting({ ...loadEnv(), WHATSAPP_PROVIDER: "mock", META_APP_SECRET: "", META_WEBHOOK_APP_SECRET: "" });
+    const first = await sendWhatsAppSimMessage(app, { text: "hi", messageId: "wamid.sim.gate" });
+    expect(first.status).toBe(200);
+    expect(first.body.data.action).toBe("gate");
+    expect(first.body.data.reply).toContain("Book appointment");
+
+    const menu = await sendWhatsAppSimMessage(app, { text: "menu", messageId: "wamid.sim.menu" });
+    expect(menu.status).toBe(200);
+    expect(menu.body.data.action).toBe("menu");
+
+    const faq = await sendWhatsAppSimMessage(app, { text: "are you open tomorrow?", messageId: "wamid.sim.hours" });
+    expect(faq.status).toBe(200);
+    expect(faq.body.data.action).toBe("faq_day_hours");
+    expect(faq.body.data.reply).toContain("10:00 - 21:00");
+  });
+
+  it("simulates price-to-book context without AI", async () => {
+    setEnvForTesting({ ...loadEnv(), WHATSAPP_PROVIDER: "mock", META_APP_SECRET: "", META_WEBHOOK_APP_SECRET: "" });
+    const phone = "919999000001";
+    await sendWhatsAppSimMessage(app, { from: phone, text: "hi", messageId: "wamid.sim2.gate" });
+    await sendWhatsAppSimMessage(app, { from: phone, text: "menu", messageId: "wamid.sim2.menu" });
+    const price = await sendWhatsAppSimMessage(app, { from: phone, text: "hair ct price", messageId: "wamid.sim2.price" });
+    expect(price.status).toBe(200);
+    expect(price.body.data.action).toBe("needs_date");
+    expect(price.body.data.reply).toContain("Haircut");
+    const next = await sendWhatsAppSimMessage(app, { from: phone, text: "yes", messageId: "wamid.sim2.yes" });
+    expect(next.status).toBe(200);
+    expect(next.body.data.action).toBe("needs_date");
   });
 
   it("rejects invalid Meta webhook signatures when an app secret is configured", async () => {

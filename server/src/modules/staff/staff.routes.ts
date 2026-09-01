@@ -27,7 +27,9 @@ import {
   listShiftSwaps,
   myCalendar,
   respondShiftSwap,
+  searchConversationMessages,
   sendChatMessage,
+  sendConversationMessage,
   swapCoworkers,
   updateReceipts,
   updateSchedule,
@@ -226,12 +228,34 @@ staffSelfRouter.use(requireAuth);
 export const teamChatRouter = Router();
 teamChatRouter.use(requireAuth);
 teamChatRouter.get("/conversations", requirePermissions(READ_PERMISSION), asyncHandler(async (req, res) => ok(res, await conversations(req.context!))));
+teamChatRouter.get("/search", requirePermissions(READ_PERMISSION), asyncHandler(async (req, res) => {
+  const query = z.object({ q: z.string().trim().max(200).default("") }).parse(req.query ?? {});
+  ok(res, await searchConversationMessages(req.context!, query.q));
+}));
+teamChatRouter.get(
+  "/conversations/:conversationId/search",
+  requirePermissions(READ_PERMISSION),
+  asyncHandler(async (req, res) => {
+    const params = z.object({ conversationId: z.string().trim().min(1).max(80) }).parse(req.params);
+    const query = z.object({ q: z.string().trim().max(200).default("") }).parse(req.query ?? {});
+    ok(res, await searchConversationMessages(req.context!, query.q, params.conversationId));
+  })
+);
 teamChatRouter.get(
   "/conversations/:conversationId/messages",
   requirePermissions(READ_PERMISSION),
   asyncHandler(async (req, res) => {
     const params = z.object({ conversationId: z.string().trim().min(1).max(80) }).parse(req.params);
     ok(res, await conversationMessages(req.context!, params.conversationId));
+  })
+);
+teamChatRouter.post(
+  "/conversations/:conversationId/messages",
+  requirePermissions({ every: ["write:appointments"] }),
+  asyncHandler(async (req, res) => {
+    const params = z.object({ conversationId: z.string().trim().min(1).max(80) }).parse(req.params);
+    const body = z.object({ body: z.string().trim().min(1).max(4000) }).parse(req.body ?? {});
+    ok(res, await sendConversationMessage(req.context!, params.conversationId, body.body), 201);
   })
 );
 teamChatRouter.post(
@@ -544,6 +568,16 @@ staffSelfRouter.get(
   asyncHandler(async (req, res) => {
     const params = z.object({ conversationId: z.string().trim().min(1).max(80) }).parse(req.params);
     ok(res, await conversationMessages(req.context!, params.conversationId));
+  })
+);
+
+staffSelfRouter.post(
+  "/team-chat/conversations/:conversationId/messages",
+  requirePermissions({ every: ["write:appointments"] }),
+  asyncHandler(async (req, res) => {
+    const params = z.object({ conversationId: z.string().trim().min(1).max(80) }).parse(req.params);
+    const body = z.object({ body: z.string().trim().min(1).max(4000) }).parse(req.body ?? {});
+    ok(res, await sendConversationMessage(req.context!, params.conversationId, body.body), 201);
   })
 );
 

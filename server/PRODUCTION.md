@@ -43,7 +43,7 @@ Use **Fly.io** (`fly.toml` included, Mumbai region, ~$2–3/mo always-on shared 
    npm ci && npm run prod:check && npm run db:indexes
    npm run seed   # fresh database only
    ```
-6. **Workers:** no cron on Fly/Render — GitHub Actions covers it (`.github/workflows/scheduled-jobs.yml`). Add repo secrets `PROD_MONGODB_URI`, `PROD_JWT_ACCESS_SECRET`, `PROD_JWT_REFRESH_SECRET`, `PROD_CSRF_SECRET`; reminders + WhatsApp retry run every 5 minutes, retention cleanup nightly.
+6. **Workers:** run the scheduled jobs from your host scheduler, GitHub Actions, Render cron jobs, or systemd timers. Required jobs: reminders every 5 minutes, WhatsApp nudges every 10 minutes, WhatsApp retry every 10 minutes, and cleanup nightly.
 7. **WhatsApp:** launch with `WHATSAPP_PROVIDER=mock`. When Meta credentials arrive, set the four `META_*` variables and flip to `WHATSAPP_PROVIDER=meta` — no code changes; register `https://<api-host>/api/v1/whatsapp/webhook`.
 
 ### Go-live checklist
@@ -64,6 +64,7 @@ Use **Fly.io** (`fly.toml` included, Mumbai region, ~$2–3/mo always-on shared 
 Handled by `.github/workflows/scheduled-jobs.yml` in the MVP topology (the API hosts above have no cron). If you later move to a host with a shell, run these directly instead:
 
 - `npm run reminders` every 5 minutes
+- `npm run whatsapp:nudges` every 10 minutes (birthday, feedback, rebooking, loyalty, no-show, waitlist, abandoned booking, payment-failed recovery)
 - `npm run whatsapp:retry` every 10 minutes (re-sends failed/queued Meta messages, max 5 attempts)
 - `npm run cleanup` daily during low traffic
 

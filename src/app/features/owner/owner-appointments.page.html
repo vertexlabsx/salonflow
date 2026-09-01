@@ -7,6 +7,7 @@
     </div>
     <div class="header-actions">
       @if (!blockingError()) { <button type="button" class="secondary-button refresh-button" (click)="refresh()" [disabled]="loading()" [attr.aria-label]="backgroundRefreshing() ? 'Refreshing appointments' : 'Refresh appointments'"><span aria-hidden="true">↻</span><span class="action-label">{{ backgroundRefreshing() ? 'Refreshing…' : 'Refresh' }}</span></button> }
+      <button type="button" class="primary-button walkin-button" (click)="openWalkIn($event)" [attr.aria-label]="'Add a walk-in appointment'"><span aria-hidden="true">＋</span><span>Walk-in</span></button>
       <button type="button" class="primary-button new-appointment-button" (click)="openCreate($event)"><span aria-hidden="true">＋</span><span>New<span class="appointment-label"> appointment</span></span></button>
     </div>
   </header>
@@ -49,7 +50,7 @@
     <section class="loading-state" aria-label="Loading appointments"><i></i><i></i><i></i><i></i></section>
   } @else {
     <section class="results-header">
-      <div><p class="eyebrow">Live appointment book</p><h2>{{ view() === 'list' ? 'Bookings' : view() === 'day' ? 'Day calendar' : view() === 'week' ? 'Week calendar' : view() === 'staff' ? 'Staff schedule' : 'Branch schedule' }}</h2></div>
+      <div><p class="eyebrow">Live appointment queue</p><h2>{{ view() === 'staff' ? 'Staff groups' : view() === 'branch' ? 'Branch groups' : 'Appointment list' }}</h2></div>
       <span>{{ items().length }} of {{ page()?.total || items().length }} returned</span>
     </section>
 
@@ -168,6 +169,7 @@
             <label>Date <span>*</span><input name="date" type="date" [(ngModel)]="form.date" [attr.aria-invalid]="!!formErrors().startAt" /></label><label>Start time <span>*</span><input name="time" type="time" [(ngModel)]="form.time" [attr.aria-invalid]="!!formErrors().startAt" /></label>
             <label>End date <input name="endDate" type="date" [(ngModel)]="form.endDate" /></label><label>End time <input name="endTime" type="time" [(ngModel)]="form.endTime" /></label>
           </div><small class="field-error">{{ formErrors().startAt || formErrors().endAt }}</small><p class="form-help">Times are interpreted in the salon’s IST appointment context. If no end is supplied, the backend may derive it from returned service duration rules.</p></fieldset>
+          @if (modal() === 'create') { <fieldset><legend>Repeat booking</legend><div class="form-grid four"><label>Repeat<select name="recurrenceFrequency" [(ngModel)]="form.recurrenceFrequency"><option value="none">Does not repeat</option><option value="weekly">Weekly</option><option value="monthly">Monthly</option></select></label><label>Every<input name="recurrenceInterval" type="number" min="1" max="12" [(ngModel)]="form.recurrenceInterval" [disabled]="form.recurrenceFrequency === 'none'" /></label><label>Occurrences<input name="recurrenceCount" type="number" min="1" max="52" [(ngModel)]="form.recurrenceCount" [disabled]="form.recurrenceFrequency === 'none'" /></label><label>Until<input name="recurrenceUntil" type="date" [(ngModel)]="form.recurrenceUntil" [disabled]="form.recurrenceFrequency === 'none'" /></label></div><p class="form-help">Recurring appointments use the same availability checks as normal bookings. If any future slot is unavailable, the backend returns a conflict.</p></fieldset> }
           <fieldset><legend>Booking detail</legend><div class="form-grid">@if (modal() === 'create') { <label>Initial status<select name="status" [(ngModel)]="form.status" [attr.aria-invalid]="!!formErrors().status" aria-describedby="write-status-error">@for (item of initialStatuses; track item) { <option [value]="item">{{ humanize(item) }}</option> }</select><small id="write-status-error" class="field-error">{{ formErrors().status }}</small></label> }<label>Source<input name="source" [(ngModel)]="form.source" list="owner-source-options" placeholder="Leave blank if not supplied" /><datalist id="owner-source-options">@for (item of availableSources(); track item) { <option [value]="item"></option> }</datalist></label><label class="full">Notes<textarea name="notes" [(ngModel)]="form.notes" rows="4"></textarea></label></div></fieldset>
         </form>
       } @else if (modal() === 'reschedule') {

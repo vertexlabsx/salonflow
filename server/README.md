@@ -1,22 +1,12 @@
----
-title: Solastio Server
-emoji: 💈
-colorFrom: indigo
-colorTo: purple
-sdk: docker
-app_port: 4000
-pinned: false
----
-
 # Solastio Server
 
 Node/Express backend for Solastio Salon & Beauty OS.
 
-## Hugging Face Space
+## Production
 
-Create a Hugging Face Space with SDK `Docker`, then push the contents of this `server` folder to that Space.
+Use `PRODUCTION.md` as the source of truth for production hosting, deployment, workers, health checks, and MongoDB operations. Hugging Face Spaces are not recommended for production because free Spaces sleep and are not reliable for WhatsApp webhooks or SSE.
 
-Required Space secrets:
+Required production secrets:
 
 - `NODE_ENV=production`
 - `PORT=4000`
@@ -48,5 +38,3 @@ Health checks:
 WhatsApp webhook URL:
 
 - `/webhook`
-
-Note: Hugging Face free Spaces can sleep. For production WhatsApp webhooks, use an always-on backend host.

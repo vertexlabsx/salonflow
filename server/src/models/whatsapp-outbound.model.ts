@@ -5,7 +5,7 @@ export interface WhatsAppOutbound {
   salonId: string;
   appointmentId: string | null;
   toPhone: string;
-  type: "confirmation" | "reminder" | "cancellation" | "reschedule" | "utility";
+  type: "confirmation" | "reminder" | "cancellation" | "reschedule" | "utility" | "deposit" | "payment_failed" | "feedback" | "birthday" | "rebooking" | "loyalty" | "no_show" | "waitlist" | "abandoned";
   body: string;
   interactive?: Record<string, unknown> | null;
   templatePayload?: Record<string, unknown> | null;
@@ -27,7 +27,7 @@ const whatsAppOutboundSchema = new Schema<WhatsAppOutbound>(
     salonId: { type: String, required: true },
     appointmentId: { type: String, default: null },
     toPhone: { type: String, required: true },
-    type: { type: String, enum: ["confirmation", "reminder", "cancellation", "reschedule", "utility"], required: true },
+    type: { type: String, enum: ["confirmation", "reminder", "cancellation", "reschedule", "utility", "deposit", "payment_failed", "feedback", "birthday", "rebooking", "loyalty", "no_show", "waitlist", "abandoned"], required: true },
     body: { type: String, required: true, maxlength: 4096 },
     interactive: { type: Schema.Types.Mixed, default: null },
     templatePayload: { type: Schema.Types.Mixed, default: null },
@@ -45,8 +45,9 @@ const whatsAppOutboundSchema = new Schema<WhatsAppOutbound>(
 );
 
 whatsAppOutboundSchema.index({ salonId: 1, appointmentId: 1, type: 1 });
+whatsAppOutboundSchema.index({ salonId: 1, toPhone: 1, createdAt: -1 });
 whatsAppOutboundSchema.index({ status: 1, createdAt: 1 });
-whatsAppOutboundSchema.index({ salonId: 1, "metadata.dedupeKey": 1 }, { unique: true, sparse: true });
+whatsAppOutboundSchema.index({ salonId: 1, "metadata.dedupeKey": 1 }, { unique: true, partialFilterExpression: { "metadata.dedupeKey": { $type: "string" } } });
 
 export const WhatsAppOutboundModel: Model<WhatsAppOutbound> =
   (mongoose.models.WhatsAppOutbound as Model<WhatsAppOutbound>) || model<WhatsAppOutbound>("WhatsAppOutbound", whatsAppOutboundSchema);

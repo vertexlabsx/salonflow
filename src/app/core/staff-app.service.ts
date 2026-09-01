@@ -233,6 +233,27 @@ export type StaffClientHistory = {
   purchases: Array<{ id: string; invoiceNumber: string; branchId: string; branchName: string; totalPaise: number; paidPaise: number; balancePaise: number; status: string; createdAt: string }>;
 };
 
+export type StaffClientDirectoryItem = {
+  id: string; name: string; phone: string; branchId: string; branchName: string; visitCount: number; totalSpendPaise: number; outstandingPaise: number; status: string; lastVisitAt?: string;
+};
+
+export type StaffClientDirectoryResponse = {
+  items: StaffClientDirectoryItem[];
+  page: { page: number; pageSize: number; total: number; totalPages: number; hasMore: boolean };
+  metadata: { timezone: string; partial: boolean; unavailableSources: string[] };
+};
+
+export type StaffClientWrite = {
+  name: string; email: string; gender: string; birthday: string; anniversary: string; tags: string[]; notes: string; address: string; walletBalancePaise: number; loyaltyPoints: number; membershipPlanName: string; membershipCredits: number; membershipCreditsRemaining: number; membershipValidUntil: string; membershipStatus: string; packageName: string; packageCreditsRemaining: number; subscriptionName: string; subscriptionStatus: string;
+};
+
+export type StaffClientDetail = {
+  client: StaffClientDirectoryItem & { email: string; gender: string; birthday: string; anniversary: string; tags: string[]; notes: string; address?: string; walletBalancePaise: number; loyaltyPoints: number; membershipPlanName: string; membershipCredits: number; membershipCreditsRemaining: number; membershipValidUntil: string; membershipStatus: string; packageName: string; packageCreditsRemaining: number; subscriptionName: string; subscriptionStatus: string };
+  appointments: Array<{ id: string; branchId: string; branchName: string; staffId: string; staffName: string; serviceIds: string[]; serviceNames: string[]; status: string; startAt: string; endAt: string; spendPaise: number }>;
+  purchases: Array<{ id: string; invoiceNumber: string; branchId: string; branchName: string; totalPaise: number; paidPaise: number; balancePaise: number; status: string; createdAt: string }>;
+  membership: { planName: string; planCredits: number; creditsRemaining: number; validityDate: string; status: string } | null;
+};
+
 export type StaffBusinessSummary = {
   appointments: number;
   completedServices: number;
@@ -493,6 +514,20 @@ export type StaffConversationMessage = {
 };
 
 export type StaffMessageReceiptUpdate = { messageId: string; deliveredCount: number; readCount: number };
+
+export type StaffChatSearchResult = {
+  id: string;
+  conversationId: string;
+  conversationTitle: string;
+  conversationType: "team" | "private-owner";
+  branchId: string;
+  senderUserId: string;
+  senderName: string;
+  body: string;
+  createdAt: string;
+};
+
+export type StaffChatSearchResponse = { items: StaffChatSearchResult[]; total: number };
 
 export type StaffPushDevice = { id: string };
 export type StaffPushConfig = { configured: boolean; publicKey: string };
@@ -786,6 +821,14 @@ export class StaffAppService {
     return this.get<StaffConversationMessage[]>(`/team-chat/conversations/${encodeURIComponent(conversationId)}/messages`);
   }
 
+  async staffMessageSearch(conversationId: string, q: string): Promise<StaffChatSearchResponse> {
+    return this.get<StaffChatSearchResponse>(`/team-chat/conversations/${encodeURIComponent(conversationId)}/search`, { q });
+  }
+
+  async staffMessageSearchAll(q: string): Promise<StaffChatSearchResponse> {
+    return this.get<StaffChatSearchResponse>("/team-chat/search", { q });
+  }
+
   async sendStaffConversationMessage(conversationId: string, body: string, idempotencyKey: string): Promise<StaffConversationMessage> {
     return this.postIdempotent<StaffConversationMessage>(`/team-chat/conversations/${encodeURIComponent(conversationId)}/messages`, { body }, idempotencyKey);
   }
@@ -802,6 +845,27 @@ export class StaffAppService {
 
   clientHistory(clientId: string): Promise<StaffClientHistory> {
     return this.get<StaffClientHistory>(`/staff-os/clients/${encodeURIComponent(clientId)}`);
+  }
+  clientDirectory(params: { branchId?: string; page?: number; pageSize?: number; search?: string } = {}): Promise<StaffClientDirectoryResponse> {
+    return this.get<StaffClientDirectoryResponse>("/owner-console/operations/clients", {
+      branchId: params.branchId || "all",
+      page: String(params.page || 1),
+      pageSize: String(params.pageSize || 30),
+      search: params.search || ""
+    });
+  }
+  createClient(payload: StaffClientWrite & { branchId: string; phone: string }): Promise<{ id: string }> {
+    return this.post<{ id: string }>("/owner-console/operations/clients", { ...payload });
+  }
+  updateClient(id: string, payload: StaffClientWrite): Promise<{ id: string; updatedAt: string }> {
+    return this.patch<{ id: string; updatedAt: string }>(`/owner-console/operations/clients/${encodeURIComponent(id)}`, { ...payload });
+  }
+  clientDetail(id: string, branchId = "all"): Promise<StaffClientDetail> {
+    return this.get<StaffClientDetail>(`/owner-console/operations/clients/${encodeURIComponent(id)}`, { branchId });
+  }
+
+  redeemPromo(payload: { code: string; customerId?: string; customerPhone?: string; valuePaise: number; branchId?: string; appointmentId?: string; invoiceId?: string }): Promise<{ promo: { code: string; kind: string; label: string }; discountPaise: number; redemptionsUsed: number; remaining: number | null }> {
+    return this.post("/owner-console/promos/redeem", payload);
   }
 
   async attendanceHistory(days = 30): Promise<StaffAttendance[]> {

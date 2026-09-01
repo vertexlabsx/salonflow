@@ -6,6 +6,7 @@ import { ApiError } from "../../shared/http";
 import { toStaffAppointment } from "../staff/staff.types";
 import { BOOKING_BLOCKING_STATUSES, findAvailableStaff } from "./availability.service";
 import { sendWhatsAppMessage } from "../whatsapp/whatsapp.service";
+import { offerCancelledSlotToWaitlist } from "../whatsapp/waitlist.service";
 import { publishRealtimeEvent } from "../realtime/realtime.service";
 import { notifyStaffByStaffId } from "../push/push.service";
 import type { StaffAppointmentDto } from "../staff/staff.types";
@@ -197,6 +198,17 @@ export async function cancelAppointmentForCustomer(salonId: string, appointmentI
     body: `${updated.customerName} cancelled ${updated.serviceNames.join(", ")}`,
     tag: `appointment-${String(updated._id)}`,
     data: { appointmentId: String(updated._id), type: "appointment.status_changed", status: updated.status }
+  });
+  void offerCancelledSlotToWaitlist({
+    salonId,
+    branchId: updated.branchId,
+    staffId: updated.staffId,
+    serviceIds: updated.serviceIds.map(String),
+    serviceNames: updated.serviceNames,
+    startAt: updated.startAt,
+    endAt: updated.endAt,
+    value: updated.value,
+    durationMinutes: updated.durationMinutes
   });
   return toStaffAppointment(updated);
 }

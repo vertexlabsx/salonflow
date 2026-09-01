@@ -62,12 +62,18 @@ export const routes: Routes = [
       { path: "attendance", data: { ownerModule: "attendance" }, loadComponent: () => import("./features/owner/owner-attendance.page").then((m) => m.OwnerAttendancePage) },
       { path: "leave-requests", data: { ownerModule: "leave-requests" }, loadComponent: () => import("./features/owner/owner-leave.page").then((m) => m.OwnerLeavePage) },
       { path: "chats", data: { ownerModule: "chats", ownerPeriod: false }, loadComponent: () => import("./features/owner/owner-chats.page").then((m) => m.OwnerChatsPage) },
+      { path: "whatsapp", data: { ownerModule: "whatsapp", ownerPeriod: false, ownerBranch: false }, loadComponent: () => import("./features/owner/owner-whatsapp.page").then((m) => m.OwnerWhatsAppPage) },
       { path: "revenue", data: { ownerModule: "revenue" }, loadComponent: () => import("./features/owner/owner-revenue.page").then((m) => m.OwnerRevenuePage) },
       { path: "reports", data: { ownerModule: "reports" }, loadComponent: () => import("./features/owner/owner-reports.page").then((m) => m.OwnerReportsPage) },
+      { path: "gst", data: { ownerModule: "gst" }, loadComponent: () => import("./features/owner/owner-gst.page").then((m) => m.OwnerGstPage) },
       { path: "payroll", data: { ownerModule: "payroll" }, loadComponent: () => import("./features/owner/owner-payroll.page").then((m) => m.OwnerPayrollPage) },
       { path: "inventory", data: { ownerModule: "inventory", ownerPeriod: false }, loadComponent: () => import("./features/owner/owner-inventory.page").then((m) => m.OwnerInventoryPage) },
+      { path: "purchase-orders", data: { ownerModule: "purchase-orders", ownerPeriod: false }, loadComponent: () => import("./features/owner/owner-purchase-orders.page").then((m) => m.OwnerPurchaseOrdersPage) },
       { path: "billing", data: { ownerModule: "billing-access" }, loadComponent: () => import("./features/owner/owner-billing.page").then((m) => m.OwnerBillingPage) },
+      { path: "commerce", data: { ownerModule: "commerce", ownerPeriod: false, ownerBranch: false }, loadComponent: () => import("./features/owner/owner-commerce.page").then((m) => m.OwnerCommercePage) },
+      { path: "busy-hours", data: { ownerModule: "busy-hours" }, loadComponent: () => import("./features/owner/owner-busy-hours.page").then((m) => m.OwnerBusyHoursPage) },
       { path: "marketing", data: { ownerModule: "marketing", ownerPeriod: false, ownerBranch: false }, loadComponent: () => import("./features/owner/owner-marketing.page").then((m) => m.OwnerMarketingPage) },
+      { path: "promos", data: { ownerModule: "promos", ownerPeriod: false, ownerBranch: false }, loadComponent: () => import("./features/owner/owner-promos.page").then((m) => m.OwnerPromosPage) },
       { path: "notifications", data: { ownerModule: "notifications", ownerPeriod: false }, loadComponent: () => import("./features/owner/owner-notifications.page").then((m) => m.OwnerNotificationsPage) },
       { path: "roles-permissions", data: { ownerModule: "roles-permissions", ownerPeriod: false }, loadComponent: () => import("./features/owner/owner-roles-permissions.page").then((m) => m.OwnerRolesPermissionsPage) },
       { path: "branches", data: { ownerModule: "branches", ownerPeriod: false }, loadComponent: () => import("./features/owner/owner-branches.page").then((m) => m.OwnerBranchesPage) },
@@ -100,6 +106,10 @@ export const routes: Routes = [
       { path: "settings", loadComponent: () => import("./features/staff/staff-settings.page").then((m) => m.StaffSettingsPage) },
       { path: "permission-denied", loadComponent: () => import("./features/staff/staff-permission-denied.page").then((m) => m.StaffPermissionDeniedPage) }
     ]
+  },
+  {
+    path: "book",
+    loadComponent: () => import("./features/public/self-booking.page").then((m) => m.SelfBookingPage)
   },
   { path: "**", canActivate: [rootRedirectGuard], children: [] }
 ];

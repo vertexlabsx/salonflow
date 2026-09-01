@@ -30,7 +30,10 @@ const DEFAULT_SETTINGS: OwnerGeneralSettings = {
   branchBehavior: { rememberLastBranch: true, requireBranchSelection: true, allowBranchSwitch: true },
   dateTime: { dateFormat: "DD/MM/YYYY", timeFormat: "12h", businessDayStartHour: 0, weekStartsOn: "Monday" },
   interface: { compactMode: false, showModuleBadges: true, enableCommandSearch: true },
-  defaults: { refreshReportsOnOpen: true, ownerNotifications: true, staffHints: true }
+  defaults: { refreshReportsOnOpen: true, ownerNotifications: true, staffHints: true },
+  whatsappNudges: { birthdayOfferPercent: 20, feedbackDelayMinutes: 60, rebookingWeeks: 4, loyaltyStep: 100, noShowEnabled: true, abandonedEnabled: true, birthdayEnabled: true, feedbackEnabled: true, rebookingEnabled: true, loyaltyEnabled: true },
+  whatsappPolicy: { cancellationCutoffHours: 2, enforceCancellationCutoff: false, rescheduleCutoffHours: 2, enforceRescheduleCutoff: false, depositRefundPolicy: "Refunds and adjustments follow salon policy.", googleReviewUrl: "" },
+  booking: { depositsEnabled: false, depositMode: "percent", depositPercent: 10, depositFixedPaise: 0, depositMinimumPaise: 0 }
 };
 
 @Injectable({ providedIn: "root" })
