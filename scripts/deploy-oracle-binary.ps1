@@ -63,7 +63,7 @@ PM2
 pm2 delete salonflow-api || true
 pm2 start /opt/solastio/ecosystem.config.cjs --update-env
 pm2 save
-sudo tee /etc/nginx/sites-available/solastio-api >/dev/null <<NGINX
+sudo tee /etc/nginx/sites-available/solastio-api >/dev/null <<'NGINX'
 server {
     listen 80;
     server_name $Domain;
