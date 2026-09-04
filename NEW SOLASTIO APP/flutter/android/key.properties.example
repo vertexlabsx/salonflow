@@ -1,0 +1,4 @@
+storePassword=replace-with-keystore-password
+keyPassword=replace-with-key-password
+keyAlias=solastio-release
+storeFile=../release/solastio-release.jks

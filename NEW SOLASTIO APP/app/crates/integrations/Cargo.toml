@@ -1,0 +1,8 @@
+[package]
+name = "solastio-integrations"
+edition.workspace = true
+version.workspace = true
+publish.workspace = true
+
+[dependencies]
+solastio-shared = { path = "../shared" }

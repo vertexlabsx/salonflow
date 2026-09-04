@@ -1,0 +1,16 @@
+[package]
+name = "solastio-auth"
+edition.workspace = true
+version.workspace = true
+publish.workspace = true
+
+[dependencies]
+base64.workspace = true
+chrono.workspace = true
+jsonwebtoken.workspace = true
+rand.workspace = true
+serde.workspace = true
+sha2.workspace = true
+solastio-domain = { path = "../domain" }
+solastio-shared = { path = "../shared" }
+uuid.workspace = true

@@ -19,6 +19,7 @@ android/build/
 android/app/build/
 apk-output/
 *.apk
+downloads/
 www/
 
 .vercel

@@ -1,0 +1,16 @@
+[package]
+name = "solastio-application"
+edition.workspace = true
+version.workspace = true
+publish.workspace = true
+
+[dependencies]
+bcrypt.workspace = true
+chrono.workspace = true
+mongodb.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+solastio-auth = { path = "../auth" }
+solastio-database = { path = "../database" }
+solastio-domain = { path = "../domain" }
+solastio-shared = { path = "../shared" }

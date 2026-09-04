@@ -1,0 +1,173 @@
+{
+  "version": "7.3",
+  "data_api_version": "3.0",
+  "routing_model": {
+    "BRANCH": ["CATEGORY"],
+    "CATEGORY": ["SERVICE"],
+    "SERVICE": ["STAFF"],
+    "STAFF": ["DATE_TIME"],
+    "DATE_TIME": ["DETAILS"],
+    "DETAILS": ["SUMMARY"],
+    "SUMMARY": []
+  },
+  "screens": [
+    {
+      "id": "BRANCH",
+      "title": "Choose branch",
+      "data": {
+        "salonId": { "type": "string", "__example__": "salon_realistic_test" },
+        "branch": { "type": "array", "items": { "type": "object", "properties": { "id": { "type": "string" }, "title": { "type": "string" } } }, "__example__": [{ "id": "branch_1", "title": "Bandra" }] }
+      },
+      "layout": {
+        "type": "SingleColumnLayout",
+        "children": [
+          {
+            "type": "Form",
+            "name": "branch_form",
+            "children": [
+              { "type": "Dropdown", "label": "Branch", "name": "branch", "required": true, "data-source": "${data.branch}" },
+              { "type": "Footer", "label": "Continue", "on-click-action": { "name": "data_exchange", "payload": { "branch": "${form.branch}", "salonId": "${data.salonId}" } } }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "CATEGORY",
+      "title": "Choose category",
+      "data": {
+        "salonId": { "type": "string", "__example__": "salon_realistic_test" },
+        "branch": { "type": "string", "__example__": "branch_1" },
+        "category": { "type": "array", "items": { "type": "object", "properties": { "id": { "type": "string" }, "title": { "type": "string" } } }, "__example__": [{ "id": "Hair", "title": "Hair" }] }
+      },
+      "layout": {
+        "type": "SingleColumnLayout",
+        "children": [
+          { "type": "Form", "name": "category_form", "children": [
+            { "type": "Dropdown", "label": "Category", "name": "category", "required": true, "data-source": "${data.category}" },
+            { "type": "Footer", "label": "Continue", "on-click-action": { "name": "data_exchange", "payload": { "salonId": "${data.salonId}", "branch": "${data.branch}", "category": "${form.category}" } } }
+          ] }
+        ]
+      }
+    },
+    {
+      "id": "SERVICE",
+      "title": "Choose service",
+      "data": {
+        "salonId": { "type": "string", "__example__": "salon_realistic_test" },
+        "branch": { "type": "string", "__example__": "branch_1" },
+        "category": { "type": "string", "__example__": "Hair" },
+        "service": { "type": "array", "items": { "type": "object", "properties": { "id": { "type": "string" }, "title": { "type": "string" }, "description": { "type": "string" } } }, "__example__": [{ "id": "service_1", "title": "Haircut", "description": "INR 500, 30 min" }] }
+      },
+      "layout": {
+        "type": "SingleColumnLayout",
+        "children": [
+          { "type": "Form", "name": "service_form", "children": [
+            { "type": "Dropdown", "label": "Service", "name": "service", "required": true, "data-source": "${data.service}" },
+            { "type": "Footer", "label": "Continue", "on-click-action": { "name": "data_exchange", "payload": { "salonId": "${data.salonId}", "branch": "${data.branch}", "category": "${data.category}", "service": "${form.service}" } } }
+          ] }
+        ]
+      }
+    },
+    {
+      "id": "STAFF",
+      "title": "Choose staff",
+      "data": {
+        "salonId": { "type": "string", "__example__": "salon_realistic_test" },
+        "branch": { "type": "string", "__example__": "branch_1" },
+        "category": { "type": "string", "__example__": "Hair" },
+        "service": { "type": "string", "__example__": "service_1" },
+        "staff": { "type": "array", "items": { "type": "object", "properties": { "id": { "type": "string" }, "title": { "type": "string" } } }, "__example__": [{ "id": "staff_1", "title": "Aarav" }] }
+      },
+      "layout": {
+        "type": "SingleColumnLayout",
+        "children": [
+          { "type": "Form", "name": "staff_form", "children": [
+            { "type": "Dropdown", "label": "Staff", "name": "staff", "required": true, "data-source": "${data.staff}" },
+            { "type": "Footer", "label": "Continue", "on-click-action": { "name": "data_exchange", "payload": { "salonId": "${data.salonId}", "branch": "${data.branch}", "category": "${data.category}", "service": "${data.service}", "staff": "${form.staff}" } } }
+          ] }
+        ]
+      }
+    },
+    {
+      "id": "DATE_TIME",
+      "title": "Choose date and time",
+      "data": {
+        "salonId": { "type": "string", "__example__": "salon_realistic_test" },
+        "branch": { "type": "string", "__example__": "branch_1" },
+        "category": { "type": "string", "__example__": "Hair" },
+        "service": { "type": "string", "__example__": "service_1" },
+        "staff": { "type": "string", "__example__": "staff_1" },
+        "date_options": { "type": "array", "items": { "type": "object", "properties": { "id": { "type": "string" }, "title": { "type": "string" } } }, "__example__": [{ "id": "2026-09-02", "title": "02 Sept" }] },
+        "is_time_enabled": { "type": "boolean", "__example__": false },
+        "time": { "type": "array", "items": { "type": "object", "properties": { "id": { "type": "string" }, "title": { "type": "string" } } }, "__example__": [] }
+      },
+      "layout": {
+        "type": "SingleColumnLayout",
+        "children": [
+          { "type": "Form", "name": "datetime_form", "children": [
+            { "type": "Dropdown", "label": "Date", "name": "date", "required": true, "data-source": "${data.date_options}", "on-select-action": { "name": "data_exchange", "payload": { "trigger": "date_selected", "salonId": "${data.salonId}", "branch": "${data.branch}", "category": "${data.category}", "service": "${data.service}", "staff": "${data.staff}", "date": "${form.date}" } } },
+            { "type": "Dropdown", "label": "Time", "name": "time", "required": true, "enabled": "${data.is_time_enabled}", "data-source": "${data.time}" },
+            { "type": "Footer", "label": "Continue", "on-click-action": { "name": "data_exchange", "payload": { "salonId": "${data.salonId}", "branch": "${data.branch}", "category": "${data.category}", "service": "${data.service}", "staff": "${data.staff}", "date": "${form.date}", "time": "${form.time}" } } }
+          ] }
+        ]
+      }
+    },
+    {
+      "id": "DETAILS",
+      "title": "Your details",
+      "data": {
+        "salonId": { "type": "string", "__example__": "salon_realistic_test" },
+        "branch": { "type": "string", "__example__": "branch_1" },
+        "category": { "type": "string", "__example__": "Hair" },
+        "service": { "type": "string", "__example__": "service_1" },
+        "staff": { "type": "string", "__example__": "staff_1" },
+        "date": { "type": "string", "__example__": "2026-09-02" },
+        "time": { "type": "string", "__example__": "10:30" }
+      },
+      "layout": {
+        "type": "SingleColumnLayout",
+        "children": [
+          { "type": "Form", "name": "details_form", "children": [
+            { "type": "TextInput", "label": "Name", "name": "name", "required": true, "input-type": "text" },
+            { "type": "TextInput", "label": "Email", "name": "email", "required": false, "input-type": "email" },
+            { "type": "TextInput", "label": "Phone", "name": "phone", "required": true, "input-type": "phone" },
+            { "type": "TextArea", "label": "Notes", "name": "more_details", "required": false },
+            { "type": "Footer", "label": "Review", "on-click-action": { "name": "data_exchange", "payload": { "salonId": "${data.salonId}", "branch": "${data.branch}", "category": "${data.category}", "service": "${data.service}", "staff": "${data.staff}", "date": "${data.date}", "time": "${data.time}", "name": "${form.name}", "email": "${form.email}", "phone": "${form.phone}", "more_details": "${form.more_details}" } } }
+          ] }
+        ]
+      }
+    },
+    {
+      "id": "SUMMARY",
+      "title": "Confirm booking",
+      "terminal": true,
+      "success": true,
+      "data": {
+        "salonId": { "type": "string", "__example__": "salon_realistic_test" },
+        "branch": { "type": "string", "__example__": "branch_1" },
+        "category": { "type": "string", "__example__": "Hair" },
+        "service": { "type": "string", "__example__": "service_1" },
+        "staff": { "type": "string", "__example__": "staff_1" },
+        "date": { "type": "string", "__example__": "2026-09-02" },
+        "time": { "type": "string", "__example__": "10:30" },
+        "name": { "type": "string", "__example__": "Garv" },
+        "email": { "type": "string", "__example__": "garv@example.com" },
+        "phone": { "type": "string", "__example__": "919999999999" },
+        "more_details": { "type": "string", "__example__": "No notes" },
+        "appointment": { "type": "string", "__example__": "Haircut\nBranch: Bandra\nStaff: Aarav\nDate: 02 Sept at 10:30" },
+        "details": { "type": "string", "__example__": "Name: Garv\nEmail: garv@example.com\nPhone: 919999999999" }
+      },
+      "layout": {
+        "type": "SingleColumnLayout",
+        "children": [
+          { "type": "TextHeading", "text": "Review your appointment" },
+          { "type": "TextBody", "text": "${data.appointment}" },
+          { "type": "TextHeading", "text": "Your details" },
+          { "type": "TextBody", "text": "${data.details}" },
+          { "type": "Footer", "label": "Confirm booking", "on-click-action": { "name": "data_exchange", "payload": { "salonId": "${data.salonId}", "branch": "${data.branch}", "category": "${data.category}", "service": "${data.service}", "staff": "${data.staff}", "date": "${data.date}", "time": "${data.time}", "name": "${data.name}", "email": "${data.email}", "phone": "${data.phone}", "more_details": "${data.more_details}" } } }
+        ]
+      }
+    }
+  ]
+}

@@ -1,0 +1,6 @@
+import { Component, OnInit, inject, signal } from "@angular/core";
+import { WorkItem } from "../../core/api.service";
+import { WorkspaceService } from "../../core/workspace.service";
+
+@Component({ standalone: true, template: `<section class="content"><section class="hero"><p class="eyebrow">Owner appointments</p><h1>Command the schedule.</h1><p>Review bookings, exceptions and operating flow across branches.</p><button class="btn primary" (click)="load()">Refresh</button></section>@if(error()){<p class="notice error">{{error()}}</p>}<section class="panel"><div class="panel-head"><h2>Schedule control</h2><span class="muted">{{items().length}} records</span></div><div class="list">@for(item of items();track item.id){<article class="list-row"><span><strong>{{item.title}}</strong><small>{{item.subtitle||item.status||item.time}}</small></span><button class="btn">Open</button></article>}@empty{<p class="muted">No owner appointment records loaded.</p>}</div></section></section>` })
+export class OwnerAppointmentsPage implements OnInit { private readonly workspace=inject(WorkspaceService); readonly error=signal(""); readonly items=signal<WorkItem[]>([]); ngOnInit(){void this.load();} async load(){this.error.set("");try{const data=await this.workspace.ownerAppointments();this.items.set(data.items||[]);}catch{this.error.set("Could not load owner appointments.");}}}

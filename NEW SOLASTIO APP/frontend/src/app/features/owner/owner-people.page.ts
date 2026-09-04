@@ -1,0 +1,6 @@
+import { Component, OnInit, inject, signal } from "@angular/core";
+import { WorkItem } from "../../core/api.service";
+import { WorkspaceService } from "../../core/workspace.service";
+
+@Component({ standalone: true, template: `<section class="content"><section class="hero"><p class="eyebrow">People</p><h1>Run the team cleanly.</h1><p>Staff records, attendance, leaves and permissions belong here.</p><button class="btn primary" (click)="load()">Refresh</button></section>@if(error()){<p class="notice error">{{error()}}</p>}<section class="panel"><div class="panel-head"><h2>Team</h2><span class="muted">{{items().length}} people</span></div><div class="list">@for(item of items();track item.id){<article class="list-row"><span><strong>{{item.title}}</strong><small>{{item.subtitle||item.status}}</small></span><button class="btn">Review</button></article>}@empty{<p class="muted">No staff records loaded.</p>}</div></section></section>` })
+export class OwnerPeoplePage implements OnInit { private readonly workspace=inject(WorkspaceService); readonly error=signal(""); readonly items=signal<WorkItem[]>([]); ngOnInit(){void this.load();} async load(){this.error.set("");try{const data=await this.workspace.ownerPeople();this.items.set(data.items||[]);}catch{this.error.set("Could not load people data.");}}}

@@ -1,0 +1,400 @@
+@import "@ionic/angular/css/core.css";
+@import "@ionic/angular/css/normalize.css";
+@import "@ionic/angular/css/structure.css";
+@import "@ionic/angular/css/typography.css";
+@import "@ionic/angular/css/display.css";
+@import "@ionic/angular/css/padding.css";
+@import "@ionic/angular/css/flex-utils.css";
+
+:root {
+  --ion-font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --ion-color-primary: #7b2f62;
+  --ion-color-primary-rgb: 123, 47, 98;
+  --ion-color-primary-shade: #5b2149;
+  --ion-color-primary-tint: #9a4b7f;
+  --ion-color-primary-contrast: #ffffff;
+  --ion-background-color: #f8faf9;
+  --ion-text-color: #1f2937;
+  --staff-primary: #7b2f62;
+  --staff-primary-hover: #5b2149;
+  --staff-primary-light: #f7e7ef;
+  --staff-background: #fbf6f8;
+  --staff-surface: #ffffff;
+  --staff-surface-secondary: #f8edf2;
+  --staff-surface-glass: rgba(255,250,252,.92);
+  --staff-border: #eadde5;
+  --staff-border-accent: #e8b4a0;
+  --staff-text: #2a1433;
+  --staff-text-secondary: #7b647f;
+  --staff-text-placeholder: #8696a0;
+  --staff-text-inverse: #ffffff;
+  --staff-on-primary: #ffffff;
+  --staff-disabled: #aebac1;
+  --staff-track: #e5e9eb;
+  --staff-success: #22c55e;
+  --staff-warning: #64748b;
+  --staff-error: #ef4444;
+  --staff-info: #3b82f6;
+  --staff-success-surface: #e7f8ef;
+  --staff-success-border: #b6e8ca;
+  --staff-success-text: #147a43;
+  --staff-error-surface: #fff0f0;
+  --staff-error-border: #f3c4c4;
+  --staff-error-text: #b42323;
+  --staff-overlay: rgba(17,27,33,.42);
+  --staff-focus-ring: rgba(123,47,98,.24);
+  --staff-decoration-one: #f3c8bc;
+  --staff-decoration-two: #f7e7ef;
+  --staff-shadow: 0 18px 42px rgba(42,20,51,.09);
+  --staff-shadow-elevated: 0 28px 76px rgba(42,20,51,.22);
+  --staff-space-1: 8px;
+  --staff-space-2: 16px;
+  --staff-space-3: 24px;
+  --staff-space-4: 32px;
+  --staff-card-padding: 20px;
+  --staff-control-height: 48px;
+  --staff-header-height: 54px;
+  --staff-mobile-nav-height: 72px;
+  --staff-mobile-nav-offset: 8px;
+  --staff-bottom-clearance: calc(var(--staff-mobile-nav-height) + var(--staff-mobile-nav-offset) + env(safe-area-inset-bottom) + 16px);
+  --staff-radius-control: 14px;
+  --staff-radius-card: 20px;
+  --staff-input-background: #fffafb;
+  --staff-input-border: #eadde5;
+  --staff-input-text: #1f2937;
+  --staff-input-placeholder: #8a97a3;
+  --staff-input-label: #6f5274;
+  --staff-input-disabled-background: #f1f5f3;
+  --staff-input-disabled-text: #94a3b8;
+  --staff-input-focus: #7b2f62;
+  --staff-input-focus-ring: rgba(123, 47, 98, .16);
+  --staff-input-error-background: #fef2f2;
+  --staff-input-radius: 18px;
+  --staff-input-height: 56px;
+  --staff-motion-fast: 180ms;
+  --staff-motion-standard: 220ms;
+  --staff-motion-ease: cubic-bezier(.2,.8,.2,1);
+  --app-viewport-height: 100dvh;
+  --app-safe-top: env(safe-area-inset-top, 0px);
+  --app-safe-right: env(safe-area-inset-right, 0px);
+  --app-safe-bottom: env(safe-area-inset-bottom, 0px);
+  --app-safe-left: env(safe-area-inset-left, 0px);
+  --app-mobile-gutter: 14px;
+  --app-mobile-tap: 44px;
+  --app-mobile-h1: clamp(1.38rem, 6.8vw, 2rem);
+  --app-mobile-h2: clamp(.98rem, 4.4vw, 1.28rem);
+  --app-mobile-body: clamp(.76rem, 3.3vw, .9rem);
+  --app-mobile-small: clamp(.58rem, 2.8vw, .72rem);
+  --app-mobile-card-pad: 13px;
+  --app-mobile-radius: 17px;
+}
+
+html[data-staff-theme="dark"] {
+  color-scheme: dark;
+  --ion-color-primary: #e8b4a0;
+  --ion-color-primary-rgb: 232, 180, 160;
+  --ion-color-primary-shade: #c9907f;
+  --ion-color-primary-tint: #ffd7c7;
+  --ion-color-primary-contrast: #0b141a;
+  --ion-background-color: #0b141a;
+  --ion-text-color: #e9edef;
+  --staff-primary: #e8b4a0;
+  --staff-primary-hover: #ffd7c7;
+  --staff-primary-light: #3c2332;
+  --staff-background: #160b1d;
+  --staff-surface: #201127;
+  --staff-surface-secondary: #2a1931;
+  --staff-surface-glass: rgba(32,17,39,.95);
+  --staff-border: #402648;
+  --staff-border-accent: #6b3a5b;
+  --staff-text: #e9edef;
+  --staff-text-secondary: #8696a0;
+  --staff-text-placeholder: #667781;
+  --staff-text-inverse: #111b21;
+  --staff-on-primary: #071f1a;
+  --staff-disabled: #54656f;
+  --staff-track: #2a3942;
+  --staff-success-surface: #0b3b32;
+  --staff-success-border: #176b58;
+  --staff-success-text: #5ee6b5;
+  --staff-error-surface: #3b1e22;
+  --staff-error-border: #71343b;
+  --staff-error-text: #ff8f9a;
+  --staff-overlay: rgba(0,0,0,.64);
+  --staff-focus-ring: rgba(232,180,160,.32);
+  --staff-decoration-one: #4d273d;
+  --staff-decoration-two: #3c2332;
+  --staff-shadow: 0 8px 24px rgba(0,0,0,.18);
+  --staff-shadow-elevated: 0 24px 64px rgba(0,0,0,.42);
+  --staff-input-background: #24142c;
+  --staff-input-border: #4a2b55;
+  --staff-input-text: #e9edef;
+  --staff-input-placeholder: #8696a0;
+  --staff-input-label: #aebac1;
+  --staff-input-disabled-background: #182229;
+  --staff-input-disabled-text: #667781;
+  --staff-input-focus: #e8b4a0;
+  --staff-input-focus-ring: rgba(232,180,160,.28);
+  --staff-input-error-background: #3b1e22;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+aura-root,
+ion-app {
+  min-width: 320px;
+  min-height: 100%;
+}
+
+html,
+body,
+aura-root,
+ion-app,
+ion-router-outlet {
+  width: 100%;
+}
+
+aura-root,
+ion-app {
+  display: block;
+}
+
+body {
+  margin: 0;
+  overflow-x: hidden;
+  background: var(--staff-background);
+  color: var(--staff-text);
+  font-family: var(--ion-font-family);
+}
+
+@media (max-width: 700px) {
+  html,
+  body,
+  aura-root,
+  ion-app {
+    width: 100%;
+    max-width: 100%;
+    overflow-x: clip;
+    overscroll-behavior-x: none;
+  }
+
+  body,
+  aura-root,
+  ion-app {
+    min-height: var(--app-viewport-height);
+  }
+
+  ion-router-outlet,
+  ion-router-outlet > .ion-page,
+  ion-router-outlet > * {
+    max-width: 100%;
+    min-width: 0;
+  }
+
+  img,
+  svg,
+  video,
+  canvas {
+    max-width: 100%;
+  }
+
+  table,
+  pre,
+  code {
+    max-width: 100%;
+  }
+
+  pre {
+    overflow-x: auto;
+    white-space: pre-wrap;
+  }
+
+  :where(main, section, article, aside, header, footer, nav, form, fieldset, div) {
+    min-width: 0;
+  }
+
+  :where(h1, h2, h3, h4, p, span, small, strong, b, label, button, a, dd, dt, li) {
+    overflow-wrap: anywhere;
+  }
+
+  :where(h1, .page-head h1, .owner-page-hero h1, .dashboard-header h1, .page-header h1, .phase-header h1, .ops-header h1, .adm-hero h1, .whatsapp-hero h1, .today-hero h1) {
+    font-size: var(--app-mobile-h1) !important;
+    line-height: 1.05 !important;
+    letter-spacing: -.04em !important;
+  }
+
+  :where(h2, .panel-title h2, .section-heading h2, .results-header h2, .ops-panel-head h2, .notifications-panel-head h2) {
+    font-size: var(--app-mobile-h2) !important;
+    line-height: 1.12 !important;
+  }
+
+  :where(p, label, .muted, .sb-muted) {
+    font-size: var(--app-mobile-body);
+    line-height: 1.4;
+  }
+
+  :where(small, .eyebrow, .owner-kicker, .ops-eyebrow) {
+    font-size: var(--app-mobile-small);
+    line-height: 1.4;
+  }
+
+  :where(.page, .dashboard, .appointments-page, .finance-page, .reports-page, .ops-page, .people-page, .adm-page, .owner-whatsapp-page, .self-booking-page) {
+    gap: 12px !important;
+  }
+
+  :where(.page-head, .dashboard-header, .page-header, .phase-header, .viewer-header, .ops-header, .adm-hero, .whatsapp-hero, .today-hero, .owner-page-hero) {
+    gap: 12px !important;
+    padding: var(--app-mobile-card-pad) !important;
+    border-radius: var(--app-mobile-radius) !important;
+  }
+
+  :where(.panel, .dashboard-section, .owner-data-panel, .owner-paths, .owner-detail, .finance-panel, .catalogue-panel, .report-viewer, .ops-panel, .ops-toolbar, .ops-metric, .people-panel, .detail-panel, .summary-card, .role-card, .leave-card, .payroll-card, .staff-card, .card, .sb-card, .login-card) {
+    padding: var(--app-mobile-card-pad) !important;
+    border-radius: var(--app-mobile-radius) !important;
+  }
+
+  :where(.kpi, .kpi-card, .finance-kpis button, .owner-metrics article, .metric-card, .summary-card, .overview-card, .performance-grid article, .insight-grid article) {
+    min-height: 0 !important;
+    padding: 12px !important;
+    border-radius: 16px !important;
+  }
+
+  :where(.kpi strong, .kpi-card__value strong, .finance-kpis strong, .owner-metrics strong, .metric-card strong, .insight-grid strong, .financial-metric > strong) {
+    font-size: clamp(1rem, 5.8vw, 1.45rem) !important;
+    line-height: 1.08 !important;
+  }
+
+  :where(.grid.four, .kpi-grid, .owner-metrics, .finance-kpis, .metric-overview, .business-kpi-grid, .client-kpis, .insight-grid, .kpi-strip, .kpis) {
+    gap: 8px !important;
+  }
+
+  :where(button, .button, .primary-button, .secondary-button, .owner-button, .ops-button, .adm-button, .text-control, .text-link) {
+    padding-inline: 10px;
+    font-size: clamp(.64rem, 3.1vw, .76rem);
+  }
+
+  :where(.owner-mobile-nav, .mobile-bottom-nav) {
+    min-height: 62px !important;
+    padding: 5px !important;
+    border-radius: 20px !important;
+  }
+
+  :where(.page-head, .dashboard-header, .page-header, .phase-header, .viewer-header, .ops-header, .adm-hero, .whatsapp-hero, .today-hero) {
+    background-size: 150% 150% !important;
+    box-shadow: 0 8px 22px rgba(42, 20, 51, .07) !important;
+  }
+
+  :where(.panel, .dashboard-section, .owner-data-panel, .owner-paths, .finance-panel, .catalogue-panel, .report-viewer, .ops-panel, .people-panel, .detail-panel, .summary-card, .role-card, .leave-card, .payroll-card, .staff-card, .sb-card, .login-card) {
+    box-shadow: 0 6px 18px rgba(42, 20, 51, .055) !important;
+  }
+
+  :where(.quick-action-grid a, .quick-action-grid button, .tool-grid a, .owner-paths a, .owner-mobile-nav a, .owner-mobile-nav button, .mobile-bottom-nav a) {
+    text-decoration: none;
+  }
+
+  :where(.quick-action-copy b, .quick-action-copy small, .tool-grid strong, .tool-grid small, .owner-mobile-nav span, .mobile-bottom-nav span, .owner-location strong, .shop-name) {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+}
+
+@media (max-width: 420px) {
+  :root {
+    --app-mobile-gutter: 12px;
+    --app-mobile-h1: clamp(1.28rem, 6.4vw, 1.72rem);
+    --app-mobile-h2: clamp(.94rem, 4.2vw, 1.16rem);
+    --app-mobile-body: clamp(.72rem, 3.1vw, .84rem);
+    --app-mobile-card-pad: 12px;
+    --app-mobile-radius: 15px;
+  }
+}
+
+button,
+a,
+input,
+select,
+textarea {
+  font: inherit;
+}
+
+:focus-visible {
+  outline: 3px solid var(--staff-focus-ring);
+  outline-offset: 2px;
+}
+
+html.staff-overlay-open,
+html.staff-overlay-open body {
+  overflow: hidden;
+  overscroll-behavior: none;
+}
+
+html.staff-overlay-open .staff-main-shell,
+html.staff-overlay-open .staff-content,
+html:has(.detail-drawer) .staff-main-shell,
+html:has(.detail-drawer) .staff-content {
+  overflow: hidden;
+}
+
+button, a { -webkit-tap-highlight-color: transparent; touch-action: manipulation; }
+button:not(:disabled), a { transition: scale var(--staff-motion-fast) var(--staff-motion-ease), transform var(--staff-motion-fast) var(--staff-motion-ease), background-color var(--staff-motion-fast) var(--staff-motion-ease), border-color var(--staff-motion-fast) var(--staff-motion-ease), color var(--staff-motion-fast) var(--staff-motion-ease), box-shadow var(--staff-motion-fast) var(--staff-motion-ease), opacity var(--staff-motion-fast) var(--staff-motion-ease); }
+button:not(:disabled):active, a:active { scale: .98; }
+@media (any-pointer: coarse) {
+  :where(button, [role="button"], input, select, textarea, a[href]) {
+    min-height: var(--app-mobile-tap);
+  }
+
+  :where(input, select, textarea) {
+    font-size: 16px;
+  }
+}
+@media (prefers-reduced-motion: reduce) { *, *::before, *::after { scroll-behavior: auto !important; transition-duration: .01ms !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; } }
+
+/* Complete, bulletproof scrollbar suppression for Android WebView, iOS WebKit, Ionic Shadow DOM, and Desktop */
+*,
+*::before,
+*::after,
+html,
+body,
+ion-app,
+ion-content,
+ion-content::part(scroll),
+.inner-scroll,
+.page,
+.chat-shell,
+.chat-sidebar,
+.chat-message-viewport,
+.detail-drawer,
+.business-appointment-row,
+.attendance-cards,
+.kanban-board {
+  -webkit-overflow-scrolling: touch !important;
+  scrollbar-width: none !important;
+  -ms-overflow-style: none !important;
+}
+
+*::-webkit-scrollbar,
+*::-webkit-scrollbar-thumb,
+*::-webkit-scrollbar-track,
+*::-webkit-scrollbar-corner,
+html::-webkit-scrollbar,
+body::-webkit-scrollbar,
+ion-app::-webkit-scrollbar,
+ion-content::-webkit-scrollbar,
+ion-content::part(scroll)::-webkit-scrollbar,
+.inner-scroll::-webkit-scrollbar {
+  display: none !important;
+  width: 0 !important;
+  height: 0 !important;
+  max-width: 0 !important;
+  max-height: 0 !important;
+  background: transparent !important;
+  opacity: 0 !important;
+  visibility: hidden !important;
+  -webkit-appearance: none !important;
+}
+

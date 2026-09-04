@@ -1,0 +1,50 @@
+name: Build Rust API Linux Binary
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "NEW SOLASTIO APP/app/**"
+      - ".github/workflows/build-rust-api-linux.yml"
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    defaults:
+      run:
+        working-directory: NEW SOLASTIO APP/app
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "NEW SOLASTIO APP/app -> target"
+
+      - name: Check
+        run: cargo check --workspace
+
+      - name: Test
+        run: cargo test --workspace
+
+      - name: Build Release
+        run: cargo build --workspace --release
+
+      - name: Package Binary
+        run: |
+          mkdir -p dist
+          cp target/release/solastio-api dist/solastio-api
+          chmod +x dist/solastio-api
+          tar -czf dist/solastio-api-linux-x64.tar.gz -C dist solastio-api
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: solastio-api-linux-x64
+          path: NEW SOLASTIO APP/app/dist/solastio-api-linux-x64.tar.gz
+          if-no-files-found: error
