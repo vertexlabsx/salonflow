@@ -108,7 +108,7 @@ class ApiClient {
 
     _log.i('$method $path');
 
-    Response<T> response;
+    Response<Object?> response;
     try {
       response = await _dio.request<T>(
         path,
