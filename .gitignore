@@ -1,5 +1,11 @@
 node_modules/
 dist/
+target/
+**/target/
+.dart_tool/
+**/.dart_tool/
+build/
+**/build/
 .angular/
 .env
 .env.*
@@ -29,3 +35,5 @@ render-env-vars.json
 # One-off local repair script / captured test output
 server/fix-db.ts
 server/run-final.txt
+old app/server/fix-db.ts
+old app/server/run-final.txt
