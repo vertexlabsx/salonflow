@@ -12,9 +12,7 @@ $root = Split-Path -Parent $PSScriptRoot
 $keyPath = Join-Path $root $KeyFile
 $archivePath = Resolve-Path $BinaryArchive
 $target = "$User@$HostName"
-
-& scp -i $keyPath -o BatchMode=yes $archivePath "$target`:/tmp/solastio-api-linux-x64.tar.gz"
-if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+$remoteScript = Join-Path $env:TEMP "deploy-solastio-oracle.sh"
 
 $remote = @"
 set -euo pipefail
@@ -81,5 +79,13 @@ sudo systemctl reload nginx
 curl -fsS http://127.0.0.1:4000/api/v1/health
 "@
 
-& ssh -i $keyPath -o BatchMode=yes $target $remote
+$remote | Set-Content -Path $remoteScript -Encoding utf8NoBOM
+
+& scp -i $keyPath -o BatchMode=yes $archivePath "$target`:/tmp/solastio-api-linux-x64.tar.gz"
+if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+& scp -i $keyPath -o BatchMode=yes $remoteScript "$target`:/tmp/deploy-solastio-oracle.sh"
+if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+& ssh -i $keyPath -o BatchMode=yes $target "bash /tmp/deploy-solastio-oracle.sh"
 exit $LASTEXITCODE
