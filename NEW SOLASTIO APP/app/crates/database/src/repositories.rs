@@ -1601,8 +1601,15 @@ impl UserRepository {
         self.users
             .update_one(
                 doc! { "_id": user_id },
+                doc! { "$pull": { "refreshTokens": { "$or": [ { "revokedAt": { "$ne": null } }, { "expiresAt": { "$lte": DateTime::now() } } ] } } },
+                None,
+            )
+            .await
+            .map_err(|_| AppError::Database)?;
+        self.users
+            .update_one(
+                doc! { "_id": user_id },
                 doc! {
-                    "$pull": { "refreshTokens": { "$or": [ { "revokedAt": { "$ne": null } }, { "expiresAt": { "$lte": DateTime::now() } } ] } },
                     "$push": { "refreshTokens": { "$each": [record_doc], "$slice": -10 } }
                 },
                 None,
