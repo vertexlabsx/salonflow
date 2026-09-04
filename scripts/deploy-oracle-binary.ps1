@@ -20,30 +20,35 @@ sudo mkdir -p /opt/solastio/bin /etc/solastio /var/log/solastio
 sudo chown -R ubuntu:ubuntu /opt/solastio /etc/solastio /var/log/solastio
 tar -xzf /tmp/solastio-api-linux-x64.tar.gz -C /opt/solastio/bin
 chmod +x /opt/solastio/bin/solastio-api
-cat >/opt/solastio/bin/run-solastio-api.sh <<'SH'
-#!/usr/bin/env bash
-set -euo pipefail
-if [ -f /etc/solastio/solastio.env ]; then
-  set -a
-  while IFS= read -r line || [ -n "\$line" ]; do
-    line="\${line%$'\r'}"
-    [ -z "\$line" ] && continue
-    case "\$line" in \#*) continue ;; esac
-    [ "\${line#*=}" = "\$line" ] && continue
-    key="\${line%%=*}"
-    value="\${line#*=}"
-    export "\$key=\$value"
-  done < /etc/solastio/solastio.env
-  set +a
-fi
-exec /opt/solastio/bin/solastio-api
-SH
-chmod +x /opt/solastio/bin/run-solastio-api.sh
+cat >/opt/solastio/bin/run-solastio-api.cjs <<'NODE'
+const { spawn } = require('node:child_process');
+const { readFileSync, existsSync } = require('node:fs');
+
+const env = { ...process.env };
+const envFile = '/etc/solastio/solastio.env';
+if (existsSync(envFile)) {
+  for (const rawLine of readFileSync(envFile, 'utf8').replace(/^\uFEFF/, '').split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line || line.startsWith('#') || !line.includes('=')) continue;
+    const index = line.indexOf('=');
+    const key = line.slice(0, index).trim();
+    let value = line.slice(index + 1).trim();
+    value = value.replace(/^['"]|['"]$/g, '');
+    if (key) env[key] = value;
+  }
+}
+
+const child = spawn('/opt/solastio/bin/solastio-api', { stdio: 'inherit', env });
+child.on('exit', (code, signal) => {
+  if (signal) process.kill(process.pid, signal);
+  process.exit(code ?? 1);
+});
+NODE
 cat >/opt/solastio/ecosystem.config.cjs <<'PM2'
 module.exports = {
   apps: [{
     name: "solastio-api",
-    script: "/opt/solastio/bin/run-solastio-api.sh",
+    script: "/opt/solastio/bin/run-solastio-api.cjs",
     exec_mode: "fork",
     instances: 1,
     autorestart: true,
@@ -66,10 +71,10 @@ server {
     location / {
         proxy_pass http://127.0.0.1:4000;
         proxy_http_version 1.1;
-        proxy_set_header Host \$host;
-        proxy_set_header X-Real-IP \$remote_addr;
-        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto \$scheme;
+        proxy_set_header Host `$host;
+        proxy_set_header X-Real-IP `$remote_addr;
+        proxy_set_header X-Forwarded-For `$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto `$scheme;
     }
 }
 NGINX
@@ -79,7 +84,7 @@ sudo systemctl reload nginx
 curl -fsS http://127.0.0.1:4000/api/v1/health
 "@
 
-$remote | Set-Content -Path $remoteScript -Encoding utf8NoBOM
+$remote | Set-Content -Path $remoteScript -Encoding Ascii
 
 & scp -i $keyPath -o BatchMode=yes $archivePath "$target`:/tmp/solastio-api-linux-x64.tar.gz"
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
