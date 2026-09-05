@@ -6,7 +6,7 @@ use axum::{
     body::Bytes,
     extract::{Path, Query, State},
     http::{
-        header::{ACCEPT, AUTHORIZATION, CONTENT_TYPE, SET_COOKIE},
+        header::{ACCEPT, AUTHORIZATION, CONTENT_TYPE, COOKIE, SET_COOKIE},
         HeaderMap, HeaderValue, Method, StatusCode,
     },
     response::IntoResponse,
@@ -213,28 +213,36 @@ async fn ready(State(state): State<Arc<AppState>>) -> axum::response::Response {
 }
 
 fn configured_cors(origins: &[String]) -> CorsLayer {
-    use tower_http::cors::{Any, CorsLayer};
-    let mut layer = CorsLayer::new()
+    use tower_http::cors::{AllowOrigin, CorsLayer};
+    let allowed_origins: Vec<HeaderValue> = origins
+        .iter()
+        .filter_map(|o| o.parse::<HeaderValue>().ok())
+        .collect();
+
+    CorsLayer::new()
         .allow_methods([
             Method::GET,
             Method::POST,
             Method::PUT,
             Method::PATCH,
             Method::DELETE,
+            Method::OPTIONS,
         ])
-        .allow_headers([ACCEPT, AUTHORIZATION, CONTENT_TYPE])
-        .allow_credentials(true);
-    if origins.is_empty() {
-        layer = layer.allow_origin(Any);
-    } else {
-        layer = layer.allow_origin(
-            origins
-                .iter()
-                .filter_map(|origin| origin.parse::<HeaderValue>().ok())
-                .collect::<Vec<_>>(),
-        );
-    }
-    layer
+        .allow_headers([
+            ACCEPT,
+            AUTHORIZATION,
+            CONTENT_TYPE,
+            axum::http::header::HeaderName::from_static("x-csrf-token"),
+        ])
+        .allow_credentials(true)
+        .allow_origin(AllowOrigin::predicate(move |origin, _| {
+            if let Ok(str_val) = origin.to_str() {
+                if str_val.starts_with("http://localhost") || str_val.starts_with("http://127.0.0.1") {
+                    return true;
+                }
+            }
+            allowed_origins.contains(origin)
+        }))
 }
 
 fn realtime_router() -> Router<Arc<AppState>> {
@@ -256,6 +264,11 @@ fn auth_router() -> Router<Arc<AppState>> {
         .route("/refresh", post(refresh))
         .route("/logout", post(logout))
         .route("/csrf", get(csrf))
+        .route("/demo-staff-session", get(demo_staff_session))
+        .route("/webauthn/register/begin", post(webauthn_register_begin))
+        .route("/webauthn/register/finish", post(webauthn_register_finish))
+        .route("/webauthn/login/begin", post(webauthn_login_begin))
+        .route("/webauthn/login/finish", post(webauthn_login_finish))
 }
 
 fn appointments_router() -> Router<Arc<AppState>> {
@@ -338,6 +351,7 @@ fn mobile_router() -> Router<Arc<AppState>> {
 
 fn whatsapp_router() -> Router<Arc<AppState>> {
     Router::new()
+        .route("/status", get(whatsapp_status))
         .route(
             "/webhook",
             get(whatsapp_verify_webhook).post(whatsapp_receive_webhook),
@@ -579,6 +593,20 @@ fn owner_console_router() -> Router<Arc<AppState>> {
             "/operations/clients/:client_id/photos/:photo_id",
             delete(owner_delete_client_photo),
         )
+        .route("/operations/inventory", get(owner_inventory))
+        .route(
+            "/operations/inventory/:product_id",
+            get(owner_inventory_product),
+        )
+        .route("/operations/notifications", get(owner_notifications))
+        .route(
+            "/operations/notifications/:notification_id/receipt",
+            patch(owner_notification_receipt),
+        )
+        .route(
+            "/operations/notifications/mark-all-read",
+            post(owner_notifications_mark_all_read),
+        )
         .route("/clients", get(owner_clients))
         .route(
             "/settings",
@@ -716,21 +744,92 @@ async fn login(
     State(state): State<Arc<AppState>>,
     Json(request): Json<LoginRequest>,
 ) -> Result<axum::response::Response, AppError> {
-    Ok(ok(state.auth.login(request).await?))
+    let session = state.auth.login(request).await?;
+    let cookie_val = format!(
+        "auraRefresh={}; HttpOnly; Path=/api/v1/auth; SameSite=Lax; Max-Age=1209600",
+        session.refresh_token
+    );
+    let mut response = ok(session);
+    if let Ok(header_val) = HeaderValue::from_str(&cookie_val) {
+        response.headers_mut().insert(SET_COOKIE, header_val);
+    }
+    Ok(response)
 }
 
 async fn refresh(
     State(state): State<Arc<AppState>>,
-    Json(request): Json<RefreshRequest>,
+    headers: HeaderMap,
+    Json(mut request): Json<RefreshRequest>,
 ) -> Result<axum::response::Response, AppError> {
-    Ok(ok(state.auth.refresh(request).await?))
+    if request.refresh_token.as_ref().map(|t| t.trim().is_empty()).unwrap_or(true) {
+        if let Some(cookie_hdr) = headers.get(COOKIE).and_then(|v| v.to_str().ok()) {
+            for part in cookie_hdr.split(';') {
+                let part = part.trim();
+                if let Some(val) = part.strip_prefix("auraRefresh=") {
+                    request.refresh_token = Some(val.to_string());
+                    break;
+                }
+            }
+        }
+    }
+    let session = state.auth.refresh(request).await?;
+    let cookie_val = format!(
+        "auraRefresh={}; HttpOnly; Path=/api/v1/auth; SameSite=Lax; Max-Age=1209600",
+        session.refresh_token
+    );
+    let mut response = ok(session);
+    if let Ok(header_val) = HeaderValue::from_str(&cookie_val) {
+        response.headers_mut().insert(SET_COOKIE, header_val);
+    }
+    Ok(response)
 }
 
 async fn logout(
     State(state): State<Arc<AppState>>,
-    Json(request): Json<LogoutRequest>,
+    headers: HeaderMap,
+    Json(mut request): Json<LogoutRequest>,
 ) -> Result<axum::response::Response, AppError> {
-    Ok(ok(state.auth.logout(request).await?))
+    if request.refresh_token.as_ref().map(|t| t.trim().is_empty()).unwrap_or(true) {
+        if let Some(cookie_hdr) = headers.get(COOKIE).and_then(|v| v.to_str().ok()) {
+            for part in cookie_hdr.split(';') {
+                let part = part.trim();
+                if let Some(val) = part.strip_prefix("auraRefresh=") {
+                    request.refresh_token = Some(val.to_string());
+                    break;
+                }
+            }
+        }
+    }
+    let result = state.auth.logout(request).await?;
+    let cookie_val = "auraRefresh=; HttpOnly; Path=/api/v1/auth; SameSite=Lax; Max-Age=0";
+    let mut response = ok(result);
+    if let Ok(header_val) = HeaderValue::from_str(cookie_val) {
+        response.headers_mut().insert(SET_COOKIE, header_val);
+    }
+    Ok(response)
+}
+
+async fn demo_staff_session(
+    State(state): State<Arc<AppState>>,
+) -> Result<axum::response::Response, AppError> {
+    let session = state.auth.demo_staff_session().await?;
+    Ok(ok(session))
+}
+
+async fn webauthn_register_begin() -> Result<axum::response::Response, AppError> {
+    Err(AppError::Validation("Passkeys/WebAuthn not configured on this environment".to_string()))
+}
+
+async fn webauthn_register_finish() -> Result<axum::response::Response, AppError> {
+    Err(AppError::Validation("Passkeys/WebAuthn not configured on this environment".to_string()))
+}
+
+async fn webauthn_login_begin() -> Result<axum::response::Response, AppError> {
+    Err(AppError::Validation("Passkeys/WebAuthn not configured on this environment".to_string()))
+}
+
+async fn webauthn_login_finish() -> Result<axum::response::Response, AppError> {
+    Err(AppError::Validation("Passkeys/WebAuthn not configured on this environment".to_string()))
 }
 
 async fn csrf(State(state): State<Arc<AppState>>) -> axum::response::Response {
@@ -1412,6 +1511,31 @@ struct WhatsAppVerifyQuery {
     verify_token: Option<String>,
     #[serde(rename = "hub.challenge")]
     challenge: Option<String>,
+}
+
+async fn whatsapp_status(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<axum::response::Response, AppError> {
+    let context = context_from_headers(&state, &headers).await?;
+    let connection = state.whatsapp.connected_connection(&context.salon_id).await?;
+    let connections = connection
+        .into_iter()
+        .map(|doc| {
+            serde_json::json!({
+                "status": doc.get_str("status").unwrap_or("connected"),
+                "verifiedName": doc.get_str("verifiedName").unwrap_or_default(),
+                "displayPhoneNumber": doc.get_str("displayPhoneNumber").unwrap_or_default(),
+                "wabaId": doc.get_str("wabaId").unwrap_or_default(),
+                "phoneNumberId": doc.get_str("phoneNumberId").unwrap_or_default(),
+                "connectedAt": doc.get_datetime("connectedAt").ok().and_then(|d| d.try_to_rfc3339_string().ok()),
+            })
+        })
+        .collect::<Vec<_>>();
+    Ok(ok(serde_json::json!({
+        "configured": state.config.meta_app_id.is_some() && state.config.meta_config_id.is_some(),
+        "connections": connections,
+    })))
 }
 
 async fn whatsapp_verify_webhook(
@@ -7533,6 +7657,102 @@ async fn owner_client_opt_out(
         .opt_out_client(&context, &client_id, request)
         .await?;
     Ok(ok(result))
+}
+
+async fn owner_inventory(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Query(query): Query<OwnerOperationsCompatQuery>,
+) -> Result<axum::response::Response, AppError> {
+    let context = context_from_headers(&state, &headers).await?;
+    if !has_permission(&context.permissions, "read:inventory")
+        && !has_permission(&context.permissions, "read:operations")
+        && !has_permission(&context.permissions, "admin:*")
+    {
+        return Err(AppError::Authorization);
+    }
+    let page = query.page.unwrap_or(1);
+    let page_size = query.page_size.or(query.limit).unwrap_or(30);
+    Ok(ok(serde_json::json!({
+        "items": [],
+        "metrics": { "products": 0, "lowStock": 0, "outOfStock": 0, "reorderCount": 0, "stockValuePaise": 0 },
+        "facets": { "categories": [], "suppliers": [] },
+        "page": { "page": page, "pageSize": page_size, "total": 0, "totalPages": 0, "hasMore": false },
+        "metadata": { "timezone": "Asia/Kolkata", "partial": true, "unavailableSources": ["inventory-store"], "scopeNote": "Inventory catalogue is not configured for this salon yet." }
+    })))
+}
+
+async fn owner_inventory_product(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(_product_id): Path<String>,
+    Query(_query): Query<OwnerListQuery>,
+) -> Result<axum::response::Response, AppError> {
+    let context = context_from_headers(&state, &headers).await?;
+    if !has_permission(&context.permissions, "read:inventory")
+        && !has_permission(&context.permissions, "read:operations")
+        && !has_permission(&context.permissions, "admin:*")
+    {
+        return Err(AppError::Authorization);
+    }
+    Err(AppError::NotFound("Inventory product not found.".to_string()))
+}
+
+async fn owner_notifications(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Query(query): Query<OwnerOperationsCompatQuery>,
+) -> Result<axum::response::Response, AppError> {
+    let _context = context_from_headers(&state, &headers).await?;
+    let page = query.page.unwrap_or(1);
+    let page_size = query.page_size.or(query.limit).unwrap_or(30);
+    Ok(ok(serde_json::json!({
+        "items": [],
+        "page": { "page": page, "pageSize": page_size, "total": 0, "totalPages": 0, "hasMore": false },
+        "metadata": { "timezone": "Asia/Kolkata", "partial": false, "unavailableSources": [], "unreadTotal": 0 }
+    })))
+}
+
+#[derive(Debug, Deserialize)]
+struct OwnerOperationsCompatQuery {
+    #[serde(default)]
+    page: Option<i64>,
+    #[serde(default, rename = "pageSize")]
+    page_size: Option<i64>,
+    #[serde(default)]
+    limit: Option<i64>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OwnerNotificationReceiptRequest {
+    #[serde(default, rename = "read")]
+    read: bool,
+}
+
+async fn owner_notification_receipt(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(notification_id): Path<String>,
+    Json(request): Json<OwnerNotificationReceiptRequest>,
+) -> Result<axum::response::Response, AppError> {
+    let _context = context_from_headers(&state, &headers).await?;
+    Ok(ok(serde_json::json!({
+        "notificationId": notification_id,
+        "isRead": request.read,
+        "readAt": DateTime::now().try_to_rfc3339_string().unwrap_or_default(),
+    })))
+}
+
+async fn owner_notifications_mark_all_read(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(_body): Json<serde_json::Value>,
+) -> Result<axum::response::Response, AppError> {
+    let _context = context_from_headers(&state, &headers).await?;
+    Ok(ok(serde_json::json!({
+        "updated": 0,
+        "readAt": DateTime::now().try_to_rfc3339_string().unwrap_or_default(),
+    })))
 }
 
 #[derive(Debug, Deserialize)]

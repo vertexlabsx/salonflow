@@ -1634,6 +1634,27 @@ impl UserRepository {
             .map_err(|_| AppError::Database)?;
         Ok(())
     }
+
+    pub async fn find_first_staff(&self, salon_id: &str) -> Result<Option<UserRecord>, AppError> {
+        self.users
+            .find_one(
+                doc! {
+                    "salonId": salon_id,
+                    "status": "active",
+                    "staffId": { "$ne": null }
+                },
+                None,
+            )
+            .await
+            .map_err(|_| AppError::Database)
+    }
+
+    pub async fn find_by_staff_id(&self, salon_id: &str, staff_id: &str) -> Result<Option<UserRecord>, AppError> {
+        self.users
+            .find_one(doc! { "salonId": salon_id, "staffId": staff_id }, None)
+            .await
+            .map_err(|_| AppError::Database)
+    }
 }
 
 #[derive(Clone)]
@@ -3744,6 +3765,13 @@ impl SalonRepository {
     pub async fn find_by_id(&self, id: &str) -> Result<Option<SalonRecord>, AppError> {
         self.salons
             .find_one(doc! { "_id": id.trim() }, None)
+            .await
+            .map_err(|_| AppError::Database)
+    }
+
+    pub async fn find_first_active(&self) -> Result<Option<SalonRecord>, AppError> {
+        self.salons
+            .find_one(doc! { "status": "active" }, None)
             .await
             .map_err(|_| AppError::Database)
     }

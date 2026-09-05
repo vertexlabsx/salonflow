@@ -220,6 +220,23 @@ impl AuthService {
         Ok(LogoutResponse { logged_out: true })
     }
 
+    pub async fn demo_staff_session(&self) -> Result<SessionResponse, AppError> {
+        let salon = match self.salons.find_first_active().await? {
+            Some(s) => s,
+            None => match self.salons.find_by_id("tenant_aura").await? {
+                Some(s) => s,
+                None => return Err(AppError::NotFound("No active salon found".to_string())),
+            },
+        };
+        let user = self
+            .users
+            .find_first_staff(&salon.id)
+            .await?
+            .ok_or_else(|| AppError::NotFound("No staff user found".to_string()))?;
+        self.issue_session(user, salon, "demo-staff-session".to_string())
+            .await
+    }
+
     pub fn issue_csrf(&self) -> CsrfResponse {
         let expires_at = Utc::now() + Duration::minutes(10);
         CsrfResponse {
