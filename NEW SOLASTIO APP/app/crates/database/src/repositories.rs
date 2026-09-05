@@ -1649,7 +1649,11 @@ impl UserRepository {
             .map_err(|_| AppError::Database)
     }
 
-    pub async fn find_by_staff_id(&self, salon_id: &str, staff_id: &str) -> Result<Option<UserRecord>, AppError> {
+    pub async fn find_by_staff_id(
+        &self,
+        salon_id: &str,
+        staff_id: &str,
+    ) -> Result<Option<UserRecord>, AppError> {
         self.users
             .find_one(doc! { "salonId": salon_id, "staffId": staff_id }, None)
             .await
@@ -1668,6 +1672,7 @@ pub struct WhatsAppRepository {
     inbounds: Collection<Document>,
     outbounds: Collection<Document>,
     connections: Collection<Document>,
+    oauth_states: Collection<Document>,
     customers: Collection<Document>,
     templates: Collection<Document>,
     whatsapp_sessions: Collection<Document>,
@@ -1681,6 +1686,7 @@ impl WhatsAppRepository {
             inbounds: database.collection("whatsappinbounds"),
             outbounds: database.collection("whatsappoutbounds"),
             connections: database.collection("whatsappconnections"),
+            oauth_states: database.collection("whatsappoauthstates"),
             customers: database.collection("customers"),
             templates: database.collection("whatsapptemplates"),
             whatsapp_sessions: database.collection("whatsappbookingsessions"),
@@ -1942,6 +1948,159 @@ impl WhatsAppRepository {
             )
             .await
             .map_err(|_| AppError::Database)
+    }
+
+    pub async fn insert_oauth_state(
+        &self,
+        state_hash: &str,
+        salon_id: &str,
+        user_id: &str,
+        expires_at: DateTime,
+    ) -> Result<(), AppError> {
+        self.oauth_states
+            .insert_one(
+                doc! {
+                    "stateHash": state_hash,
+                    "salonId": salon_id,
+                    "userId": user_id,
+                    "expiresAt": expires_at,
+                    "consumedAt": null,
+                    "createdAt": DateTime::now(),
+                },
+                None,
+            )
+            .await
+            .map_err(|_| AppError::Database)?;
+        Ok(())
+    }
+
+    pub async fn oauth_state(
+        &self,
+        state_hash: &str,
+        salon_id: &str,
+        user_id: &str,
+    ) -> Result<Option<Document>, AppError> {
+        self.oauth_states
+            .find_one(
+                doc! { "stateHash": state_hash, "salonId": salon_id, "userId": user_id },
+                None,
+            )
+            .await
+            .map_err(|_| AppError::Database)
+    }
+
+    pub async fn consume_oauth_state(
+        &self,
+        state_hash: &str,
+        salon_id: &str,
+        user_id: &str,
+    ) -> Result<bool, AppError> {
+        let result = self
+            .oauth_states
+            .update_one(
+                doc! {
+                    "stateHash": state_hash,
+                    "salonId": salon_id,
+                    "userId": user_id,
+                    "consumedAt": null,
+                    "expiresAt": { "$gt": DateTime::now() },
+                },
+                doc! { "$set": { "consumedAt": DateTime::now() } },
+                None,
+            )
+            .await
+            .map_err(|_| AppError::Database)?;
+        Ok(result.modified_count == 1)
+    }
+
+    pub async fn connection_by_phone_number(
+        &self,
+        phone_number_id: &str,
+    ) -> Result<Option<Document>, AppError> {
+        self.connections
+            .find_one(
+                doc! { "phoneNumberId": phone_number_id, "status": { "$ne": "disconnected" } },
+                None,
+            )
+            .await
+            .map_err(|_| AppError::Database)
+    }
+
+    pub async fn upsert_connection(
+        &self,
+        salon_id: &str,
+        user_id: &str,
+        provider: &str,
+        waba_id: &str,
+        phone_number_id: &str,
+        business_id: &str,
+        display_phone_number: &str,
+        verified_name: &str,
+        encrypted_access_token: &str,
+        token_expires_at: Option<DateTime>,
+        webhook_subscribed: bool,
+    ) -> Result<Document, AppError> {
+        self.connections
+            .find_one_and_update(
+                doc! { "salonId": salon_id, "phoneNumberId": phone_number_id },
+                doc! {
+                    "$set": {
+                        "provider": provider,
+                        "wabaId": waba_id,
+                        "businessId": business_id,
+                        "displayPhoneNumber": display_phone_number,
+                        "verifiedName": verified_name,
+                        "encryptedAccessToken": encrypted_access_token,
+                        "tokenExpiresAt": token_expires_at,
+                        "status": "connected",
+                        "webhookSubscribed": webhook_subscribed,
+                        "connectedAt": DateTime::now(),
+                        "disconnectedAt": null,
+                        "lastError": "",
+                        "updatedAt": DateTime::now(),
+                    },
+                    "$setOnInsert": {
+                        "salonId": salon_id,
+                        "phoneNumberId": phone_number_id,
+                        "createdBy": user_id,
+                        "scopes": [],
+                    },
+                },
+                FindOneAndUpdateOptions::builder()
+                    .upsert(true)
+                    .return_document(ReturnDocument::After)
+                    .build(),
+            )
+            .await
+            .map_err(|_| AppError::Database)?
+            .ok_or(AppError::Database)
+    }
+
+    pub async fn disconnect_connection(
+        &self,
+        salon_id: &str,
+        phone_number_id: Option<&str>,
+    ) -> Result<Document, AppError> {
+        let filter = match phone_number_id {
+            Some(phone_number_id) => doc! {
+                "salonId": salon_id,
+                "phoneNumberId": phone_number_id,
+                "status": { "$ne": "disconnected" },
+            },
+            None => doc! { "salonId": salon_id, "status": { "$ne": "disconnected" } },
+        };
+        self.connections
+            .find_one_and_update(
+                filter,
+                doc! { "$set": { "status": "disconnected", "disconnectedAt": DateTime::now(), "webhookSubscribed": false, "updatedAt": DateTime::now() } },
+                FindOneAndUpdateOptions::builder()
+                    .sort(doc! { "connectedAt": -1 })
+                    .return_document(ReturnDocument::After)
+                    .build(),
+            )
+            .await
+            .map_err(|_| AppError::Database)?
+            .ok_or_else(|| AppError::NotFound("WhatsApp connection not found.".to_string()))
     }
 
     pub async fn salon_for_phone_number_id(
@@ -3774,6 +3933,38 @@ impl SalonRepository {
             .find_one(doc! { "status": "active" }, None)
             .await
             .map_err(|_| AppError::Database)
+    }
+
+    pub async fn add_whatsapp_phone_number(
+        &self,
+        salon_id: &str,
+        phone_number_id: &str,
+    ) -> Result<(), AppError> {
+        self.salons
+            .update_one(
+                doc! { "_id": salon_id.trim() },
+                doc! { "$addToSet": { "whatsappPhoneNumberIds": phone_number_id } },
+                None,
+            )
+            .await
+            .map_err(|_| AppError::Database)?;
+        Ok(())
+    }
+
+    pub async fn remove_whatsapp_phone_number(
+        &self,
+        salon_id: &str,
+        phone_number_id: &str,
+    ) -> Result<(), AppError> {
+        self.salons
+            .update_one(
+                doc! { "_id": salon_id.trim() },
+                doc! { "$pull": { "whatsappPhoneNumberIds": phone_number_id } },
+                None,
+            )
+            .await
+            .map_err(|_| AppError::Database)?;
+        Ok(())
     }
 }
 

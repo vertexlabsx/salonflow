@@ -97,6 +97,7 @@ struct AppState {
     shopify_users: ShopifyUserRepository,
     push_devices: PushDeviceRepository,
     users: UserRepository,
+    salons: SalonRepository,
     config: AppConfig,
 }
 
@@ -121,7 +122,7 @@ async fn main() -> Result<(), AppError> {
     let owner_repo = OwnerRepository::new(&store.database);
     let owner_appointment_repo = AppointmentRepository::new(&store.database);
     let catalog_service_repo = CatalogRepository::new(&store.database);
-    let auth = AuthService::new(config.clone(), users, salons);
+    let auth = AuthService::new(config.clone(), users, salons.clone());
     let appointments = AppointmentService::new(appointment_repo, catalog_repo);
     let self_booking = SelfBookingService::new(public_catalog_repo, public_appointment_repo);
     let staff = StaffService::new(attendance_repo, staff_repo);
@@ -155,6 +156,7 @@ async fn main() -> Result<(), AppError> {
         shopify_users,
         push_devices,
         users,
+        salons,
         config: config.clone(),
     };
     start_whatsapp_nudge_loop(Arc::new(state.clone()));
@@ -237,7 +239,9 @@ fn configured_cors(origins: &[String]) -> CorsLayer {
         .allow_credentials(true)
         .allow_origin(AllowOrigin::predicate(move |origin, _| {
             if let Ok(str_val) = origin.to_str() {
-                if str_val.starts_with("http://localhost") || str_val.starts_with("http://127.0.0.1") {
+                if str_val.starts_with("http://localhost")
+                    || str_val.starts_with("http://127.0.0.1")
+                {
                     return true;
                 }
             }
@@ -352,6 +356,19 @@ fn mobile_router() -> Router<Arc<AppState>> {
 fn whatsapp_router() -> Router<Arc<AppState>> {
     Router::new()
         .route("/status", get(whatsapp_status))
+        .route(
+            "/embedded-signup/state",
+            post(whatsapp_embedded_signup_state),
+        )
+        .route(
+            "/embedded-signup/start",
+            post(whatsapp_embedded_signup_state),
+        )
+        .route(
+            "/embedded-signup/callback",
+            post(whatsapp_embedded_signup_callback),
+        )
+        .route("/disconnect", post(whatsapp_disconnect))
         .route(
             "/webhook",
             get(whatsapp_verify_webhook).post(whatsapp_receive_webhook),
@@ -761,7 +778,12 @@ async fn refresh(
     headers: HeaderMap,
     Json(mut request): Json<RefreshRequest>,
 ) -> Result<axum::response::Response, AppError> {
-    if request.refresh_token.as_ref().map(|t| t.trim().is_empty()).unwrap_or(true) {
+    if request
+        .refresh_token
+        .as_ref()
+        .map(|t| t.trim().is_empty())
+        .unwrap_or(true)
+    {
         if let Some(cookie_hdr) = headers.get(COOKIE).and_then(|v| v.to_str().ok()) {
             for part in cookie_hdr.split(';') {
                 let part = part.trim();
@@ -789,7 +811,12 @@ async fn logout(
     headers: HeaderMap,
     Json(mut request): Json<LogoutRequest>,
 ) -> Result<axum::response::Response, AppError> {
-    if request.refresh_token.as_ref().map(|t| t.trim().is_empty()).unwrap_or(true) {
+    if request
+        .refresh_token
+        .as_ref()
+        .map(|t| t.trim().is_empty())
+        .unwrap_or(true)
+    {
         if let Some(cookie_hdr) = headers.get(COOKIE).and_then(|v| v.to_str().ok()) {
             for part in cookie_hdr.split(';') {
                 let part = part.trim();
@@ -817,19 +844,27 @@ async fn demo_staff_session(
 }
 
 async fn webauthn_register_begin() -> Result<axum::response::Response, AppError> {
-    Err(AppError::Validation("Passkeys/WebAuthn not configured on this environment".to_string()))
+    Err(AppError::Validation(
+        "Passkeys/WebAuthn not configured on this environment".to_string(),
+    ))
 }
 
 async fn webauthn_register_finish() -> Result<axum::response::Response, AppError> {
-    Err(AppError::Validation("Passkeys/WebAuthn not configured on this environment".to_string()))
+    Err(AppError::Validation(
+        "Passkeys/WebAuthn not configured on this environment".to_string(),
+    ))
 }
 
 async fn webauthn_login_begin() -> Result<axum::response::Response, AppError> {
-    Err(AppError::Validation("Passkeys/WebAuthn not configured on this environment".to_string()))
+    Err(AppError::Validation(
+        "Passkeys/WebAuthn not configured on this environment".to_string(),
+    ))
 }
 
 async fn webauthn_login_finish() -> Result<axum::response::Response, AppError> {
-    Err(AppError::Validation("Passkeys/WebAuthn not configured on this environment".to_string()))
+    Err(AppError::Validation(
+        "Passkeys/WebAuthn not configured on this environment".to_string(),
+    ))
 }
 
 async fn csrf(State(state): State<Arc<AppState>>) -> axum::response::Response {
@@ -1513,29 +1548,506 @@ struct WhatsAppVerifyQuery {
     challenge: Option<String>,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct WhatsAppSignupCallbackRequest {
+    state: String,
+    authorization_code: String,
+    #[serde(default)]
+    waba_id: Option<String>,
+    #[serde(default)]
+    phone_number_id: Option<String>,
+    #[serde(default)]
+    business_id: Option<String>,
+    #[serde(default)]
+    redirect_uri: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct WhatsAppDisconnectRequest {
+    #[serde(default)]
+    phone_number_id: Option<String>,
+}
+
+fn require_whatsapp_write(
+    context: &solastio_application::auth::RequestContext,
+) -> Result<(), AppError> {
+    if has_permission(&context.permissions, "update:appointments")
+        || has_permission(&context.permissions, "admin:*")
+    {
+        Ok(())
+    } else {
+        Err(AppError::Authorization)
+    }
+}
+
+fn whatsapp_embedded_signup_configured(config: &AppConfig) -> bool {
+    config.meta_app_id.is_some()
+        && config.meta_app_secret.is_some()
+        && config.meta_config_id.is_some()
+}
+
+fn whatsapp_meta_api_version(config: &AppConfig) -> String {
+    config
+        .meta_api_version
+        .clone()
+        .unwrap_or_else(|| config.meta_graph_api_version.clone())
+}
+
+fn whatsapp_connection_json(doc: &Document) -> serde_json::Value {
+    serde_json::json!({
+        "id": doc.get_object_id("_id").map(|id| id.to_hex()).unwrap_or_default(),
+        "salonId": doc.get_str("salonId").unwrap_or_default(),
+        "provider": doc.get_str("provider").unwrap_or("meta_production"),
+        "wabaId": doc.get_str("wabaId").unwrap_or_default(),
+        "phoneNumberId": doc.get_str("phoneNumberId").unwrap_or_default(),
+        "businessId": doc.get_str("businessId").unwrap_or_default(),
+        "displayPhoneNumber": doc.get_str("displayPhoneNumber").unwrap_or_default(),
+        "verifiedName": doc.get_str("verifiedName").unwrap_or_default(),
+        "status": doc.get_str("status").unwrap_or("connected"),
+        "webhookSubscribed": doc.get_bool("webhookSubscribed").unwrap_or(false),
+        "connectedAt": doc.get_datetime("connectedAt").ok().and_then(|d| d.try_to_rfc3339_string().ok()),
+        "disconnectedAt": doc.get_datetime("disconnectedAt").ok().and_then(|d| d.try_to_rfc3339_string().ok()),
+        "updatedAt": doc.get_datetime("updatedAt").ok().and_then(|d| d.try_to_rfc3339_string().ok()),
+    })
+}
+
+fn whatsapp_state_signature(config: &AppConfig, payload: &str) -> Result<String, AppError> {
+    type HmacSha256 = Hmac<Sha256>;
+    let mut mac = <HmacSha256 as Mac>::new_from_slice(&encryption_key(config))
+        .map_err(|_| AppError::Internal)?;
+    mac.update(payload.as_bytes());
+    Ok(base64_url_encode(&mac.finalize().into_bytes()))
+}
+
+fn whatsapp_state_hash(state: &str) -> String {
+    hex_lower(&Sha256::digest(state.as_bytes()))
+}
+
+async fn whatsapp_embedded_signup_state(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<axum::response::Response, AppError> {
+    let context = context_from_headers(&state, &headers).await?;
+    require_whatsapp_write(&context)?;
+    if !whatsapp_embedded_signup_configured(&state.config) {
+        return Err(AppError::Validation(
+            "Meta Embedded Signup is not configured for this environment.".to_string(),
+        ));
+    }
+    let expires_ms = DateTime::now().timestamp_millis() + 10 * 60 * 1000;
+    let nonce: String = rand::thread_rng()
+        .sample_iter(&Alphanumeric)
+        .take(24)
+        .map(char::from)
+        .collect();
+    let payload = format!(
+        "{}.{}.{}.{}",
+        context.salon_id, context.user_id, expires_ms, nonce
+    );
+    let state_value = format!(
+        "{}.{}",
+        payload,
+        whatsapp_state_signature(&state.config, &payload)?
+    );
+    state
+        .whatsapp
+        .insert_oauth_state(
+            &whatsapp_state_hash(&state_value),
+            &context.salon_id,
+            &context.user_id,
+            DateTime::from_millis(expires_ms),
+        )
+        .await?;
+    Ok(ok(serde_json::json!({
+        "state": state_value,
+        "expiresAt": DateTime::from_millis(expires_ms).try_to_rfc3339_string().unwrap_or_default(),
+        "appId": state.config.meta_app_id.as_deref().unwrap_or_default(),
+        "configId": state.config.meta_config_id.as_deref().unwrap_or_default(),
+        "apiVersion": whatsapp_meta_api_version(&state.config),
+        "provider": "meta_production",
+    })))
+}
+
+async fn consume_whatsapp_signup_state(
+    state: &Arc<AppState>,
+    state_value: &str,
+    expected_salon_id: &str,
+    expected_user_id: &str,
+) -> Result<(), AppError> {
+    let parts = state_value.split('.').collect::<Vec<_>>();
+    if parts.len() != 5 {
+        return Err(AppError::Validation(
+            "Invalid Embedded Signup state.".to_string(),
+        ));
+    }
+    let payload = format!("{}.{}.{}.{}", parts[0], parts[1], parts[2], parts[3]);
+    if whatsapp_state_signature(&state.config, &payload)? != parts[4] {
+        return Err(AppError::Validation(
+            "Invalid Embedded Signup state signature.".to_string(),
+        ));
+    }
+    if parts[0] != expected_salon_id || parts[1] != expected_user_id {
+        return Err(AppError::Authorization);
+    }
+    let expires_ms = parts[2]
+        .parse::<i64>()
+        .map_err(|_| AppError::Validation("Invalid Embedded Signup state.".to_string()))?;
+    if expires_ms < DateTime::now().timestamp_millis() {
+        return Err(AppError::Validation(
+            "Embedded Signup state expired. Start again.".to_string(),
+        ));
+    }
+    let state_hash = whatsapp_state_hash(state_value);
+    if state
+        .whatsapp
+        .consume_oauth_state(&state_hash, expected_salon_id, expected_user_id)
+        .await?
+    {
+        return Ok(());
+    }
+    let existing = state
+        .whatsapp
+        .oauth_state(&state_hash, expected_salon_id, expected_user_id)
+        .await?;
+    if let Some(existing) = existing {
+        if existing.get_datetime("consumedAt").is_ok() {
+            return Err(AppError::Validation(
+                "Embedded Signup state has already been used.".to_string(),
+            ));
+        }
+        if existing
+            .get_datetime("expiresAt")
+            .map(|expires_at| expires_at.timestamp_millis() <= DateTime::now().timestamp_millis())
+            .unwrap_or(false)
+        {
+            return Err(AppError::Validation(
+                "Embedded Signup state expired. Start again.".to_string(),
+            ));
+        }
+    }
+    Err(AppError::Validation(
+        "Invalid Embedded Signup state.".to_string(),
+    ))
+}
+
 async fn whatsapp_status(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Result<axum::response::Response, AppError> {
     let context = context_from_headers(&state, &headers).await?;
-    let connection = state.whatsapp.connected_connection(&context.salon_id).await?;
+    let connection = state
+        .whatsapp
+        .connected_connection(&context.salon_id)
+        .await?;
     let connections = connection
         .into_iter()
-        .map(|doc| {
-            serde_json::json!({
-                "status": doc.get_str("status").unwrap_or("connected"),
-                "verifiedName": doc.get_str("verifiedName").unwrap_or_default(),
-                "displayPhoneNumber": doc.get_str("displayPhoneNumber").unwrap_or_default(),
-                "wabaId": doc.get_str("wabaId").unwrap_or_default(),
-                "phoneNumberId": doc.get_str("phoneNumberId").unwrap_or_default(),
-                "connectedAt": doc.get_datetime("connectedAt").ok().and_then(|d| d.try_to_rfc3339_string().ok()),
-            })
-        })
+        .map(|doc| whatsapp_connection_json(&doc))
         .collect::<Vec<_>>();
     Ok(ok(serde_json::json!({
-        "configured": state.config.meta_app_id.is_some() && state.config.meta_config_id.is_some(),
+        "configured": whatsapp_embedded_signup_configured(&state.config),
         "connections": connections,
     })))
+}
+
+fn sanitize_meta_error(message: &str) -> String {
+    let mut output = message.to_string();
+    if let Some(index) = output.find("access_token=") {
+        output.truncate(index + "access_token=".len());
+        output.push_str("[redacted]");
+    }
+    if output.contains("Bearer ") {
+        output = output.replace("Bearer ", "Bearer [redacted] ");
+    }
+    output
+}
+
+async fn exchange_embedded_signup_code(
+    config: &AppConfig,
+    code: &str,
+    redirect_uri: Option<&str>,
+) -> Result<(String, Option<i64>), AppError> {
+    let app_id = config.meta_app_id.as_deref().ok_or_else(|| {
+        AppError::Validation("Meta Embedded Signup is not configured.".to_string())
+    })?;
+    let app_secret = config.meta_app_secret.as_deref().ok_or_else(|| {
+        AppError::Validation("Meta Embedded Signup is not configured.".to_string())
+    })?;
+    let mut url = url::Url::parse(&format!(
+        "{}/{}/oauth/access_token",
+        config.meta_graph_api_base_url.trim_end_matches('/'),
+        whatsapp_meta_api_version(config)
+    ))
+    .map_err(|_| AppError::ExternalService)?;
+    url.query_pairs_mut()
+        .append_pair("client_id", app_id)
+        .append_pair("client_secret", app_secret)
+        .append_pair("code", code);
+    if let Some(redirect_uri) = redirect_uri.filter(|value| !value.trim().is_empty()) {
+        url.query_pairs_mut()
+            .append_pair("redirect_uri", redirect_uri);
+    }
+    let response = reqwest::Client::new()
+        .get(url)
+        .send()
+        .await
+        .map_err(|_| AppError::ExternalService)?;
+    let status = response.status();
+    let payload: serde_json::Value = response
+        .json()
+        .await
+        .unwrap_or_else(|_| serde_json::json!({}));
+    let token = payload
+        .get("access_token")
+        .and_then(|value| value.as_str())
+        .unwrap_or_default()
+        .to_string();
+    if !status.is_success() || token.is_empty() {
+        let message = payload
+            .pointer("/error/message")
+            .and_then(|value| value.as_str())
+            .unwrap_or("Unable to exchange Meta authorization code.");
+        return Err(AppError::Validation(sanitize_meta_error(message)));
+    }
+    Ok((
+        token,
+        payload.get("expires_in").and_then(|value| value.as_i64()),
+    ))
+}
+
+async fn meta_get_data(
+    config: &AppConfig,
+    path: &str,
+    access_token: &str,
+) -> Result<Vec<serde_json::Value>, AppError> {
+    let url = format!(
+        "{}/{}/{}",
+        config.meta_graph_api_base_url.trim_end_matches('/'),
+        whatsapp_meta_api_version(config),
+        path.trim_start_matches('/')
+    );
+    let response = reqwest::Client::new()
+        .get(url)
+        .query(&[("access_token", access_token)])
+        .send()
+        .await
+        .map_err(|_| AppError::ExternalService)?;
+    let status = response.status();
+    let payload: serde_json::Value = response
+        .json()
+        .await
+        .unwrap_or_else(|_| serde_json::json!({}));
+    if !status.is_success() {
+        let message = payload
+            .pointer("/error/message")
+            .and_then(|value| value.as_str())
+            .unwrap_or("Meta API request failed.");
+        return Err(AppError::Validation(sanitize_meta_error(message)));
+    }
+    Ok(payload
+        .get("data")
+        .and_then(|value| value.as_array())
+        .cloned()
+        .unwrap_or_default())
+}
+
+async fn fetch_shared_wabas(
+    config: &AppConfig,
+    access_token: &str,
+) -> Result<Vec<serde_json::Value>, AppError> {
+    match meta_get_data(
+        config,
+        "/me/shared_whatsapp_business_accounts",
+        access_token,
+    )
+    .await
+    {
+        Ok(data) => Ok(data),
+        Err(_) => Ok(Vec::new()),
+    }
+}
+
+async fn fetch_waba_phone_numbers(
+    config: &AppConfig,
+    access_token: &str,
+    waba_id: &str,
+) -> Result<Vec<serde_json::Value>, AppError> {
+    meta_get_data(
+        config,
+        &format!(
+            "/{}/phone_numbers?fields=id,display_phone_number,verified_name,code_verification_status,quality_rating",
+            waba_id
+        ),
+        access_token,
+    )
+    .await
+}
+
+async fn subscribe_waba_to_webhooks(
+    config: &AppConfig,
+    access_token: &str,
+    waba_id: &str,
+) -> Result<bool, AppError> {
+    let url = format!(
+        "{}/{}/{}/subscribed_apps",
+        config.meta_graph_api_base_url.trim_end_matches('/'),
+        whatsapp_meta_api_version(config),
+        waba_id
+    );
+    let response = reqwest::Client::new()
+        .post(url)
+        .bearer_auth(access_token)
+        .send()
+        .await
+        .map_err(|_| AppError::ExternalService)?;
+    if response.status().as_u16() == 400 || response.status().as_u16() == 403 {
+        return Ok(false);
+    }
+    if !response.status().is_success() {
+        return Err(AppError::ExternalService);
+    }
+    Ok(true)
+}
+
+async fn whatsapp_embedded_signup_callback(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(request): Json<WhatsAppSignupCallbackRequest>,
+) -> Result<axum::response::Response, AppError> {
+    let context = context_from_headers(&state, &headers).await?;
+    require_whatsapp_write(&context)?;
+    if request.state.trim().len() < 20 || request.authorization_code.trim().len() < 5 {
+        return Err(AppError::Validation(
+            "Invalid Embedded Signup callback.".to_string(),
+        ));
+    }
+    consume_whatsapp_signup_state(&state, &request.state, &context.salon_id, &context.user_id)
+        .await?;
+    let (access_token, expires_in) = exchange_embedded_signup_code(
+        &state.config,
+        request.authorization_code.trim(),
+        request.redirect_uri.as_deref(),
+    )
+    .await?;
+    let mut waba_id = request
+        .waba_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+    if waba_id.is_none() {
+        let shared_wabas = fetch_shared_wabas(&state.config, &access_token).await?;
+        waba_id = shared_wabas
+            .first()
+            .and_then(|item| item.get("id"))
+            .and_then(|value| value.as_str())
+            .map(str::to_string);
+    }
+    let waba_id = waba_id.ok_or_else(|| {
+        AppError::Validation(
+            "Meta did not return a WhatsApp Business Account id. Complete Embedded Signup again."
+                .to_string(),
+        )
+    })?;
+    let phone_numbers = fetch_waba_phone_numbers(&state.config, &access_token, &waba_id).await?;
+    let phone_number_id = request
+        .phone_number_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let selected_phone = phone_number_id
+        .and_then(|id| {
+            phone_numbers
+                .iter()
+                .find(|item| item.get("id").and_then(|value| value.as_str()) == Some(id))
+        })
+        .or_else(|| phone_numbers.first())
+        .ok_or_else(|| {
+            AppError::Validation(
+                "No accessible WhatsApp phone number was returned by Meta for this WABA."
+                    .to_string(),
+            )
+        })?;
+    let phone_number_id = selected_phone
+        .get("id")
+        .and_then(|value| value.as_str())
+        .ok_or_else(|| {
+            AppError::Validation(
+                "No accessible WhatsApp phone number was returned by Meta for this WABA."
+                    .to_string(),
+            )
+        })?;
+    if let Some(existing) = state
+        .whatsapp
+        .connection_by_phone_number(phone_number_id)
+        .await?
+    {
+        if existing.get_str("salonId").unwrap_or_default() != context.salon_id {
+            return Err(AppError::Conflict(
+                "This WhatsApp phone number is already connected to another Solastio workspace."
+                    .to_string(),
+            ));
+        }
+    }
+    let webhook_subscribed =
+        subscribe_waba_to_webhooks(&state.config, &access_token, &waba_id).await?;
+    let encrypted_access_token = encrypt_secret(&state.config, &access_token)?;
+    let token_expires_at = expires_in
+        .map(|seconds| DateTime::from_millis(DateTime::now().timestamp_millis() + seconds * 1000));
+    let display_phone_number = selected_phone
+        .get("display_phone_number")
+        .and_then(|value| value.as_str())
+        .unwrap_or_default();
+    let verified_name = selected_phone
+        .get("verified_name")
+        .and_then(|value| value.as_str())
+        .unwrap_or_default();
+    let doc = state
+        .whatsapp
+        .upsert_connection(
+            &context.salon_id,
+            &context.user_id,
+            "meta_production",
+            &waba_id,
+            phone_number_id,
+            request.business_id.as_deref().unwrap_or_default(),
+            display_phone_number,
+            verified_name,
+            &encrypted_access_token,
+            token_expires_at,
+            webhook_subscribed,
+        )
+        .await?;
+    state
+        .salons
+        .add_whatsapp_phone_number(&context.salon_id, phone_number_id)
+        .await?;
+    Ok(ok(
+        serde_json::json!({ "connection": whatsapp_connection_json(&doc) }),
+    ))
+}
+
+async fn whatsapp_disconnect(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(request): Json<WhatsAppDisconnectRequest>,
+) -> Result<axum::response::Response, AppError> {
+    let context = context_from_headers(&state, &headers).await?;
+    require_whatsapp_write(&context)?;
+    let doc = state
+        .whatsapp
+        .disconnect_connection(&context.salon_id, request.phone_number_id.as_deref())
+        .await?;
+    if let Ok(phone_number_id) = doc.get_str("phoneNumberId") {
+        state
+            .salons
+            .remove_whatsapp_phone_number(&context.salon_id, phone_number_id)
+            .await?;
+    }
+    Ok(ok(
+        serde_json::json!({ "connection": whatsapp_connection_json(&doc) }),
+    ))
 }
 
 async fn whatsapp_verify_webhook(
@@ -7695,7 +8207,9 @@ async fn owner_inventory_product(
     {
         return Err(AppError::Authorization);
     }
-    Err(AppError::NotFound("Inventory product not found.".to_string()))
+    Err(AppError::NotFound(
+        "Inventory product not found.".to_string(),
+    ))
 }
 
 async fn owner_notifications(
