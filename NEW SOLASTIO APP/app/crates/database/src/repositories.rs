@@ -2180,10 +2180,11 @@ impl WhatsAppRepository {
         phones: &[String],
         limit: usize,
     ) -> Result<Vec<Document>, AppError> {
-        if phones.is_empty() {
-            return Ok(Vec::new());
-        }
-        let filter = doc! { "salonId": salon_id, "waPhone": { "$in": phones } };
+        let filter = if phones.is_empty() {
+            doc! { "salonId": salon_id }
+        } else {
+            doc! { "salonId": salon_id, "waPhone": { "$in": phones } }
+        };
         let options = mongodb::options::FindOptions::builder()
             .sort(doc! { "createdAt": -1 })
             .limit(limit as i64)

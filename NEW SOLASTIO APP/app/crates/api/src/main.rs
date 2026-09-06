@@ -2125,9 +2125,14 @@ async fn whatsapp_receive_webhook(
     }
     if let Some(message) = extract_whatsapp_message(&payload) {
         let inbound_message = message.clone();
+        let connection = state
+            .whatsapp
+            .salon_for_phone_number_id(&message.phone_number_id)
+            .await?;
         state
             .whatsapp
             .insert_inbound(doc! {
+                "salonId": connection.as_ref().and_then(|doc| doc.get_str("salonId").ok()).unwrap_or_default(),
                 "phoneNumberId": message.phone_number_id,
                 "waPhone": message.wa_phone,
                 "profileName": message.profile_name,
