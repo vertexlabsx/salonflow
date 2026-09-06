@@ -1962,6 +1962,15 @@ async fn whatsapp_embedded_signup_callback(
             .and_then(|value| value.as_str())
             .map(str::to_string);
     }
+    if waba_id.is_none() {
+        waba_id = state
+            .config
+            .meta_waba_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string);
+    }
     let waba_id = waba_id.ok_or_else(|| {
         AppError::Validation(
             "Meta did not return a WhatsApp Business Account id. Complete Embedded Signup again."
