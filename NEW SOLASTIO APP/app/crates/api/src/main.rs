@@ -1856,16 +1856,34 @@ async fn fetch_shared_wabas(
     config: &AppConfig,
     access_token: &str,
 ) -> Result<Vec<serde_json::Value>, AppError> {
-    match meta_get_data(
+    if let Ok(data) = meta_get_data(
         config,
         "/me/shared_whatsapp_business_accounts",
         access_token,
     )
     .await
     {
-        Ok(data) => Ok(data),
-        Err(_) => Ok(Vec::new()),
+        if !data.is_empty() {
+            return Ok(data);
+        }
     }
+    let mut owned = Vec::new();
+    if let Ok(businesses) = meta_get_data(config, "/me/businesses", access_token).await {
+        for business in businesses {
+            if let Some(business_id) = business.get("id").and_then(|value| value.as_str()) {
+                if let Ok(items) = meta_get_data(
+                    config,
+                    &format!("/{}/owned_whatsapp_business_accounts", business_id),
+                    access_token,
+                )
+                .await
+                {
+                    owned.extend(items);
+                }
+            }
+        }
+    }
+    Ok(owned)
 }
 
 async fn fetch_waba_phone_numbers(
