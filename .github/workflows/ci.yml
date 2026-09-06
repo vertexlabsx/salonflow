@@ -6,6 +6,7 @@ on:
 
 jobs:
   server:
+    if: ${{ hashFiles('server/package-lock.json') != '' }}
     runs-on: ubuntu-latest
     defaults:
       run:
