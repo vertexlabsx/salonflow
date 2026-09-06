@@ -2043,19 +2043,18 @@ async fn whatsapp_embedded_signup_callback(
         .as_deref()
         .map(str::trim)
         .filter(|value| !value.is_empty());
-    let selected_phone = phone_number_id
-        .and_then(|id| {
-            phone_numbers
-                .iter()
-                .find(|item| item.get("id").and_then(|value| value.as_str()) == Some(id))
-        })
-        .or_else(|| phone_numbers.first())
-        .ok_or_else(|| {
-            AppError::Validation(
-                "No accessible WhatsApp phone number was returned by Meta for this WABA."
-                    .to_string(),
-            )
-        })?;
+    let selected_phone = if let Some(id) = phone_number_id {
+        phone_numbers
+            .iter()
+            .find(|item| item.get("id").and_then(|value| value.as_str()) == Some(id))
+            .ok_or_else(|| AppError::Validation("Selected WhatsApp phone number was not returned by Meta. Complete Embedded Signup again.".to_string()))?
+    } else if phone_numbers.len() == 1 {
+        &phone_numbers[0]
+    } else {
+        return Err(AppError::Validation(
+            "Meta did not return the selected WhatsApp phone number id. Complete Embedded Signup again and select the exact number.".to_string(),
+        ));
+    };
     let phone_number_id = selected_phone
         .get("id")
         .and_then(|value| value.as_str())
