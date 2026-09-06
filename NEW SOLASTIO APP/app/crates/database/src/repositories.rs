@@ -1703,11 +1703,43 @@ impl WhatsAppRepository {
     }
 
     pub async fn insert_inbound(&self, inbound: Document) -> Result<(), AppError> {
-        self.inbounds
-            .insert_one(inbound, None)
-            .await
-            .map_err(|_| AppError::Database)?;
-        Ok(())
+        let message_id = inbound
+            .get_str("messageId")
+            .ok()
+            .filter(|id| !id.is_empty())
+            .map(ToOwned::to_owned);
+        if let Some(message_id) = message_id.as_deref() {
+            let exists = self
+                .inbounds
+                .find_one(doc! { "messageId": message_id }, None)
+                .await
+                .map_err(|_| AppError::Database)?
+                .is_some();
+            if exists {
+                return Ok(());
+            }
+        }
+        match self.inbounds.insert_one(inbound.clone(), None).await {
+            Ok(_) => Ok(()),
+            Err(_) => {
+                match message_id.as_deref() {
+                    Some(message_id) => {
+                        let inserted = self
+                            .inbounds
+                            .find_one(doc! { "messageId": message_id }, None)
+                            .await
+                            .map_err(|_| AppError::Database)?
+                            .is_some();
+                        if inserted {
+                            Ok(())
+                        } else {
+                            Err(AppError::Database)
+                        }
+                    }
+                    None => Err(AppError::Database),
+                }
+            }
+        }
     }
 
     pub async fn apply_delivery_status(
@@ -2603,9 +2635,32 @@ impl AttendanceRepository {
         attendance_id: ObjectId,
         clock_out_at: DateTime,
     ) -> Result<Option<AttendanceRecord>, AppError> {
+        let existing = self
+            .attendance
+            .find_one(
+                doc! { "_id": attendance_id, "salonId": salon_id, "staffId": staff_id, "status": "open" },
+                None,
+            )
+            .await
+            .map_err(|_| AppError::Database)?;
+        let Some(record) = existing else {
+            return Ok(None);
+        };
+        let shift_ms = (clock_out_at.timestamp_millis() - record.clock_in_at.timestamp_millis()).max(0);
+        let gross_minutes = shift_ms / 60_000;
+        let break_minutes: i64 = record
+            .breaks
+            .iter()
+            .filter_map(|item| {
+                item.ended_at.map(|ended_at| {
+                    (ended_at.timestamp_millis() - item.started_at.timestamp_millis()).max(0) / 60_000
+                })
+            })
+            .sum();
+        let net_minutes = (gross_minutes - break_minutes).max(0);
         self.attendance.find_one_and_update(
             doc! { "_id": attendance_id, "salonId": salon_id, "staffId": staff_id, "status": "open" },
-            doc! { "$set": { "status": "closed", "clockOutAt": clock_out_at } },
+            doc! { "$set": { "status": "closed", "clockOutAt": clock_out_at, "grossMinutes": gross_minutes, "breakMinutes": break_minutes, "netMinutes": net_minutes } },
             FindOneAndUpdateOptions::builder().return_document(ReturnDocument::After).build(),
         ).await.map_err(|_| AppError::Database)
     }
@@ -4507,24 +4562,38 @@ impl FinanceRepository {
 
     pub async fn redeem_gift_card(
         &self,
+        salon_id: &str,
         gift_card_id: ObjectId,
-        new_balance_paise: i64,
-        set_redeemed: bool,
+        amount_paise: i64,
     ) -> Result<Option<GiftCardRecord>, AppError> {
-        let mut set = doc! { "balancePaise": new_balance_paise };
-        if set_redeemed {
-            set.insert("status", "redeemed");
-        }
-        self.gift_cards
+        let updated = self
+            .gift_cards
             .find_one_and_update(
-                doc! { "_id": gift_card_id },
-                doc! { "$set": set },
+                doc! { "_id": gift_card_id, "salonId": salon_id, "status": "active", "balancePaise": { "$gte": amount_paise } },
+                doc! { "$inc": { "balancePaise": -amount_paise } },
                 FindOneAndUpdateOptions::builder()
                     .return_document(ReturnDocument::After)
                     .build(),
             )
             .await
-            .map_err(|_| AppError::Database)
+            .map_err(|_| AppError::Database)?;
+        let Some(card) = &updated else {
+            return Ok(None);
+        };
+        if card.balance_paise <= 0 {
+            let _ = self
+                .gift_cards
+                .find_one_and_update(
+                    doc! { "_id": gift_card_id, "salonId": salon_id, "balancePaise": { "$lte": 0 } },
+                    doc! { "$set": { "status": "redeemed" } },
+                    FindOneAndUpdateOptions::builder()
+                        .return_document(ReturnDocument::After)
+                        .build(),
+                )
+                .await
+                .map_err(|_| AppError::Database)?;
+        }
+        Ok(updated)
     }
 
     pub async fn list_bundle_deals(

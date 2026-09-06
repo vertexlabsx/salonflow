@@ -1,6 +1,8 @@
-# solastio_staff
+# solastio_staff (FROZEN / ARCHIVED)
 
-A new Flutter project.
+> **STATUS: FROZEN / ARCHIVED**
+> This Flutter client codebase is frozen and preserved in place for reference/backup only. Active UI development is not using Flutter.
+
 
 ## Getting Started
 

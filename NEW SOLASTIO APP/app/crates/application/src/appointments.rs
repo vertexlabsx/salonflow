@@ -428,6 +428,33 @@ impl AppointmentService {
         }
         let id = ObjectId::parse_str(id)
             .map_err(|_| AppError::Validation("A valid appointment id is required.".to_string()))?;
+        let next_status =
+            solastio_domain::appointment::AppointmentStatus::parse(&request.status).ok_or_else(
+                || {
+                    AppError::Validation(format!(
+                        "Unknown appointment status '{}'.",
+                        request.status
+                    ))
+                },
+            )?;
+        let current = self
+            .appointments
+            .find_by_id(&context.salon_id, id)
+            .await?
+            .ok_or_else(|| AppError::NotFound("Appointment not found.".to_string()))?;
+        let current_status =
+            solastio_domain::appointment::AppointmentStatus::parse(&current.status).ok_or_else(
+                || {
+                    AppError::Internal
+                },
+            )?;
+        if !current_status.can_transition_to(&next_status) {
+            return Err(AppError::Conflict(format!(
+                "Cannot move appointment from '{}' to '{}'.",
+                current_status.as_str(),
+                next_status.as_str()
+            )));
+        }
         let updated = self
             .appointments
             .transition_status(&context.salon_id, id, &request.status, request.version)

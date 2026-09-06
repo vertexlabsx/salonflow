@@ -1,0 +1,10 @@
+// Single compile-time source of the production API origin — used by the web PWA,
+// Vercel build, and the Capacitor Android APK (all build with this configuration).
+// Update this ONE line to the deployed backend host after deploying the API,
+// e.g. "https://aura-salon-api.fly.dev/api/v1".
+export const environment = {
+  production: true,
+  apiBaseUrl: "https://129.159.16.165.sslip.io/api/v1",
+  metaAppId: "1739408257311822",
+  metaConfigId: "2140964753518474"
+};

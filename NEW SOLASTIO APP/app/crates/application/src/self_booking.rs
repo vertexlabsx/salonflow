@@ -608,5 +608,5 @@ fn validate_branch_hours_at(
 }
 
 fn normalize_phone(phone: &str) -> String {
-    phone.chars().filter(|ch| ch.is_ascii_digit()).collect()
+    solastio_shared::phone::normalize_phone_india(phone)
 }

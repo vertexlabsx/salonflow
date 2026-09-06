@@ -1,0 +1,9 @@
+{
+  "/api": {
+    "target": "https://129.159.16.165.sslip.io",
+    "secure": false,
+    "changeOrigin": true,
+    "ws": true,
+    "logLevel": "debug"
+  }
+}

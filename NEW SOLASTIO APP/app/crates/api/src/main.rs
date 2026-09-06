@@ -17,7 +17,7 @@ use base64::{
     engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD},
     Engine as _,
 };
-use chrono::Datelike;
+use chrono::{Datelike, Timelike};
 use hmac::{Hmac, Mac};
 use jsonwebtoken::{decode, encode, DecodingKey, EncodingKey, Header, Validation};
 use mongodb::bson::{doc, oid::ObjectId, DateTime, Document};
@@ -200,6 +200,10 @@ fn build_router(state: AppState) -> Router {
         .nest("/api/v1/shopify-api/admin", shopify_admin_router())
         .nest("/api/v1/shopify-api/client", shopify_client_router())
         .nest("/api/v1/self-booking", self_booking_router())
+        .nest(
+            "/api/v1/attendance-verification",
+            attendance_verification_router(),
+        )
         .layer(TraceLayer::new_for_http())
         .layer(configured_cors(&state.config.cors_origins))
         .with_state(Arc::new(state))
@@ -250,7 +254,9 @@ fn configured_cors(origins: &[String]) -> CorsLayer {
 }
 
 fn realtime_router() -> Router<Arc<AppState>> {
-    Router::new().route("/", get(realtime_status))
+    Router::new()
+        .route("/", get(realtime_status))
+        .route("/ticket", post(realtime_issue_ticket))
 }
 
 async fn realtime_status(State(state): State<Arc<AppState>>) -> axum::response::Response {
@@ -309,6 +315,17 @@ fn staff_os_router() -> Router<Arc<AppState>> {
         .route("/attendance/clock-out", post(staff_clock_out))
         .route("/attendance/break-start", post(staff_break_start))
         .route("/attendance/break-end", post(staff_break_end))
+        .route("/shift-swaps", get(staff_os_shift_swaps))
+        .route(
+            "/shift-swaps/:swap_id/approve",
+            post(staff_os_approve_shift_swap),
+        )
+        .route(
+            "/shift-swaps/:swap_id/reject",
+            post(staff_os_reject_shift_swap),
+        )
+        .route("/leaves/:leave_id/approve", patch(staff_os_approve_leave))
+        .route("/leaves/:leave_id/reject", patch(staff_os_reject_leave))
 }
 
 fn staff_self_router() -> Router<Arc<AppState>> {
@@ -351,6 +368,20 @@ fn mobile_router() -> Router<Arc<AppState>> {
         .route("/push-config", get(mobile_push_config))
         .route("/devices", post(mobile_register_device))
         .route("/push-subscriptions", post(mobile_push_subscription))
+}
+
+fn attendance_verification_router() -> Router<Arc<AppState>> {
+    Router::new()
+        .route(
+            "/branches/:branch_id/policy",
+            get(att_verify_policy).put(att_verify_update_policy),
+        )
+        .route("/devices", get(att_verify_devices))
+        .route(
+            "/devices/:device_id/reviews",
+            post(att_verify_device_review),
+        )
+        .route("/evidence", get(att_verify_evidence))
 }
 
 fn whatsapp_router() -> Router<Arc<AppState>> {
@@ -725,6 +756,37 @@ fn owner_console_router() -> Router<Arc<AppState>> {
             "/administration/audit-logs/export",
             get(finance_audit_logs_export),
         )
+        .route(
+            "/appointments/:id/pos-handoff",
+            post(owner_appointment_pos_handoff),
+        )
+        .route("/finance/overview", get(owner_finance_overview))
+        .route("/finance/drilldown", get(owner_finance_drilldown))
+        .route("/reports/catalogue", get(owner_reports_catalogue))
+        .route("/reports/:report_key", get(owner_report_run))
+        .route("/reports/export", get(owner_report_export))
+        .route("/people/attendance", get(owner_attendance_list))
+        .route(
+            "/people/attendance/:attendance_id/corrections",
+            post(owner_attendance_corrections),
+        )
+        .route(
+            "/people/attendance/:attendance_id/reset",
+            post(owner_attendance_reset),
+        )
+        .route("/people/staff/:staff_id", get(owner_staff_detail))
+        .route("/people/staff/:staff_id/status", patch(owner_staff_status))
+        .route("/people/staff/:staff_id/login", post(owner_staff_login))
+        .route("/people/staff/:staff_id/transfer", post(owner_staff_transfer))
+        .route(
+            "/people/staff/:staff_id/schedules",
+            post(owner_staff_schedules),
+        )
+        .route(
+            "/people/staff/:staff_id/commissions",
+            post(owner_staff_commissions),
+        )
+        .route("/operations/marketing", get(owner_marketing_list))
 }
 
 fn team_chat_router() -> Router<Arc<AppState>> {
@@ -762,15 +824,12 @@ async fn login(
     Json(request): Json<LoginRequest>,
 ) -> Result<axum::response::Response, AppError> {
     let session = state.auth.login(request).await?;
-    let cookie_val = format!(
-        "auraRefresh={}; HttpOnly; Path=/api/v1/auth; SameSite=Lax; Max-Age=1209600",
-        session.refresh_token
-    );
-    let mut response = ok(session);
-    if let Ok(header_val) = HeaderValue::from_str(&cookie_val) {
+    if let Ok(header_val) = aura_refresh_cookie(&state.config, &session.refresh_token, false) {
+        let mut response = ok(session);
         response.headers_mut().insert(SET_COOKIE, header_val);
+        return Ok(response);
     }
-    Ok(response)
+    Ok(ok(session))
 }
 
 async fn refresh(
@@ -795,15 +854,12 @@ async fn refresh(
         }
     }
     let session = state.auth.refresh(request).await?;
-    let cookie_val = format!(
-        "auraRefresh={}; HttpOnly; Path=/api/v1/auth; SameSite=Lax; Max-Age=1209600",
-        session.refresh_token
-    );
-    let mut response = ok(session);
-    if let Ok(header_val) = HeaderValue::from_str(&cookie_val) {
+    if let Ok(header_val) = aura_refresh_cookie(&state.config, &session.refresh_token, false) {
+        let mut response = ok(session);
         response.headers_mut().insert(SET_COOKIE, header_val);
+        return Ok(response);
     }
-    Ok(response)
+    Ok(ok(session))
 }
 
 async fn logout(
@@ -828,9 +884,8 @@ async fn logout(
         }
     }
     let result = state.auth.logout(request).await?;
-    let cookie_val = "auraRefresh=; HttpOnly; Path=/api/v1/auth; SameSite=Lax; Max-Age=0";
     let mut response = ok(result);
-    if let Ok(header_val) = HeaderValue::from_str(cookie_val) {
+    if let Ok(header_val) = aura_refresh_cookie(&state.config, "", true) {
         response.headers_mut().insert(SET_COOKIE, header_val);
     }
     Ok(response)
@@ -839,6 +894,11 @@ async fn logout(
 async fn demo_staff_session(
     State(state): State<Arc<AppState>>,
 ) -> Result<axum::response::Response, AppError> {
+    if state.config.env == "production" {
+        return Err(AppError::NotFound(
+            "Demo staff session is not available in production.".to_string(),
+        ));
+    }
     let session = state.auth.demo_staff_session().await?;
     Ok(ok(session))
 }
@@ -2166,11 +2226,11 @@ fn wa_normalize_phone(raw: &str, profile_name: &str) -> (String, String) {
         && digits.starts_with('9')
         && profile_name.chars().all(|c| !c.is_ascii_digit())
     {
-        digits[1..].to_string()
+        solastio_shared::phone::normalize_phone_india(&digits[1..])
     } else {
-        digits
+        solastio_shared::phone::normalize_phone_india(&digits)
     };
-    let display = format!("+{}", normalized);
+    let display = format!("+{normalized}");
     (display, normalized)
 }
 
@@ -2665,6 +2725,19 @@ async fn drive_booking_step(
                 || input.trim().eq_ignore_ascii_case("confirm")
                 || lower_starts(input, "book")
             {
+                if services.services.is_empty() {
+                    let _ = send_whatsapp_message(
+                        state,
+                        salon_id,
+                        wa_phone,
+                        "utility",
+                        "Sorry, there are no bookable services in that branch right now. Please try another branch or message the salon directly.",
+                        None,
+                        serde_json::json!({ "source": "booking_service_empty" }),
+                    )
+                    .await;
+                    return Ok(());
+                }
                 return prompt_staff(
                     state,
                     salon_id,
@@ -3335,7 +3408,7 @@ fn resolve_date(input: &str) -> Option<String> {
     ];
     for (name, target) in weekdays {
         if trimmed.contains(name) {
-            use chrono::Datelike;
+use chrono::Datelike;
             let today_weekday = today.weekday().num_days_from_sunday() as i64;
             let mut offset = (target - today_weekday + 7) % 7;
             if offset == 0 || trimmed.contains("next") {
@@ -3553,6 +3626,16 @@ async fn prompt_services(
             services: vec![],
         });
     if services.services.is_empty() {
+        let _ = send_whatsapp_message(
+            state,
+            salon_id,
+            wa_phone,
+            "utility",
+            "Sorry, there are no bookable services in that branch right now. Please try another branch or message the salon directly.",
+            None,
+            serde_json::json!({ "source": "booking_service_empty" }),
+        )
+        .await;
         return Ok(());
     }
     let list: Vec<String> = services
@@ -4646,7 +4729,15 @@ async fn shopify_admin_install_url(
         "{}/api/v1/shopify-automation/shopify/callback",
         app_url.trim_end_matches('/')
     );
-    let state_param = format!("{}:{}:{}", context.shop_domain, "admin", now_millis());
+    let state_param = base64_url_encode(
+        format!(
+            "{{\"salonId\":\"{}\",\"userId\":\"{}\",\"ts\":{}}}",
+            context.shop_domain,
+            "",
+            now_millis()
+        )
+        .as_bytes(),
+    );
     let install_url = format!(
         "https://{}/admin/oauth/authorize?client_id={}&scope={}&redirect_uri={}&state={}",
         shop,
@@ -6319,7 +6410,10 @@ fn verify_razorpay_webhook(
     let mut mac =
         <Hmac<Sha256> as Mac>::new_from_slice(secret.as_bytes()).map_err(|_| AppError::Internal)?;
     mac.update(body);
-    Ok(hex_lower(&mac.finalize().into_bytes()) == received)
+    Ok(constant_time_equal(
+        &hex_lower(&mac.finalize().into_bytes()).into_bytes(),
+        received.as_bytes(),
+    ))
 }
 
 fn razorpay_auth_header(config: &AppConfig) -> Result<String, AppError> {
@@ -6988,7 +7082,7 @@ fn truthy_text(value: &str) -> bool {
 }
 
 fn normalize_phone(value: &str) -> String {
-    value.chars().filter(|ch| ch.is_ascii_digit()).collect()
+    solastio_shared::phone::normalize_phone_india(value)
 }
 
 fn normalize_shop(value: &str) -> Result<String, AppError> {
@@ -7094,15 +7188,16 @@ fn ready_made_flows() -> Vec<ShopifyFlowWrite> {
             "Three-step abandoned checkout recovery with purchase checks.",
             "checkouts/create",
             vec![
-                node("trigger", "trigger", "Checkout Abandoned", None),
-                node("wait-30", "wait", "Wait 30 minutes", Some("wa-1")),
-                node(
-                    "wa-1",
-                    "whatsapp_template",
-                    "Abandoned Cart #1",
-                    Some("stop"),
-                ),
-                node("stop", "stop", "Stop", None),
+                node("trigger", "trigger", "Checkout Abandoned", serde_json::json!({}), None, None, None),
+                node("wait-30", "wait", "Wait 30 minutes", serde_json::json!({ "minutes": 30 }), Some("wa-1"), None, None),
+                node("wa-1", "whatsapp_template", "Abandoned Cart #1", serde_json::json!({ "templateName": "abandoned_cart_1", "language": "en" }), Some("wait-6h"), None, None),
+                node("wait-6h", "wait", "Wait 6 hours", serde_json::json!({ "minutes": 360 }), Some("order-exists-1"), None, None),
+                node("order-exists-1", "condition", "Order exists?", serde_json::json!({ "field": "orderExists", "operator": "equals", "value": true }), None, Some("stop"), Some("wa-2")),
+                node("wa-2", "whatsapp_template", "Abandoned Cart #2", serde_json::json!({ "templateName": "abandoned_cart_2", "language": "en" }), Some("wait-18h"), None, None),
+                node("wait-18h", "wait", "Wait 18 hours", serde_json::json!({ "minutes": 1080 }), Some("order-exists-2"), None, None),
+                node("order-exists-2", "condition", "Order exists?", serde_json::json!({ "field": "orderExists", "operator": "equals", "value": true }), None, Some("stop"), Some("wa-3")),
+                node("wa-3", "whatsapp_template", "Abandoned Cart #3", serde_json::json!({ "templateName": "abandoned_cart_3", "language": "en" }), Some("stop"), None, None),
+                node("stop", "stop", "Stop", serde_json::json!({}), None, None, None),
             ],
         ),
         ready_flow(
@@ -7110,14 +7205,9 @@ fn ready_made_flows() -> Vec<ShopifyFlowWrite> {
             "Send order details when an order is created.",
             "orders/create",
             vec![
-                node("trigger", "trigger", "Order Created", Some("wa")),
-                node(
-                    "wa",
-                    "whatsapp_template",
-                    "Order Confirmation",
-                    Some("stop"),
-                ),
-                node("stop", "stop", "Stop", None),
+                node("trigger", "trigger", "Order Created", serde_json::json!({}), Some("wa"), None, None),
+                node("wa", "whatsapp_template", "Order Confirmation", serde_json::json!({ "templateName": "order_confirmation", "language": "en" }), Some("stop"), None, None),
+                node("stop", "stop", "Stop", serde_json::json!({}), None, None, None),
             ],
         ),
         ready_flow(
@@ -7125,14 +7215,20 @@ fn ready_made_flows() -> Vec<ShopifyFlowWrite> {
             "Confirm paid Shopify orders.",
             "orders/paid",
             vec![
-                node("trigger", "trigger", "Order Paid", Some("wa")),
-                node(
-                    "wa",
-                    "whatsapp_template",
-                    "Payment Confirmation",
-                    Some("stop"),
-                ),
-                node("stop", "stop", "Stop", None),
+                node("trigger", "trigger", "Order Paid", serde_json::json!({}), Some("wa"), None, None),
+                node("wa", "whatsapp_template", "Payment Confirmation", serde_json::json!({ "templateName": "payment_confirmation", "language": "en" }), Some("stop"), None, None),
+                node("stop", "stop", "Stop", serde_json::json!({}), None, None, None),
+            ],
+        ),
+        ready_flow(
+            "COD Confirmation",
+            "Branch only for cash-on-delivery orders.",
+            "orders/create",
+            vec![
+                node("trigger", "trigger", "Order Created", serde_json::json!({}), Some("cod"), None, None),
+                node("cod", "condition", "Payment method is COD", serde_json::json!({ "field": "paymentMethod", "operator": "contains", "value": "cod" }), None, Some("wa"), Some("stop")),
+                node("wa", "whatsapp_template", "COD Confirmation", serde_json::json!({ "templateName": "cod_confirmation", "language": "en" }), Some("stop"), None, None),
+                node("stop", "stop", "Stop", serde_json::json!({}), None, None, None),
             ],
         ),
         ready_flow(
@@ -7140,9 +7236,41 @@ fn ready_made_flows() -> Vec<ShopifyFlowWrite> {
             "Send tracking details when fulfilled.",
             "orders/fulfilled",
             vec![
-                node("trigger", "trigger", "Order Fulfilled", Some("wa")),
-                node("wa", "whatsapp_template", "Shipping Template", Some("stop")),
-                node("stop", "stop", "Stop", None),
+                node("trigger", "trigger", "Order Fulfilled", serde_json::json!({}), Some("wa"), None, None),
+                node("wa", "whatsapp_template", "Shipping Template", serde_json::json!({ "templateName": "order_shipped", "language": "en" }), Some("stop"), None, None),
+                node("stop", "stop", "Stop", serde_json::json!({}), None, None, None),
+            ],
+        ),
+        ready_flow(
+            "Delivery Follow-up",
+            "Draft only; activate after reliable delivered events exist.",
+            "orders/fulfilled",
+            vec![
+                node("trigger", "trigger", "Delivered", serde_json::json!({}), Some("wait"), None, None),
+                node("wait", "wait", "Wait 3 days", serde_json::json!({ "minutes": 4320 }), Some("wa"), None, None),
+                node("wa", "whatsapp_template", "Delivery Follow-up", serde_json::json!({ "templateName": "delivery_followup", "language": "en" }), Some("stop"), None, None),
+                node("stop", "stop", "Stop", serde_json::json!({}), None, None, None),
+            ],
+        ),
+        ready_flow(
+            "Review Request",
+            "Ask for a review after post-delivery delay.",
+            "orders/fulfilled",
+            vec![
+                node("trigger", "trigger", "Fulfilled", serde_json::json!({}), Some("wait"), None, None),
+                node("wait", "wait", "Wait 3 days", serde_json::json!({ "minutes": 4320 }), Some("wa"), None, None),
+                node("wa", "whatsapp_template", "Review Request", serde_json::json!({ "templateName": "review_request", "language": "en" }), Some("stop"), None, None),
+                node("stop", "stop", "Stop", serde_json::json!({}), None, None, None),
+            ],
+        ),
+        ready_flow(
+            "Reorder Reminder",
+            "Reminder template for repeat purchase audiences.",
+            "manual/reorder",
+            vec![
+                node("trigger", "trigger", "Manual Audience", serde_json::json!({}), Some("wa"), None, None),
+                node("wa", "whatsapp_template", "Reorder Reminder", serde_json::json!({ "templateName": "reorder_reminder", "language": "en" }), Some("stop"), None, None),
+                node("stop", "stop", "Stop", serde_json::json!({}), None, None, None),
             ],
         ),
     ]
@@ -7163,14 +7291,31 @@ fn ready_flow(
     }
 }
 
-fn node(id: &str, node_type: &str, label: &str, next: Option<&str>) -> serde_json::Value {
-    serde_json::json!({
+fn node(
+    id: &str,
+    node_type: &str,
+    label: &str,
+    config: serde_json::Value,
+    next: Option<&str>,
+    yes: Option<&str>,
+    no: Option<&str>,
+) -> serde_json::Value {
+    let mut value = serde_json::json!({
         "id": id,
         "type": node_type,
         "label": label,
-        "config": {},
-        "next": next,
-    })
+        "config": config,
+    });
+    if let Some(next) = next {
+        value["next"] = serde_json::json!(next);
+    }
+    if let Some(yes) = yes {
+        value["yes"] = serde_json::json!(yes);
+    }
+    if let Some(no) = no {
+        value["no"] = serde_json::json!(no);
+    }
+    value
 }
 
 fn url_component(value: &str) -> String {
@@ -7194,6 +7339,25 @@ fn shopify_refresh_cookie(
     let cookie = format!(
         "shopifyRefresh={token}; Path=/api/v1/shopify-api/auth; Max-Age={max_age}; HttpOnly; SameSite={}{}",
         config.cookie_samesite, secure
+    );
+    cookie.parse().map_err(|_| AppError::Internal)
+}
+
+fn aura_refresh_cookie(
+    config: &AppConfig,
+    token: &str,
+    clear: bool,
+) -> Result<axum::http::HeaderValue, AppError> {
+    let max_age = if clear { 0 } else { config.refresh_token_ttl_days * 24 * 60 * 60 };
+    let secure = if config.cookie_secure { "; Secure" } else { "" };
+    let domain = config
+        .cookie_domain
+        .as_deref()
+        .map(|domain| format!("; Domain={domain}"))
+        .unwrap_or_default();
+    let cookie = format!(
+        "auraRefresh={token}; Path=/api/v1/auth; Max-Age={max_age}; HttpOnly; SameSite={}{}{}",
+        config.cookie_samesite, secure, domain
     );
     cookie.parse().map_err(|_| AppError::Internal)
 }
@@ -7246,7 +7410,10 @@ fn verify_meta_signature(
     let mut mac =
         <Hmac<Sha256> as Mac>::new_from_slice(secret.as_bytes()).map_err(|_| AppError::Internal)?;
     mac.update(body);
-    Ok(hex_lower(&mac.finalize().into_bytes()) == received)
+    Ok(constant_time_equal(
+        &hex_lower(&mac.finalize().into_bytes()).into_bytes(),
+        received.as_bytes(),
+    ))
 }
 
 fn verify_shopify_webhook(
@@ -7266,7 +7433,10 @@ fn verify_shopify_webhook(
     let mut mac =
         <Hmac<Sha256> as Mac>::new_from_slice(secret.as_bytes()).map_err(|_| AppError::Internal)?;
     mac.update(body);
-    Ok(base64_encode(&mac.finalize().into_bytes()) == received)
+    Ok(constant_time_equal(
+        &base64_encode(&mac.finalize().into_bytes()).into_bytes(),
+        received.as_bytes(),
+    ))
 }
 
 fn shopify_topic_allowed(topic: &str) -> bool {
@@ -7563,6 +7733,17 @@ fn meta_timestamp_ms(value: Option<&serde_json::Value>) -> i64 {
 
 fn hex_lower(bytes: &[u8]) -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+fn constant_time_equal(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut diff = 0u8;
+    for (x, y) in a.iter().zip(b.iter()) {
+        diff |= x ^ y;
+    }
+    diff == 0
 }
 
 async fn team_chat_conversations(
@@ -8843,4 +9024,3107 @@ async fn finance_audit_logs_export(
         .body(axum::body::Body::from(csv))
         .map_err(|_| AppError::Internal)?;
     Ok(response)
+}
+
+use std::collections::{BTreeMap, HashMap};
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct OwnerFinanceOverviewQuery {
+    #[serde(default)]
+    branch_id: Option<String>,
+    #[serde(default)]
+    from: Option<String>,
+    #[serde(default)]
+    to: Option<String>,
+    #[serde(default)]
+    timezone: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct OwnerFinanceDrilldownQuery {
+    #[serde(default)]
+    branch_id: Option<String>,
+    #[serde(default)]
+    source: Option<String>,
+    #[serde(default)]
+    source_type: Option<String>,
+    #[serde(default)]
+    #[serde(alias = "type")]
+    drilldown_type: Option<String>,
+    #[serde(default)]
+    from: Option<String>,
+    #[serde(default)]
+    to: Option<String>,
+    #[serde(default)]
+    limit: Option<i64>,
+    #[serde(default)]
+    offset: Option<i64>,
+    #[serde(default)]
+    status: Option<String>,
+    #[serde(default)]
+    search: Option<String>,
+}
+
+impl OwnerFinanceDrilldownQuery {
+    fn type_of(&self) -> String {
+        self.drilldown_type
+            .clone()
+            .or_else(|| self.source_type.clone())
+            .or_else(|| self.source.clone())
+            .unwrap_or_else(|| "sales".to_string())
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct OwnerReportsQuery {
+    #[serde(default)]
+    branch_id: Option<String>,
+    #[serde(default)]
+    from: Option<String>,
+    #[serde(default)]
+    to: Option<String>,
+    #[serde(default)]
+    limit: Option<i64>,
+    #[serde(default)]
+    offset: Option<i64>,
+    #[serde(default)]
+    report_key: Option<String>,
+    #[serde(default)]
+    format: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct OwnerAttendanceListQuery {
+    #[serde(default)]
+    branch_id: Option<String>,
+    #[serde(default)]
+    from: Option<String>,
+    #[serde(default)]
+    to: Option<String>,
+    #[serde(default)]
+    staff_id: Option<String>,
+    #[serde(default)]
+    status: Option<String>,
+    #[serde(default)]
+    search: Option<String>,
+    #[serde(default)]
+    limit: Option<i64>,
+    #[serde(default)]
+    offset: Option<i64>,
+    #[serde(default)]
+    page: Option<i64>,
+    #[serde(default)]
+    page_size: Option<i64>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct OwnerAttendanceCorrectionRequest {
+    #[serde(default)]
+    clock_out_at: Option<String>,
+    #[serde(default)]
+    reason: Option<String>,
+    #[serde(default)]
+    note: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct OwnerAttendanceResetRequest {
+    #[serde(default)]
+    manual_minutes: Option<i64>,
+    #[serde(default)]
+    reason: Option<String>,
+    #[serde(default)]
+    note: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct OwnerStaffStatusRequest {
+    status: String,
+    #[serde(default)]
+    reason: Option<String>,
+    #[serde(default)]
+    version: Option<i64>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct OwnerStaffLoginRequest {
+    login_id: String,
+    #[serde(default)]
+    email: Option<String>,
+    #[serde(default)]
+    password: Option<String>,
+    #[serde(default)]
+    role: Option<String>,
+    #[serde(default)]
+    status: Option<String>,
+    #[serde(default)]
+    branch_ids: Option<Vec<String>>,
+    #[serde(default)]
+    send_credentials: Option<bool>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct OwnerStaffTransferRequest {
+    branch_id: String,
+    #[serde(default)]
+    effective_from: Option<String>,
+    #[serde(default)]
+    note: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct OwnerStaffScheduleRequest {
+    schedule_date: String,
+    start_time: String,
+    end_time: String,
+    #[serde(default)]
+    status: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct OwnerStaffCommissionRequest {
+    period: String,
+    #[serde(default)]
+    from: Option<String>,
+    #[serde(default)]
+    to: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct OwnerRealtimeTicketRequest {
+    #[serde(default)]
+    branch_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct OwnerShiftSwapDecisionRequest {
+    #[serde(default)]
+    reason: Option<String>,
+    #[serde(default)]
+    note: Option<String>,
+    #[serde(default)]
+    version: Option<i64>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct OwnerShiftSwapListQuery {
+    #[serde(default)]
+    branch_id: Option<String>,
+    #[serde(default)]
+    status: Option<String>,
+    #[serde(default)]
+    limit: Option<i64>,
+    #[serde(default)]
+    offset: Option<i64>,
+    #[serde(default)]
+    page: Option<i64>,
+    #[serde(default)]
+    page_size: Option<i64>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct OwnerMarketingQuery {
+    #[serde(default)]
+    branch_id: Option<String>,
+    #[serde(default)]
+    status: Option<String>,
+    #[serde(default)]
+    limit: Option<i64>,
+    #[serde(default)]
+    offset: Option<i64>,
+    #[serde(default)]
+    page: Option<i64>,
+    #[serde(default)]
+    page_size: Option<i64>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AttVerifyPolicyRequest {
+    #[serde(default)]
+    allow_face_auth: Option<bool>,
+    #[serde(default)]
+    allow_rfid: Option<bool>,
+    #[serde(default)]
+    verify_photo_on_clock_in: Option<bool>,
+    #[serde(default)]
+    max_clock_in_offset_minutes: Option<i64>,
+    #[serde(default)]
+    late_after_minutes: Option<i64>,
+    #[serde(default)]
+    overtime_grace_minutes: Option<i64>,
+    #[serde(default)]
+    auto_clock_out_enabled: Option<bool>,
+    #[serde(default)]
+    default_shift_start: Option<String>,
+    #[serde(default)]
+    default_shift_end: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AttVerifyDeviceReviewRequest {
+    verdict: String,
+    #[serde(default)]
+    notes: Option<String>,
+    #[serde(default)]
+    status: Option<String>,
+}
+
+fn require_owner_scope(context: &solastio_application::auth::RequestContext) -> Result<(), AppError> {
+    if context.role == "owner"
+        || context.role == "admin"
+        || context.permissions.iter().any(|p| p == "admin:*")
+    {
+        Ok(())
+    } else {
+        Err(AppError::Authorization)
+    }
+}
+
+fn require_staff_oversight(
+    context: &solastio_application::auth::RequestContext,
+) -> Result<(), AppError> {
+    if context.role == "owner"
+        || context.role == "admin"
+        || context
+            .permissions
+            .iter()
+            .any(|p| p == "admin:*" || p == "read:staff")
+    {
+        Ok(())
+    } else {
+        Err(AppError::Authorization)
+    }
+}
+
+fn resolve_branch_ids(
+    context: &solastio_application::auth::RequestContext,
+    branch_id: Option<&str>,
+) -> Result<Option<Vec<String>>, AppError> {
+    let accessible: Vec<String> = context.branch_ids.clone();
+    if let Some(requested) = branch_id {
+        if accessible.is_empty() || accessible.iter().any(|b| b == requested) {
+            return Ok(Some(vec![requested.to_string()]));
+        }
+        return Err(AppError::Authorization);
+    }
+    if accessible.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(accessible))
+    }
+}
+
+fn parse_object_id_opt(id: &str) -> Option<ObjectId> {
+    ObjectId::parse_str(id).ok()
+}
+
+fn ist_millis(day: &str, end_of_day: bool) -> Option<i64> {
+    let naive = chrono::NaiveDate::parse_from_str(day, "%Y-%m-%d").ok()?;
+    let seconds = if end_of_day {
+        let end = naive.and_hms_opt(23, 59, 59)?;
+        i64::from(end.hour()) * 3600 + i64::from(end.minute()) * 60 + i64::from(end.second())
+    } else {
+        0
+    };
+    let epoch = chrono::NaiveDate::from_ymd_opt(1970, 1, 1)?;
+    let days = naive.num_days_from_ce() - epoch.num_days_from_ce();
+    let utc_seconds = days as i64 * 86_400 + seconds as i64 - 330 * 60;
+    Some(utc_seconds * 1000)
+}
+
+fn date_range_bson(from: Option<&str>, to: Option<&str>) -> Option<Document> {
+    let gte = ist_millis(from?, false)?;
+    let lte = ist_millis(to?, true)?;
+    Some(doc! { "$gte": DateTime::from_millis(gte), "$lte": DateTime::from_millis(lte) })
+}
+
+fn shift_day(day: &str, delta: i64) -> String {
+    chrono::NaiveDate::parse_from_str(day, "%Y-%m-%d")
+        .ok()
+        .and_then(|d| {
+            chrono::NaiveDate::from_num_days_from_ce_opt(d.num_days_from_ce() as i32 + delta as i32)
+        })
+        .map(|d| d.to_string())
+        .unwrap_or_else(|| day.to_string())
+}
+
+fn default_range(from: Option<&str>, to: Option<&str>) -> (String, String) {
+    let now = chrono::Utc::now().date_naive().to_string();
+    let to = to.map(str::to_string).unwrap_or_else(|| now.clone());
+    let from = from.map(str::to_string).unwrap_or_else(|| shift_day(&now, -30));
+    (from, to)
+}
+
+fn days_between(start: &str, end: &str) -> Option<i64> {
+    let a = chrono::NaiveDate::parse_from_str(start, "%Y-%m-%d").ok()?;
+    let b = chrono::NaiveDate::parse_from_str(end, "%Y-%m-%d").ok()?;
+    Some((b.num_days_from_ce() - a.num_days_from_ce()) as i64)
+}
+
+fn ist_date(millis: i64) -> String {
+    let secs = millis.div_euclid(1000);
+    let sub_sec = millis.rem_euclid(1000) as u32;
+    let naive = chrono::DateTime::from_timestamp(secs, sub_sec * 1_000_000)
+        .map(|t| t.naive_utc())
+        .unwrap_or_default();
+    (naive + chrono::Duration::minutes(330)).format("%Y-%m-%d").to_string()
+}
+
+fn doc_str(doc: &Document, key: &str) -> String {
+    doc.get_str(key).map(str::to_string).unwrap_or_default()
+}
+
+fn doc_id_string(doc: &Document) -> String {
+    doc.get_object_id("_id")
+        .map(|id| id.to_hex())
+        .unwrap_or_default()
+}
+
+fn doc_i64(doc: &Document, keys: &[&str]) -> i64 {
+    for key in keys {
+        if let Some(value) = doc.get(key) {
+            if let Some(i) = value.as_i64() {
+                return i;
+            }
+            if let Some(f) = value.as_f64() {
+                return f as i64;
+            }
+        }
+    }
+    0
+}
+
+fn doc_dt_millis(doc: &Document, keys: &[&str]) -> i64 {
+    for key in keys {
+        if let Ok(dt) = doc.get_datetime(key) {
+            return dt.timestamp_millis();
+        }
+    }
+    0
+}
+
+fn doc_dt(doc: &Document, key: &str) -> String {
+    match doc.get_datetime(key) {
+        Ok(dt) => dt.try_to_rfc3339_string().unwrap_or_default(),
+        Err(_) => doc_str(doc, key),
+    }
+}
+
+fn ist_date_of_doc(doc: &Document, keys: &[&str]) -> String {
+    let millis = doc_dt_millis(doc, keys);
+    if millis == 0 {
+        doc_str(doc, "businessDate")
+    } else {
+        ist_date(millis)
+    }
+}
+
+fn metric(current: i64, previous: i64) -> serde_json::Value {
+    let delta = if previous != 0 {
+        ((current - previous) as f64 * 100.0) / previous as f64
+    } else if current != 0 {
+        100.0
+    } else {
+        0.0
+    };
+    serde_json::json!({
+        "currentPaise": current,
+        "previousPaise": previous,
+        "deltaPercent": delta,
+        "availability": { "available": true, "reason": serde_json::Value::Null },
+    })
+}
+
+fn ops_page_json(limit: i64, offset: i64, total: u64) -> serde_json::Value {
+    let page_no = offset.div_euclid(limit.max(1)) + 1;
+    let total_pages = if total == 0 {
+        0
+    } else {
+        ((total - 1) / limit.max(1) as u64) + 1
+    };
+    serde_json::json!({
+        "page": page_no,
+        "pageSize": limit,
+        "total": total,
+        "totalPages": total_pages,
+        "hasMore": (offset as u64 + limit.max(1) as u64) < total,
+    })
+}
+
+async fn branch_name_map(
+    database: &mongodb::Database,
+    salon_id: &str,
+) -> HashMap<String, String> {
+    let mut map = HashMap::new();
+    if let Ok(mut cursor) = database
+        .collection::<Document>("branches")
+        .find(doc! { "salonId": salon_id }, None)
+        .await
+    {
+        while let Ok(true) = cursor.advance().await {
+            if let Ok(d) = cursor.deserialize_current() {
+                let name = doc_str(&d, "name");
+                if name.is_empty() {
+                    continue;
+                }
+                let id = doc_str(&d, "_id");
+                if !id.is_empty() {
+                    map.insert(id, name);
+                } else {
+                    let oid = doc_id_string(&d);
+                    if !oid.is_empty() {
+                        map.insert(oid, name);
+                    }
+                }
+            }
+        }
+    }
+    map
+}
+
+async fn staff_maps(
+    database: &mongodb::Database,
+    salon_id: &str,
+) -> Result<HashMap<String, (String, String)>, AppError> {
+    let mut map = HashMap::new();
+    let mut cursor = database
+        .collection::<Document>("users")
+        .find(doc! { "salonId": salon_id }, None)
+        .await
+        .map_err(|_| AppError::Database)?;
+    while cursor.advance().await.map_err(|_| AppError::Database)? {
+        let d: Document = cursor.deserialize_current().map_err(|_| AppError::Database)?;
+        let name = doc_str(&d, "name");
+        let branch = doc_str(&d, "branchId");
+        let id = doc_id_string(&d);
+        if !id.is_empty() {
+            map.insert(id, (name.clone(), branch.clone()));
+        }
+        let staff_id = doc_str(&d, "staffId");
+        if !staff_id.is_empty() {
+            map.insert(staff_id, (name.clone(), branch));
+        }
+    }
+    Ok(map)
+}
+
+async fn find_staff_user(
+    database: &mongodb::Database,
+    salon_id: &str,
+    staff_id: &str,
+) -> Result<Option<Document>, AppError> {
+    let collection = database.collection::<Document>("users");
+    if let Some(oid) = parse_object_id_opt(staff_id) {
+        if let Some(doc) = collection
+            .find_one(
+                doc! { "salonId": salon_id, "$or": [doc! { "_id": oid }, doc! { "staffId": staff_id }] },
+                None,
+            )
+            .await
+            .map_err(|_| AppError::Database)?
+        {
+            return Ok(Some(doc));
+        }
+    }
+    collection
+        .find_one(
+            doc! { "salonId": salon_id, "$or": [doc! { "staffId": staff_id }, doc! { "loginId": staff_id }] },
+            None,
+        )
+        .await
+        .map_err(|_| AppError::Database)
+}
+
+async fn find_attendance(
+    database: &mongodb::Database,
+    salon_id: &str,
+    id: &ObjectId,
+) -> Result<Document, AppError> {
+    database
+        .collection::<Document>("attendances")
+        .find_one(doc! { "_id": id, "salonId": salon_id }, None)
+        .await
+        .map_err(|_| AppError::Database)?
+        .ok_or_else(|| AppError::NotFound("Attendance record not found.".to_string()))
+}
+
+fn ops_envelope(
+    items: Vec<serde_json::Value>,
+    limit: i64,
+    offset: i64,
+    total: u64,
+    filters: serde_json::Value,
+) -> serde_json::Value {
+    serde_json::json!({
+        "items": items,
+        "page": ops_page_json(limit, offset, total),
+        "metadata": {
+            "timezone": "Asia/Kolkata",
+            "partial": false,
+            "unavailableSources": [],
+            "filters": filters,
+            "unreadTotal": 0,
+        },
+    })
+}
+
+struct FinanceWindow {
+    gross_sales: i64,
+    taxes: i64,
+    discounts: i64,
+    cash_collected: i64,
+    outstanding: i64,
+    refunds: i64,
+    expenses: i64,
+    tips: i64,
+    invoice_count: i64,
+    refund_count: i64,
+    expense_count: i64,
+    branch_gross: HashMap<String, i64>,
+    branch_net: HashMap<String, i64>,
+    branch_count: HashMap<String, i64>,
+    day_gross: HashMap<String, i64>,
+    day_net: HashMap<String, i64>,
+    day_paid: HashMap<String, i64>,
+    day_tax: HashMap<String, i64>,
+    day_count: HashMap<String, i64>,
+    day_refunds: HashMap<String, i64>,
+    payment_methods: HashMap<String, i64>,
+    service_revenue: HashMap<String, (i64, i64)>,
+    product_revenue: HashMap<String, (i64, i64)>,
+}
+
+impl FinanceWindow {
+    fn empty() -> Self {
+        FinanceWindow {
+            gross_sales: 0,
+            taxes: 0,
+            discounts: 0,
+            cash_collected: 0,
+            outstanding: 0,
+            refunds: 0,
+            expenses: 0,
+            tips: 0,
+            invoice_count: 0,
+            refund_count: 0,
+            expense_count: 0,
+            branch_gross: HashMap::new(),
+            branch_net: HashMap::new(),
+            branch_count: HashMap::new(),
+            day_gross: HashMap::new(),
+            day_net: HashMap::new(),
+            day_paid: HashMap::new(),
+            day_tax: HashMap::new(),
+            day_count: HashMap::new(),
+            day_refunds: HashMap::new(),
+            payment_methods: HashMap::new(),
+            service_revenue: HashMap::new(),
+            product_revenue: HashMap::new(),
+        }
+    }
+}
+
+async fn finance_window(
+    database: &mongodb::Database,
+    salon_id: &str,
+    branches: &Option<Vec<String>>,
+    from: &str,
+    to: &str,
+) -> Result<FinanceWindow, AppError> {
+    let mut w = FinanceWindow::empty();
+    let mut filter = doc! { "salonId": salon_id };
+    if let Some(ids) = branches {
+        filter.insert("branchId", doc! { "$in": ids });
+    }
+    if let Some(range) = date_range_bson(Some(from), Some(to)) {
+        filter.insert("createdAt", range);
+    }
+    let mut cursor = database
+        .collection::<Document>("invoices")
+        .find(filter, None)
+        .await
+        .map_err(|_| AppError::Database)?;
+    while cursor.advance().await.map_err(|_| AppError::Database)? {
+        let d: Document = cursor.deserialize_current().map_err(|_| AppError::Database)?;
+        let status = doc_str(&d, "status");
+        let voided = status == "void" || status == "refunded" || status == "cancelled";
+        let paid = doc_i64(&d, &["paidAmountPaise"]);
+        let grand = doc_i64(&d, &["grandTotalPaise"]);
+        let tax = doc_i64(&d, &["taxPaise"]);
+        let branch = doc_str(&d, "branchId");
+        let date = ist_date_of_doc(&d, &["createdAt", "issuedAt"]);
+        w.invoice_count += 1;
+        if voided {
+            w.refunds += paid;
+            w.refund_count += 1;
+            *w.day_refunds.entry(date).or_insert(0) += paid;
+        } else {
+            let discounts = doc_i64(&d, &["discountPaise", "discountAmountPaise"]);
+            let net = grand - discounts;
+            w.gross_sales += grand;
+            w.taxes += tax;
+            w.discounts += discounts;
+            w.cash_collected += paid;
+            w.outstanding += doc_i64(&d, &["dueAmountPaise"]);
+            *w.branch_gross.entry(branch.clone()).or_insert(0) += grand;
+            *w.branch_net.entry(branch.clone()).or_insert(0) += net;
+            *w.branch_count.entry(branch.clone()).or_insert(0) += 1;
+            *w.day_gross.entry(date.clone()).or_insert(0) += grand;
+            *w.day_net.entry(date.clone()).or_insert(0) += net;
+            *w.day_paid.entry(date.clone()).or_insert(0) += paid;
+            *w.day_tax.entry(date.clone()).or_insert(0) += tax;
+            *w.day_count.entry(date.clone()).or_insert(0) += 1;
+            if let Ok(payments) = d.get_array("payments") {
+                for p in payments {
+                    if let Some(pd) = p.as_document() {
+                        let method = doc_str(pd, "method");
+                        *w.payment_methods
+                            .entry(if method.is_empty() {
+                                "unknown".to_string()
+                            } else {
+                                method
+                            })
+                            .or_insert(0) += doc_i64(pd, &["amountPaise"]);
+                    }
+                }
+            }
+            if let Ok(lines_value) = d.get_array("lines") {
+                for line in lines_value {
+                    if let Some(ld) = line.as_document() {
+                        let product_id = doc_str(ld, "productId");
+                        let service_id = doc_str(ld, "serviceId");
+                        let label = doc_str(ld, "description");
+                        if !label.is_empty() {
+                            let amount = doc_i64(ld, &["totalPaise"]);
+                            if !product_id.is_empty() && service_id.is_empty() {
+                                let e = w.product_revenue.entry(label).or_insert((0, 0));
+                                e.0 += 1;
+                                e.1 += amount;
+                            } else {
+                                let e = w.service_revenue.entry(label).or_insert((0, 0));
+                                e.0 += 1;
+                                e.1 += amount;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    let mut exp_filter = doc! { "salonId": salon_id };
+    if let Some(ids) = branches {
+        exp_filter.insert("branchId", doc! { "$in": ids });
+    }
+    if let Some(range) = date_range_bson(Some(from), Some(to)) {
+        exp_filter.insert("createdAt", range);
+    }
+    let mut cursor = database
+        .collection::<Document>("expenses")
+        .find(exp_filter, None)
+        .await
+        .map_err(|_| AppError::Database)?;
+    while cursor.advance().await.map_err(|_| AppError::Database)? {
+        let d: Document = cursor.deserialize_current().map_err(|_| AppError::Database)?;
+        w.expenses += doc_i64(&d, &["totalPaise", "amountPaise"]);
+        w.expense_count += 1;
+    }
+    let mut tip_filter = doc! { "salonId": salon_id };
+    if let Some(ids) = branches {
+        tip_filter.insert("branchId", doc! { "$in": ids });
+    }
+    if let Some(range) = date_range_bson(Some(from), Some(to)) {
+        tip_filter.insert("createdAt", range);
+    }
+    let mut cursor = database
+        .collection::<Document>("tips")
+        .find(tip_filter, None)
+        .await
+        .map_err(|_| AppError::Database)?;
+    while cursor.advance().await.map_err(|_| AppError::Database)? {
+        let d: Document = cursor.deserialize_current().map_err(|_| AppError::Database)?;
+        w.tips += doc_i64(&d, &["amountPaise"]);
+    }
+    Ok(w)
+}
+
+fn csv_cell(value: &serde_json::Value) -> String {
+    let s = match value {
+        serde_json::Value::String(s) => s.clone(),
+        serde_json::Value::Null => String::new(),
+        other => other.to_string(),
+    };
+    if s.contains(',') || s.contains('"') || s.contains('\n') {
+        format!("\"{}\"", s.replace('"', "\"\""))
+    } else {
+        s
+    }
+}
+
+fn rows_to_csv(
+    columns: &[serde_json::Value],
+    rows: &[serde_json::Map<String, serde_json::Value>],
+) -> String {
+    let keys: Vec<String> = columns
+        .iter()
+        .filter_map(|c| c.get("key").and_then(|k| k.as_str()))
+        .map(str::to_string)
+        .collect();
+    let mut out = String::new();
+    out.push_str(
+        &columns
+            .iter()
+            .filter_map(|c| c.get("label").and_then(|l| l.as_str()))
+            .collect::<Vec<_>>()
+            .join(","),
+    );
+    out.push('\n');
+    for row in rows {
+        let cells: Vec<String> = keys
+            .iter()
+            .map(|key| row.get(key).map(csv_cell).unwrap_or_default())
+            .collect();
+        out.push_str(&cells.join(","));
+        out.push('\n');
+    }
+    out
+}
+
+fn bytes_response(content_type: &str, filename: &str, bytes: Vec<u8>) -> Result<axum::response::Response, AppError> {
+    axum::http::Response::builder()
+        .status(axum::http::StatusCode::OK)
+        .header("content-type", content_type)
+        .header(
+            "content-disposition",
+            format!("attachment; filename=\"{filename}\""),
+        )
+        .body(axum::body::Body::from(bytes))
+        .map_err(|_| AppError::Internal)
+        .map(IntoResponse::into_response)
+}
+
+fn shift_swap_json(
+    doc: &Document,
+    names: &HashMap<String, (String, String)>,
+) -> serde_json::Value {
+    let from_id = doc_str(doc, "fromStaffId");
+    let to_id = doc_str(doc, "toStaffId");
+    let (from_name, _) = names
+        .get(&from_id)
+        .cloned()
+        .unwrap_or_else(|| (from_id.clone(), String::new()));
+    let (to_name, _) = names
+        .get(&to_id)
+        .cloned()
+        .unwrap_or_else(|| (to_id.clone(), String::new()));
+    let raw_status = doc_str(doc, "status");
+    let status = match raw_status.as_str() {
+        "approved" | "rejected" => raw_status,
+        _ => "pending".to_string(),
+    };
+    let created = doc_dt_millis(doc, &["createdAt"]);
+    let updated = doc_dt_millis(doc, &["updatedAt"]).max(created);
+    let shift_type = doc_str(doc, "shiftType");
+    serde_json::json!({
+        "id": doc_id_string(doc),
+        "branchId": doc_str(doc, "branchId"),
+        "scheduleId": doc_str(doc, "scheduleId"),
+        "fromStaffId": from_id,
+        "toStaffId": to_id,
+        "fromStaffName": from_name,
+        "toStaffName": to_name,
+        "scheduleDate": doc_str(doc, "scheduleDate"),
+        "startTime": doc_str(doc, "startTime"),
+        "endTime": doc_str(doc, "endTime"),
+        "shiftType": if shift_type.is_empty() { "regular".to_string() } else { shift_type },
+        "reason": doc_str(doc, "reason"),
+        "status": status,
+        "targetResponseNote": doc_str(doc, "targetResponseNote"),
+        "rejectionReason": doc_str(doc, "rejectionReason"),
+        "version": doc_i64(doc, &["version"]).max(1),
+        "createdAt": if created > 0 { DateTime::from_millis(created).try_to_rfc3339_string().unwrap_or_default() } else { String::new() },
+        "updatedAt": if updated > 0 { DateTime::from_millis(updated).try_to_rfc3339_string().unwrap_or_default() } else { String::new() },
+    })
+}
+
+async fn owner_finance_overview(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Query(query): Query<OwnerFinanceOverviewQuery>,
+) -> Result<axum::response::Response, AppError> {
+    let context = context_from_headers(&state, &headers).await?;
+    require_owner_scope(&context)?;
+    let branches = resolve_branch_ids(&context, query.branch_id.as_deref())?;
+    let (from, to) = default_range(query.from.as_deref(), query.to.as_deref());
+    let cur = finance_window(&state.store.database, &context.salon_id, &branches, &from, &to).await?;
+    let (prev_from, prev_to) = match days_between(&from, &to) {
+        Some(days) => (shift_day(&from, -(days.max(1))), shift_day(&from, -1)),
+        None => (from.clone(), from.clone()),
+    };
+    let prev = finance_window(&state.store.database, &context.salon_id, &branches, &prev_from, &prev_to).await?;
+    let net = cur.gross_sales - cur.discounts - cur.refunds;
+    let prev_net = (prev.gross_sales - prev.discounts) - prev.refunds;
+    let profit = net - cur.expenses;
+    let prev_profit = prev_net - prev.expenses;
+    let branch_names = branch_name_map(&state.store.database, &context.salon_id).await;
+    let mut branch_ids: Vec<String> = cur.branch_gross.keys().cloned().collect();
+    branch_ids.sort();
+    branch_ids.dedup();
+    let branch_comparison: Vec<serde_json::Value> = branch_ids
+        .into_iter()
+        .map(|id| {
+            serde_json::json!({
+                "branchId": id,
+                "branchName": branch_names.get(&id).cloned().unwrap_or_else(|| id.clone()),
+                "grossSalesPaise": cur.branch_gross.get(&id).copied().unwrap_or(0),
+                "netRevenuePaise": cur.branch_net.get(&id).copied().unwrap_or(0),
+                "invoiceCount": cur.branch_count.get(&id).copied().unwrap_or(0),
+            })
+        })
+        .collect();
+    let mut days: Vec<String> = Vec::new();
+    let mut day = from.clone();
+    while day <= to {
+        days.push(day.clone());
+        day = shift_day(&day, 1);
+    }
+    let trend: Vec<serde_json::Value> = days
+        .into_iter()
+        .map(|date| serde_json::json!({ "date": date, "netRevenuePaise": cur.day_net.get(&date).copied().unwrap_or(0) }))
+        .collect();
+    let mut methods: Vec<(String, i64)> = cur.payment_methods.iter().map(|(k, v)| (k.clone(), *v)).collect();
+    methods.sort_by(|a, b| b.1.cmp(&a.1));
+    let method_sum: i64 = methods.iter().map(|(_, v)| v).sum();
+    if method_sum < cur.cash_collected {
+        methods.push(("other".to_string(), cur.cash_collected - method_sum));
+    }
+    let payment_methods: Vec<serde_json::Value> = methods
+        .into_iter()
+        .map(|(method, amount)| serde_json::json!({ "method": method, "amountPaise": amount }))
+        .collect();
+    let service_revenue: i64 = cur.service_revenue.values().map(|(_, v)| v).sum();
+    let product_revenue: i64 = cur.product_revenue.values().map(|(_, v)| v).sum();
+    let branch_label = branches
+        .as_ref()
+        .map(|ids| {
+            if ids.len() == 1 {
+                ids[0].clone()
+            } else {
+                "All Branches".to_string()
+            }
+        })
+        .unwrap_or_else(|| "All Branches".to_string());
+    let generated_at = DateTime::now().try_to_rfc3339_string().unwrap_or_default();
+    Ok(ok(serde_json::json!({
+        "context": {
+            "branchId": branches.as_ref().map(|ids| ids.join(",")).unwrap_or_default(),
+            "branchLabel": branch_label,
+            "from": from,
+            "to": to,
+            "timezone": query.timezone.unwrap_or_else(|| "Asia/Kolkata".to_string()),
+            "generatedAt": generated_at,
+            "currency": "INR",
+            "availableBranches": branches.clone().unwrap_or_default(),
+        },
+        "kpis": {
+            "grossSales": metric(cur.gross_sales, prev.gross_sales),
+            "netRevenue": metric(net, prev_net),
+            "cashCollected": metric(cur.cash_collected, prev.cash_collected),
+            "outstanding": metric(cur.outstanding, prev.outstanding),
+            "refunds": metric(cur.refunds, prev.refunds),
+            "expenses": metric(cur.expenses, prev.expenses),
+            "taxes": metric(cur.taxes, prev.taxes),
+            "discounts": metric(cur.discounts, prev.discounts),
+            "profit": metric(profit, prev_profit),
+            "tips": metric(cur.tips, prev.tips),
+        },
+        "trend": trend,
+        "paymentMethods": payment_methods,
+        "breakdown": {
+            "grossSalesPaise": cur.gross_sales,
+            "discountsPaise": cur.discounts,
+            "taxesPaise": cur.taxes,
+            "netRevenuePaise": net,
+            "cashCollectedPaise": cur.cash_collected,
+            "outstandingPaise": cur.outstanding,
+            "refundsPaise": cur.refunds,
+            "expensesPaise": cur.expenses,
+            "creditNotesPaise": 0,
+            "serviceRevenuePaise": service_revenue,
+            "productRevenuePaise": product_revenue,
+            "membershipRevenuePaise": 0,
+            "packageRevenuePaise": 0,
+        },
+        "branchComparison": branch_comparison,
+        "drilldowns": {
+            "sales": { "count": cur.invoice_count, "totalPaise": cur.gross_sales, "dataUrl": "/api/v1/owner-console/finance/drilldown?type=sales" },
+            "payments": { "count": cur.invoice_count, "totalPaise": cur.cash_collected, "dataUrl": "/api/v1/owner-console/finance/drilldown?type=payments" },
+            "outstanding": { "count": cur.invoice_count, "totalPaise": cur.outstanding, "dataUrl": "/api/v1/owner-console/finance/drilldown?type=outstanding" },
+            "refunds": { "count": cur.refund_count, "totalPaise": cur.refunds, "dataUrl": "/api/v1/owner-console/finance/drilldown?type=refunds" },
+            "expenses": { "count": cur.expense_count, "totalPaise": cur.expenses, "dataUrl": "/api/v1/owner-console/finance/drilldown?type=expenses" },
+            "creditNotes": { "count": 0, "totalPaise": 0, "dataUrl": "/api/v1/owner-console/finance/drilldown?type=creditNotes" },
+        },
+    })))
+}
+
+async fn owner_finance_drilldown(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Query(query): Query<OwnerFinanceDrilldownQuery>,
+) -> Result<axum::response::Response, AppError> {
+    let context = context_from_headers(&state, &headers).await?;
+    require_owner_scope(&context)?;
+    let branches = resolve_branch_ids(&context, query.branch_id.as_deref())?;
+    let (from, to) = default_range(query.from.as_deref(), query.to.as_deref());
+    let drilldown = query.type_of();
+    let limit = query.limit.unwrap_or(50).clamp(1, 500);
+    let offset = query.offset.unwrap_or(0).max(0);
+    let database = &state.store.database;
+    let mut filter = doc! { "salonId": &context.salon_id };
+    if let Some(ids) = &branches {
+        filter.insert("branchId", doc! { "$in": ids });
+    }
+    if let Some(range) = date_range_bson(Some(from.as_str()), Some(to.as_str())) {
+        if drilldown == "expenses" {
+            filter.insert("createdAt", range);
+        } else {
+            filter.insert("createdAt", range);
+        }
+    }
+    let mut summary = serde_json::json!({ "totalCount": 0, "totalPaise": 0 });
+    if drilldown == "expenses" {
+        let total = database
+            .collection::<Document>("expenses")
+            .count_documents(filter.clone(), None)
+            .await
+            .map_err(|_| AppError::Database)?;
+        let options = mongodb::options::FindOptions::builder()
+            .sort(doc! { "createdAt": -1 })
+            .skip(offset as u64)
+            .limit(limit)
+            .build();
+        let mut cursor = database
+            .collection::<Document>("expenses")
+            .find(filter, options)
+            .await
+            .map_err(|_| AppError::Database)?;
+        let mut items = Vec::new();
+        let mut total_paise = 0i64;
+        while cursor.advance().await.map_err(|_| AppError::Database)? {
+            let d: Document = cursor.deserialize_current().map_err(|_| AppError::Database)?;
+            let amount = doc_i64(&d, &["totalPaise", "amountPaise"]);
+            total_paise += amount;
+            items.push(serde_json::json!({
+                "id": doc_id_string(&d),
+                "branchId": doc_str(&d, "branchId"),
+                "date": doc_str(&d, "date"),
+                "category": doc_str(&d, "category"),
+                "vendor": doc_str(&d, "vendor"),
+                "description": doc_str(&d, "description"),
+                "amountPaise": amount,
+                "taxPaise": doc_i64(&d, &["taxPaise"]),
+                "totalPaise": amount,
+                "notes": doc_str(&d, "notes"),
+                "createdAt": doc_dt(&d, "createdAt"),
+            }));
+        }
+        summary = serde_json::json!({ "totalCount": total, "totalPaise": total_paise });
+        return Ok(ok(serde_json::json!({
+            "type": drilldown,
+            "from": from,
+            "to": to,
+            "items": items,
+            "page": ops_page_json(limit, offset, total),
+            "summary": summary,
+        })));
+    }
+    if drilldown == "creditNotes" {
+        return Ok(ok(serde_json::json!({
+            "type": drilldown,
+            "from": from,
+            "to": to,
+            "items": [],
+            "page": ops_page_json(limit, offset, 0),
+            "summary": { "totalCount": 0, "totalPaise": 0 },
+        })));
+    }
+    match phase_invoice_filter(&mut filter, &drilldown) {
+        Ok(()) => {}
+        Err(e) => return Err(e),
+    }
+    let total = database
+        .collection::<Document>("invoices")
+        .count_documents(filter.clone(), None)
+        .await
+        .map_err(|_| AppError::Database)?;
+    let options = mongodb::options::FindOptions::builder()
+        .sort(doc! { "createdAt": -1 })
+        .skip(offset as u64)
+        .limit(limit)
+        .build();
+    let mut cursor = database
+        .collection::<Document>("invoices")
+        .find(filter, options)
+        .await
+        .map_err(|_| AppError::Database)?;
+    let mut items = Vec::new();
+    let mut total_paise = 0i64;
+    while cursor.advance().await.map_err(|_| AppError::Database)? {
+        let d: Document = cursor.deserialize_current().map_err(|_| AppError::Database)?;
+        let grand = doc_i64(&d, &["grandTotalPaise"]);
+        let paid = doc_i64(&d, &["paidAmountPaise"]);
+        if drilldown == "payments" {
+            if let Ok(payments) = d.get_array("payments") {
+                for p in payments {
+                    if let Some(pd) = p.as_document() {
+                        let amount = doc_i64(pd, &["amountPaise"]);
+                        total_paise += amount;
+                        items.push(serde_json::json!({
+                            "id": format!("{}:{}", doc_id_string(&d), doc_str(pd, "method")),
+                            "invoiceId": doc_id_string(&d),
+                            "invoiceNumber": doc_str(&d, "invoiceNumber"),
+                            "method": doc_str(pd, "method"),
+                            "amountPaise": amount,
+                            "receivedAt": doc_dt(pd, "receivedAt"),
+                            "branchId": doc_str(&d, "branchId"),
+                            "customerName": doc_str(&d, "customerName"),
+                        }));
+                    }
+                }
+            }
+        } else {
+            total_paise += if drilldown == "refunds" { paid } else { grand };
+            items.push(serde_json::json!({
+                "id": doc_id_string(&d),
+                "invoiceId": doc_id_string(&d),
+                "invoiceNumber": doc_str(&d, "invoiceNumber"),
+                "date": ist_date_of_doc(&d, &["createdAt", "issuedAt"]),
+                "branchId": doc_str(&d, "branchId"),
+                "customerId": doc_str(&d, "customerId"),
+                "customerName": doc_str(&d, "customerName"),
+                "amountPaise": grand,
+                "paidPaise": paid,
+                "duePaise": doc_i64(&d, &["dueAmountPaise"]),
+                "status": doc_str(&d, "status"),
+                "paymentStatus": doc_str(&d, "paymentStatus"),
+            }));
+        }
+    }
+    Ok(ok(serde_json::json!({
+        "type": drilldown,
+        "from": from,
+        "to": to,
+        "items": items,
+        "page": ops_page_json(limit, offset, total),
+        "summary": { "totalCount": total, "totalPaise": total_paise },
+    })))
+}
+
+fn phase_invoice_filter(filter: &mut Document, drilldown: &str) -> Result<(), AppError> {
+    match drilldown {
+        "sales" => {
+            filter.insert("status", doc! { "$ne": "void" });
+        }
+        "payments" => {
+            filter.insert("paidAmountPaise", doc! { "$gt": 0 });
+        }
+        "outstanding" => {
+            filter.insert("status", doc! { "$ne": "void" });
+            filter.insert("dueAmountPaise", doc! { "$gt": 0 });
+        }
+        "refunds" => {
+            filter.insert("status", doc! { "$in": ["void", "refunded", "cancelled"] });
+        }
+        _ => return Err(AppError::NotFound("Unknown drilldown type.".to_string())),
+    }
+    Ok(())
+}
+
+fn report_column(key: &str, label: &str, column_type: &str) -> serde_json::Value {
+    serde_json::json!({
+        "key": key,
+        "label": label,
+        "type": column_type,
+        "sortable": true,
+    })
+}
+
+async fn invoice_docs(
+    database: &mongodb::Database,
+    salon_id: &str,
+    branches: &Option<Vec<String>>,
+    from: &str,
+    to: &str,
+) -> Result<Vec<Document>, AppError> {
+    let mut filter = doc! { "salonId": salon_id };
+    if let Some(ids) = branches {
+        filter.insert("branchId", doc! { "$in": ids });
+    }
+    if let Some(range) = date_range_bson(Some(from), Some(to)) {
+        filter.insert("createdAt", range);
+    }
+    let mut cursor = database
+        .collection::<Document>("invoices")
+        .find(filter, None)
+        .await
+        .map_err(|_| AppError::Database)?;
+    let mut docs = Vec::new();
+    while cursor.advance().await.map_err(|_| AppError::Database)? {
+        docs.push(cursor.deserialize_current().map_err(|_| AppError::Database)?);
+    }
+    Ok(docs)
+}
+
+fn share_pct(value: i64, total: i64) -> f64 {
+    if total == 0 {
+        0.0
+    } else {
+        ((value as f64 * 100.0) / total as f64 * 10.0).round() / 10.0
+    }
+}
+
+async fn build_report(
+    database: &mongodb::Database,
+    salon_id: &str,
+    branches: &Option<Vec<String>>,
+    from: &str,
+    to: &str,
+    key: &str,
+) -> Result<Option<(String, Vec<serde_json::Value>, Vec<serde_json::Map<String, serde_json::Value>>, i64)>, AppError> {
+    let window = finance_window(database, salon_id, branches, from, to).await?;
+    let mut days: Vec<String> = Vec::new();
+    let mut day = from.to_string();
+    while day <= to.to_string() {
+        days.push(day.clone());
+        day = shift_day(&day, 1);
+    }
+    let total_sales = window.gross_sales;
+    match key {
+        "daily-sales" => {
+            let columns = vec![
+                report_column("date", "Date", "date"),
+                report_column("invoiceCount", "Invoices", "number"),
+                report_column("grossSalesPaise", "Gross Sales", "money"),
+                report_column("discountsPaise", "Discounts", "money"),
+                report_column("taxesPaise", "Taxes", "money"),
+                report_column("netRevenuePaise", "Net Revenue", "money"),
+                report_column("cashCollectedPaise", "Cash Collected", "money"),
+                report_column("refundsPaise", "Refunds", "money"),
+                report_column("outstandingPaise", "Outstanding", "money"),
+            ];
+            let rows: Vec<serde_json::Map<String, serde_json::Value>> = days
+                .into_iter()
+                .map(|date| {
+                    let count = window.day_count.get(&date).copied().unwrap_or(0);
+                    let gross = window.day_gross.get(&date).copied().unwrap_or(0);
+                    let paid = window.day_paid.get(&date).copied().unwrap_or(0);
+                    let refunds = window.day_refunds.get(&date).copied().unwrap_or(0);
+                    let net = window.day_net.get(&date).copied().unwrap_or(0);
+                    let tax = window.day_tax.get(&date).copied().unwrap_or(0);
+                    let outstanding = (gross - paid - refunds).max(0);
+                    serde_json::json!({
+                        "date": date,
+                        "invoiceCount": count,
+                        "grossSalesPaise": gross,
+                        "discountsPaise": 0,
+                        "taxesPaise": tax,
+                        "netRevenuePaise": net,
+                        "cashCollectedPaise": paid,
+                        "refundsPaise": refunds,
+                        "outstandingPaise": outstanding,
+                    })
+                    .as_object()
+                    .cloned()
+                    .unwrap_or_default()
+                })
+                .collect();
+            Ok(Some(("Daily Sales Report".to_string(), columns, rows, total_sales)))
+        }
+        "revenue-by-service" => {
+            let columns = vec![
+                report_column("service", "Service", "text"),
+                report_column("itemsSold", "Items Sold", "number"),
+                report_column("revenuePaise", "Revenue", "money"),
+                report_column("shareOfTotalPct", "Share %", "number"),
+            ];
+            let mut services: Vec<(String, (i64, i64))> = window
+                .service_revenue
+                .iter()
+                .map(|(k, v)| (k.clone(), *v))
+                .collect();
+            services.sort_by(|a, b| (b.1).1.cmp(&(a.1).1));
+            let service_total: i64 = services.iter().map(|(_, v)| v.1).sum();
+            let rows: Vec<serde_json::Map<String, serde_json::Value>> = services
+                .into_iter()
+                .map(|(name, (count, amount))| {
+                    serde_json::json!({
+                        "service": name,
+                        "itemsSold": count,
+                        "revenuePaise": amount,
+                        "shareOfTotalPct": share_pct(amount, service_total),
+                    })
+                    .as_object()
+                    .cloned()
+                    .unwrap_or_default()
+                })
+                .collect();
+            Ok(Some(("Revenue by Service".to_string(), columns, rows, service_total)))
+        }
+        "revenue-by-staff" => {
+            let columns = vec![
+                report_column("staffName", "Staff", "text"),
+                report_column("staffId", "Staff ID", "text"),
+                report_column("appointmentCount", "Appointments", "number"),
+                report_column("revenuePaise", "Revenue", "money"),
+                report_column("shareOfTotalPct", "Share %", "number"),
+            ];
+            let mut appt_staff: HashMap<String, String> = HashMap::new();
+            {
+                let mut a_filter = doc! { "salonId": salon_id };
+                if let Some(range) = date_range_bson(Some(from), Some(to)) {
+                    a_filter.insert("startAt", range);
+                }
+                let mut cursor = database
+                    .collection::<Document>("appointments")
+                    .find(a_filter, None)
+                    .await
+                    .map_err(|_| AppError::Database)?;
+                while cursor.advance().await.map_err(|_| AppError::Database)? {
+                    let d: Document = cursor.deserialize_current().map_err(|_| AppError::Database)?;
+                    appt_staff.insert(doc_id_string(&d), doc_str(&d, "staffId"));
+                }
+            }
+            let names = staff_maps(database, salon_id).await?;
+            let mut staff_sales: HashMap<String, (i64, i64)> = HashMap::new();
+            for d in invoice_docs(database, salon_id, branches, from, to).await? {
+                let status = doc_str(&d, "status");
+                if status == "void" || status == "refunded" || status == "cancelled" {
+                    continue;
+                }
+                let appointment_id = doc_str(&d, "appointmentId");
+                if let Some(staff_id) = appt_staff.get(&appointment_id) {
+                    let e = staff_sales.entry(staff_id.clone()).or_insert((0, 0));
+                    e.0 += 1;
+                    e.1 += doc_i64(&d, &["grandTotalPaise"]);
+                }
+            }
+            let staff_total: i64 = staff_sales.values().map(|(_, v)| v).sum();
+            let mut staff_rows: Vec<(String, String)> = staff_sales
+                .keys()
+                .map(|id| (id.clone(), names.get(id).map(|(n, _)| n.clone()).unwrap_or_else(|| id.clone())))
+                .collect();
+            staff_rows.sort_by(|a, b| b.0.cmp(&a.0));
+            let rows: Vec<serde_json::Map<String, serde_json::Value>> = staff_rows
+                .into_iter()
+                .map(|(id, name)| {
+                    let (count, amount) = staff_sales.get(&id).copied().unwrap_or((0, 0));
+                    serde_json::json!({
+                        "staffName": name,
+                        "staffId": id,
+                        "appointmentCount": count,
+                        "revenuePaise": amount,
+                        "shareOfTotalPct": share_pct(amount, staff_total),
+                    })
+                    .as_object()
+                    .cloned()
+                    .unwrap_or_default()
+                })
+                .collect();
+            Ok(Some(("Revenue by Staff".to_string(), columns, rows, staff_total)))
+        }
+        "payment-mix" => {
+            let columns = vec![
+                report_column("method", "Payment Method", "text"),
+                report_column("amountPaise", "Amount", "money"),
+                report_column("shareOfTotalPct", "Share %", "number"),
+            ];
+            let mut methods: Vec<(String, i64)> = window.payment_methods.iter().map(|(k, v)| (k.clone(), *v)).collect();
+            methods.sort_by(|a, b| b.1.cmp(&a.1));
+            let method_total: i64 = methods.iter().map(|(_, v)| v).sum();
+            let rows: Vec<serde_json::Map<String, serde_json::Value>> = methods
+                .into_iter()
+                .map(|(method, amount)| {
+                    serde_json::json!({
+                        "method": method,
+                        "amountPaise": amount,
+                        "shareOfTotalPct": share_pct(amount, method_total),
+                    })
+                    .as_object()
+                    .cloned()
+                    .unwrap_or_default()
+                })
+                .collect();
+            Ok(Some(("Payment Mix Report".to_string(), columns, rows, method_total)))
+        }
+        "tax-summary" => {
+            let columns = vec![
+                report_column("date", "Date", "date"),
+                report_column("invoiceNumber", "Invoice", "text"),
+                report_column("customerName", "Customer", "text"),
+                report_column("taxablePaise", "Taxable", "money"),
+                report_column("taxPaise", "Tax", "money"),
+                report_column("totalPaise", "Total", "money"),
+            ];
+            let mut tax_total = 0i64;
+            let rows: Vec<serde_json::Map<String, serde_json::Value>> = invoice_docs(database, salon_id, branches, from, to)
+                .await?
+                .into_iter()
+                .filter(|d| {
+                    let status = doc_str(d, "status");
+                    status != "void" && status != "refunded" && status != "cancelled"
+                })
+                .filter_map(|d| {
+                    let tax = doc_i64(&d, &["taxPaise"]);
+                    if tax <= 0 {
+                        None
+                    } else {
+                        tax_total += tax;
+                        Some(
+                            serde_json::json!({
+                                "date": ist_date_of_doc(&d, &["createdAt", "issuedAt"]),
+                                "invoiceNumber": doc_str(&d, "invoiceNumber"),
+                                "customerName": doc_str(&d, "customerName"),
+                                "taxablePaise": doc_i64(&d, &["subtotalPaise"]),
+                                "taxPaise": tax,
+                                "totalPaise": doc_i64(&d, &["grandTotalPaise"]),
+                            })
+                            .as_object()
+                            .cloned()
+                            .unwrap_or_default(),
+                        )
+                    }
+                })
+                .collect();
+            Ok(Some(("Tax Summary".to_string(), columns, rows, tax_total)))
+        }
+        "expense-summary" => {
+            let columns = vec![
+                report_column("date", "Date", "date"),
+                report_column("category", "Category", "text"),
+                report_column("vendor", "Vendor", "text"),
+                report_column("description", "Description", "text"),
+                report_column("amountPaise", "Amount", "money"),
+                report_column("taxPaise", "Tax", "money"),
+                report_column("totalPaise", "Total", "money"),
+            ];
+            let mut rows = Vec::new();
+            let mut expense_total = 0i64;
+            let mut filter = doc! { "salonId": salon_id };
+            if let Some(ids) = branches {
+                filter.insert("branchId", doc! { "$in": ids });
+            }
+            if let Some(range) = date_range_bson(Some(from), Some(to)) {
+                filter.insert("createdAt", range);
+            }
+            let mut cursor = database
+                .collection::<Document>("expenses")
+                .find(filter, None)
+                .await
+                .map_err(|_| AppError::Database)?;
+            while cursor.advance().await.map_err(|_| AppError::Database)? {
+                let d: Document = cursor.deserialize_current().map_err(|_| AppError::Database)?;
+                let amount = doc_i64(&d, &["totalPaise", "amountPaise"]);
+                expense_total += amount;
+                rows.push(
+                    serde_json::json!({
+                        "date": doc_str(&d, "date"),
+                        "category": doc_str(&d, "category"),
+                        "vendor": doc_str(&d, "vendor"),
+                        "description": doc_str(&d, "description"),
+                        "amountPaise": amount,
+                        "taxPaise": doc_i64(&d, &["taxPaise"]),
+                        "totalPaise": amount,
+                    })
+                    .as_object()
+                    .cloned()
+                    .unwrap_or_default(),
+                );
+            }
+            Ok(Some(("Expense Summary".to_string(), columns, rows, expense_total)))
+        }
+        "product-sales" => {
+            let columns = vec![
+                report_column("product", "Product", "text"),
+                report_column("unitsSold", "Units Sold", "number"),
+                report_column("revenuePaise", "Revenue", "money"),
+                report_column("shareOfTotalPct", "Share %", "number"),
+            ];
+            let mut products: Vec<(String, (i64, i64))> = window
+                .product_revenue
+                .iter()
+                .map(|(k, v)| (k.clone(), *v))
+                .collect();
+            products.sort_by(|a, b| (b.1).1.cmp(&(a.1).1));
+            let product_total: i64 = products.iter().map(|(_, v)| v.1).sum();
+            let rows: Vec<serde_json::Map<String, serde_json::Value>> = products
+                .into_iter()
+                .map(|(name, (count, amount))| {
+                    serde_json::json!({
+                        "product": name,
+                        "unitsSold": count,
+                        "revenuePaise": amount,
+                        "shareOfTotalPct": share_pct(amount, product_total),
+                    })
+                    .as_object()
+                    .cloned()
+                    .unwrap_or_default()
+                })
+                .collect();
+            Ok(Some(("Product Sales Report".to_string(), columns, rows, product_total)))
+        }
+        "client-history" => {
+            let columns = vec![
+                report_column("clientId", "Client ID", "text"),
+                report_column("clientName", "Client", "text"),
+                report_column("visitCount", "Visits", "number"),
+                report_column("grossPaise", "Gross Sales", "money"),
+                report_column("paidPaise", "Paid", "money"),
+                report_column("outstandingPaise", "Outstanding", "money"),
+                report_column("lastVisit", "Last Visit", "date"),
+            ];
+            let mut clients: BTreeMap<String, serde_json::Value> = BTreeMap::new();
+            for d in invoice_docs(database, salon_id, branches, from, to).await? {
+                let status = doc_str(&d, "status");
+                if status == "void" || status == "refunded" || status == "cancelled" {
+                    continue;
+                }
+                let id = {
+                    let raw = doc_str(&d, "customerId");
+                    if raw.is_empty() {
+                        "walk-in".to_string()
+                    } else {
+                        raw
+                    }
+                };
+                let entry = clients.entry(id.clone()).or_insert_with(|| {
+                    serde_json::json!({
+                        "clientId": id.clone(),
+                        "clientName": doc_str(&d, "customerName"),
+                        "visitCount": 0,
+                        "grossPaise": 0,
+                        "paidPaise": 0,
+                        "outstandingPaise": 0,
+                        "lastVisit": "",
+                    })
+                });
+                let name = doc_str(&d, "customerName");
+                entry["clientName"] = serde_json::Value::String(if name.is_empty() {
+                    entry["clientName"].as_str().unwrap_or_default().to_string()
+                } else {
+                    name
+                });
+                entry["visitCount"] = serde_json::Value::Number(
+                    (entry["visitCount"].as_i64().unwrap_or(0) + 1).into(),
+                );
+                entry["grossPaise"] = serde_json::Value::Number(
+                    (entry["grossPaise"].as_i64().unwrap_or(0) + doc_i64(&d, &["grandTotalPaise"])).into(),
+                );
+                entry["paidPaise"] = serde_json::Value::Number(
+                    (entry["paidPaise"].as_i64().unwrap_or(0) + doc_i64(&d, &["paidAmountPaise"])).into(),
+                );
+                entry["outstandingPaise"] = serde_json::Value::Number(
+                    (entry["outstandingPaise"].as_i64().unwrap_or(0) + doc_i64(&d, &["dueAmountPaise"])).into(),
+                );
+                let date = ist_date_of_doc(&d, &["createdAt", "issuedAt"]);
+                if date > entry["lastVisit"].as_str().unwrap_or_default().to_string() {
+                    entry["lastVisit"] = serde_json::Value::String(date);
+                }
+            }
+            let mut rows: Vec<serde_json::Map<String, serde_json::Value>> = clients
+                .into_values()
+                .map(|v| v.as_object().cloned().unwrap_or_default())
+                .collect();
+            rows.sort_by(|a, b| {
+                b.get("grossPaise")
+                    .and_then(|v| v.as_i64())
+                    .cmp(&a.get("grossPaise").and_then(|v| v.as_i64()))
+            });
+            let client_total: i64 = rows.iter().map(|r| r.get("grossPaise").and_then(|v| v.as_i64()).unwrap_or(0)).sum();
+            Ok(Some(("Client History Report".to_string(), columns, rows, client_total)))
+        }
+        "walkin-vs-booking" => {
+            let columns = vec![
+                report_column("channel", "Channel", "text"),
+                report_column("invoiceCount", "Invoices", "number"),
+                report_column("grossSalesPaise", "Gross Sales", "money"),
+                report_column("collectedPaise", "Collected", "money"),
+                report_column("shareOfTotalPct", "Share %", "number"),
+            ];
+            let mut bookings = (0i64, 0i64, 0i64);
+            let mut walkins = (0i64, 0i64, 0i64);
+            for d in invoice_docs(database, salon_id, branches, from, to).await? {
+                let status = doc_str(&d, "status");
+                if status == "void" || status == "refunded" || status == "cancelled" {
+                    continue;
+                }
+                let grand = doc_i64(&d, &["grandTotalPaise"]);
+                let paid = doc_i64(&d, &["paidAmountPaise"]);
+                if doc_str(&d, "appointmentId").is_empty() {
+                    walkins.0 += 1;
+                    walkins.1 += grand;
+                    walkins.2 += paid;
+                } else {
+                    bookings.0 += 1;
+                    bookings.1 += grand;
+                    bookings.2 += paid;
+                }
+            }
+            let total = bookings.1 + walkins.1;
+            let rows: Vec<serde_json::Map<String, serde_json::Value>> = vec![
+                serde_json::json!({
+                    "channel": "Booking",
+                    "invoiceCount": bookings.0,
+                    "grossSalesPaise": bookings.1,
+                    "collectedPaise": bookings.2,
+                    "shareOfTotalPct": share_pct(bookings.1, total),
+                })
+                .as_object()
+                .cloned()
+                .unwrap_or_default(),
+                serde_json::json!({
+                    "channel": "Walk-in",
+                    "invoiceCount": walkins.0,
+                    "grossSalesPaise": walkins.1,
+                    "collectedPaise": walkins.2,
+                    "shareOfTotalPct": share_pct(walkins.1, total),
+                })
+                .as_object()
+                .cloned()
+                .unwrap_or_default(),
+            ];
+            Ok(Some(("Walk-in vs Booking".to_string(), columns, rows, total)))
+        }
+        _ => Ok(None),
+    }
+}
+
+async fn owner_report_run(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(report_key): Path<String>,
+    Query(query): Query<OwnerReportsQuery>,
+) -> Result<axum::response::Response, AppError> {
+    let context = context_from_headers(&state, &headers).await?;
+    require_owner_scope(&context)?;
+    let branches = resolve_branch_ids(&context, query.branch_id.as_deref())?;
+    let (from, to) = default_range(query.from.as_deref(), query.to.as_deref());
+    let report = build_report(
+        &state.store.database,
+        &context.salon_id,
+        &branches,
+        &from,
+        &to,
+        &report_key,
+    )
+    .await?;
+    let (title, columns, rows, total_sales) =
+        report.ok_or_else(|| AppError::NotFound("Unknown report key.".to_string()))?;
+    Ok(ok(serde_json::json!({
+        "reportKey": report_key,
+        "title": title,
+        "generatedAt": DateTime::now().try_to_rfc3339_string().unwrap_or_default(),
+        "timezone": "Asia/Kolkata",
+        "filters": {
+            "branchIds": branches.clone().unwrap_or_default(),
+            "from": from,
+            "to": to,
+            "reportKey": report_key,
+        },
+        "columns": columns,
+        "rows": rows,
+        "summary": { "totalRows": rows.len(), "totalSalesPaise": total_sales },
+        "meta": {
+            "paginationAvailable": false,
+            "exportFormats": ["csv", "xlsx", "pdf"],
+        },
+    })))
+}
+
+async fn owner_reports_catalogue(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Query(_query): Query<OwnerReportsQuery>,
+) -> Result<axum::response::Response, AppError> {
+    let context = context_from_headers(&state, &headers).await?;
+    require_owner_scope(&context)?;
+    let catalogue = vec![
+        serde_json::json!({ "id": "daily-sales", "title": "Daily Sales Report", "description": "Sales, collections and outstanding by business day.", "category": "finance", "formats": ["csv", "xlsx", "pdf"], "defaultDateRange": "last_30_days", "params": ["branchId", "from", "to"], "available": true }),
+        serde_json::json!({ "id": "revenue-by-service", "title": "Revenue by Service", "description": "Revenue and item count grouped by service.", "category": "finance", "formats": ["csv", "xlsx", "pdf"], "defaultDateRange": "last_30_days", "params": ["branchId", "from", "to"], "available": true }),
+        serde_json::json!({ "id": "revenue-by-staff", "title": "Revenue by Staff", "description": "Sales attributed to each staff member via appointments.", "category": "people", "formats": ["csv", "xlsx", "pdf"], "defaultDateRange": "last_30_days", "params": ["branchId", "from", "to"], "available": true }),
+        serde_json::json!({ "id": "payment-mix", "title": "Payment Mix Report", "description": "Breakdown of collections by payment method.", "category": "finance", "formats": ["csv", "xlsx", "pdf"], "defaultDateRange": "last_30_days", "params": ["branchId", "from", "to"], "available": true }),
+        serde_json::json!({ "id": "tax-summary", "title": "Tax Summary", "description": "Taxable value and tax collected per invoice.", "category": "finance", "formats": ["csv", "xlsx", "pdf"], "defaultDateRange": "last_30_days", "params": ["branchId", "from", "to"], "available": true }),
+        serde_json::json!({ "id": "expense-summary", "title": "Expense Summary", "description": "All expenses with category and vendor.", "category": "finance", "formats": ["csv", "xlsx", "pdf"], "defaultDateRange": "last_30_days", "params": ["branchId", "from", "to"], "available": true }),
+        serde_json::json!({ "id": "product-sales", "title": "Product Sales Report", "description": "Revenue from product (retail) line items.", "category": "inventory", "formats": ["csv", "xlsx", "pdf"], "defaultDateRange": "last_30_days", "params": ["branchId", "from", "to"], "available": true }),
+        serde_json::json!({ "id": "client-history", "title": "Client History Report", "description": "Lifetime summary per client including visits and spend.", "category": "clients", "formats": ["csv", "xlsx", "pdf"], "defaultDateRange": "last_30_days", "params": ["branchId", "from", "to"], "available": true }),
+        serde_json::json!({ "id": "walkin-vs-booking", "title": "Walk-in vs Booking", "description": "Compares invoices from appointments with walk-in invoices.", "category": "operations", "formats": ["csv", "xlsx", "pdf"], "defaultDateRange": "last_30_days", "params": ["branchId", "from", "to"], "available": true }),
+    ];
+    Ok(ok(catalogue))
+}
+
+async fn owner_report_export(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Query(query): Query<OwnerReportsQuery>,
+) -> Result<axum::response::Response, AppError> {
+    let context = context_from_headers(&state, &headers).await?;
+    require_owner_scope(&context)?;
+    let report_key = query
+        .report_key
+        .clone()
+        .unwrap_or_else(|| "daily-sales".to_string());
+    let format = query.format.clone().unwrap_or_else(|| "csv".to_string());
+    let branches = resolve_branch_ids(&context, query.branch_id.as_deref())?;
+    let (from, to) = default_range(query.from.as_deref(), query.to.as_deref());
+    let report = build_report(
+        &state.store.database,
+        &context.salon_id,
+        &branches,
+        &from,
+        &to,
+        &report_key,
+    )
+    .await?;
+    let (_title, columns, rows, _total) =
+        report.ok_or_else(|| AppError::NotFound("Unknown report key.".to_string()))?;
+    let csv = rows_to_csv(&columns, &rows);
+    let date = chrono::Utc::now().format("%Y-%m-%d").to_string();
+    let slug = report_key.replace(' ', "-");
+    let filename = format!("{slug}-{date}.{format}");
+    match format.as_str() {
+        "xlsx" => bytes_response(
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            &filename,
+            csv.into_bytes(),
+        ),
+        "pdf" => bytes_response("application/pdf", &filename, csv.into_bytes()),
+        _ => bytes_response("text/csv; charset=utf-8", &filename, csv.into_bytes()),
+    }
+}
+
+async fn owner_attendance_list(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Query(query): Query<OwnerAttendanceListQuery>,
+) -> Result<axum::response::Response, AppError> {
+    let context = context_from_headers(&state, &headers).await?;
+    require_owner_scope(&context)?;
+    let branches = resolve_branch_ids(&context, query.branch_id.as_deref())?;
+    let limit = query
+        .limit
+        .or(query.page_size)
+        .unwrap_or(50)
+        .clamp(1, 200);
+    let offset = query.offset.map(|o| o.max(0)).unwrap_or_else(|| {
+        (query.page.unwrap_or(1).max(1) - 1) * limit
+    });
+    let staff = staff_maps(&state.store.database, &context.salon_id).await?;
+    let branch_names = branch_name_map(&state.store.database, &context.salon_id).await;
+    let mut filter = doc! { "salonId": &context.salon_id };
+    let mut date_criteria = Document::new();
+    if let Some(from) = query.from.as_deref().filter(|s| !s.is_empty()) {
+        date_criteria.insert("$gte", from);
+    }
+    if let Some(to) = query.to.as_deref().filter(|s| !s.is_empty()) {
+        date_criteria.insert("$lte", to);
+    }
+    if !date_criteria.is_empty() {
+        filter.insert("businessDate", date_criteria);
+    }
+    let mut scoped_staff_ids: Vec<String> = Vec::new();
+    if let Some(ids) = &branches {
+        for (staff_id, (_, branch)) in &staff {
+            if ids.iter().any(|b| b == branch) {
+                scoped_staff_ids.push(staff_id.clone());
+            }
+        }
+        scoped_staff_ids.sort();
+        scoped_staff_ids.dedup();
+        if scoped_staff_ids.is_empty() {
+            let filters = serde_json::json!({
+                "branchId": query.branch_id,
+                "from": query.from,
+                "to": query.to,
+                "staffId": query.staff_id,
+                "status": query.status,
+                "search": query.search,
+            });
+            return Ok(ok(ops_envelope(Vec::new(), limit, offset, 0, filters)));
+        }
+        filter.insert("staffId", doc! { "$in": scoped_staff_ids });
+    }
+    if let Some(staff_id) = query.staff_id.as_deref().filter(|s| !s.is_empty()) {
+        filter.insert("staffId", staff_id);
+    }
+    let collection = state.store.database.collection::<Document>("attendances");
+    let total = collection
+        .count_documents(filter.clone(), None)
+        .await
+        .map_err(|_| AppError::Database)?;
+    let options = mongodb::options::FindOptions::builder()
+        .sort(doc! { "businessDate": -1 })
+        .skip(offset as u64)
+        .limit(limit)
+        .build();
+    let mut cursor = collection.find(filter, options).await.map_err(|_| AppError::Database)?;
+    let mut items = Vec::new();
+    while cursor.advance().await.map_err(|_| AppError::Database)? {
+        let d: Document = cursor.deserialize_current().map_err(|_| AppError::Database)?;
+        let staff_id = doc_str(&d, "staffId");
+        let (staff_name, staff_branch) = staff
+            .get(&staff_id)
+            .cloned()
+            .unwrap_or_else(|| (staff_id.clone(), String::new()));
+        let branch_id = doc_str(&d, "branchId");
+        let branch_id = if branch_id.is_empty() {
+            staff_branch
+        } else {
+            branch_id
+        };
+        let clock_in = doc_dt(&d, "clockInAt");
+        let clock_out = doc_dt(&d, "clockOutAt");
+        let missing_clock_out = !clock_in.is_empty() && clock_out.is_empty();
+        let derived_status = if missing_clock_out {
+            "ongoing"
+        } else if !clock_in.is_empty() && !clock_out.is_empty() {
+            "completed"
+        } else {
+            "absent"
+        };
+        let doc_status = doc_str(&d, "status");
+        let derived_status_string = derived_status.to_string();
+        let attendance_status = if doc_status.is_empty() {
+            derived_status_string
+        } else {
+            doc_status
+        };
+        let source = doc_str(&d, "source");
+        let source = if source.is_empty() {
+            "manual".to_string()
+        } else {
+            source
+        };
+        let clock_in_millis = doc_dt_millis(&d, &["clockInAt"]);
+        let clock_out_millis = doc_dt_millis(&d, &["clockOutAt"]);
+        let worked = if clock_in_millis > 0 && clock_out_millis > clock_in_millis {
+            (clock_out_millis - clock_in_millis) / 60000
+        } else {
+            0
+        };
+        let worked_minutes = doc_i64(&d, &["netMinutes", "workedMinutes"]).max(worked);
+        let status_field = attendance_status.clone();
+        items.push(serde_json::json!({
+            "id": doc_id_string(&d),
+            "branchId": branch_id,
+            "branchName": branch_names.get(&branch_id).cloned().unwrap_or_default(),
+            "staffId": staff_id,
+            "staffName": staff_name,
+            "businessDate": doc_str(&d, "businessDate"),
+            "clockInAt": clock_in,
+            "clockOutAt": clock_out,
+            "status": status_field,
+            "attendanceStatus": attendance_status,
+            "overtimeMinutes": doc_i64(&d, &["overtimeMinutes"]),
+            "workedMinutes": worked_minutes,
+            "lateMinutes": doc_i64(&d, &["lateMinutes"]),
+            "missingClockOut": missing_clock_out,
+            "source": source,
+            "version": doc_i64(&d, &["version"]).max(1),
+        }));
+    }
+    let filters = serde_json::json!({
+        "branchId": query.branch_id,
+        "from": query.from,
+        "to": query.to,
+        "staffId": query.staff_id,
+        "status": query.status,
+        "search": query.search,
+    });
+    Ok(ok(ops_envelope(items, limit, offset, total, filters)))
+}
+
+async fn owner_attendance_corrections(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(attendance_id): Path<String>,
+    Json(request): Json<OwnerAttendanceCorrectionRequest>,
+) -> Result<axum::response::Response, AppError> {
+    let context = context_from_headers(&state, &headers).await?;
+    require_owner_scope(&context)?;
+    let attendance = parse_object_id(&attendance_id)?;
+    let existing = find_attendance(&state.store.database, &context.salon_id, &attendance).await?;
+    if request.clock_out_at.is_none() && request.reason.is_none() && request.note.is_none() {
+        return Err(AppError::Validation(
+            "Provide a new clock-out time or a reason for the correction.".to_string(),
+        ));
+    }
+    let mut set = Document::new();
+    set.insert("updatedBy", &context.user_id);
+    if let Some(clock_out_at) = request.clock_out_at.as_deref() {
+        let parsed = chrono::DateTime::parse_from_rfc3339(clock_out_at)
+            .map_err(|_| {
+                AppError::Validation("clockOutAt must be an RFC3339 timestamp.".to_string())
+            })?
+            .with_timezone(&chrono::Utc);
+        let clock_in_millis = doc_dt_millis(&existing, &["clockInAt"]);
+        let out_millis = parsed.timestamp_millis();
+        let gross = if clock_in_millis > 0 && out_millis > clock_in_millis {
+            (out_millis - clock_in_millis) / 60000
+        } else {
+            0
+        };
+        let break_minutes = doc_i64(&existing, &["breakMinutes"]).max(0);
+        let net = (gross - break_minutes).max(0);
+        set.insert("clockOutAt", DateTime::from_millis(out_millis));
+        set.insert("status", "clocked_out");
+        set.insert("grossMinutes", gross);
+        set.insert("netMinutes", net);
+        set.insert("missingClockOut", false);
+        set.insert("correctedAt", DateTime::now());
+    }
+    let collection = state.store.database.collection::<Document>("attendances");
+    collection
+        .update_one(
+            doc! { "_id": &attendance, "salonId": &context.salon_id },
+            doc! { "$set": set.clone() },
+            None,
+        )
+        .await
+        .map_err(|_| AppError::Database)?;
+    let correction = doc! {
+        "attendanceId": attendance.to_hex().clone(),
+        "salonId": &context.salon_id,
+        "staffId": doc_str(&existing, "staffId"),
+        "type": "punch-time",
+        "oldClockOutAt": doc_dt(&existing, "clockOutAt"),
+        "newClockOutAt": request.clock_out_at.clone().unwrap_or_default(),
+        "reason": request.reason.clone().unwrap_or_default(),
+        "note": request.note.clone().unwrap_or_default(),
+        "requestedByUserId": &context.user_id,
+        "status": "applied",
+        "createdAt": DateTime::now(),
+        "updatedAt": DateTime::now(),
+    };
+    state
+        .store
+        .database
+        .collection::<Document>("attendancecorrections")
+        .insert_one(correction, None)
+        .await
+        .map_err(|_| AppError::Database)?;
+    Ok(ok(serde_json::json!({
+        "id": attendance.to_hex(),
+        "attendanceId": attendance.to_hex(),
+        "type": "punch-time",
+        "applied": true,
+        "status": "applied",
+        "correctedClockOutAt": request.clock_out_at.clone().unwrap_or_default(),
+        "reason": request.reason.clone().unwrap_or_default(),
+        "updatedAt": DateTime::now().try_to_rfc3339_string().unwrap_or_default(),
+    })))
+}
+
+async fn owner_attendance_reset(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(attendance_id): Path<String>,
+    Json(request): Json<OwnerAttendanceResetRequest>,
+) -> Result<axum::response::Response, AppError> {
+    let context = context_from_headers(&state, &headers).await?;
+    require_owner_scope(&context)?;
+    let attendance = parse_object_id(&attendance_id)?;
+    let existing = find_attendance(&state.store.database, &context.salon_id, &attendance).await?;
+    let mut set = Document::new();
+    set.insert("updatedBy", &context.user_id);
+    set.insert("missingClockOut", true);
+    let reset_kind = if let Some(manual) = request.manual_minutes {
+        set.insert("grossMinutes", manual);
+        set.insert("netMinutes", manual);
+        set.insert("status", "clocked_out");
+        "manual-minutes"
+    } else {
+        set.insert("status", "active");
+        "clear-clock-out"
+    };
+    let collection = state.store.database.collection::<Document>("attendances");
+    if reset_kind == "clear-clock-out" {
+        collection
+            .update_one(
+                doc! { "_id": &attendance, "salonId": &context.salon_id },
+                doc! { "$set": set.clone(), "$unset": { "clockOutAt": "" } },
+                None,
+            )
+            .await
+            .map_err(|_| AppError::Database)?;
+    } else {
+        collection
+            .update_one(
+                doc! { "_id": &attendance, "salonId": &context.salon_id },
+                doc! { "$set": set.clone() },
+                None,
+            )
+            .await
+            .map_err(|_| AppError::Database)?;
+    }
+    state
+        .store
+        .database
+        .collection::<Document>("attendancecorrections")
+        .insert_one(
+            doc! {
+                "attendanceId": attendance.to_hex().clone(),
+                "salonId": &context.salon_id,
+                "staffId": doc_str(&existing, "staffId"),
+                "type": "reset",
+                "manualMinutes": request.manual_minutes.unwrap_or_default(),
+"reason": request.reason.clone().unwrap_or_default(),
+        "note": request.note.clone().unwrap_or_default(),
+        "requestedByUserId": &context.user_id,
+        "status": "applied",
+        "createdAt": DateTime::now(),
+        "updatedAt": DateTime::now(),
+    },
+            None,
+        )
+        .await
+        .map_err(|_| AppError::Database)?;
+    Ok(ok(serde_json::json!({
+        "id": attendance.to_hex(),
+        "attendanceId": attendance.to_hex(),
+        "type": "reset",
+        "applied": true,
+        "manualMinutes": request.manual_minutes.unwrap_or_default(),
+        "status": "applied",
+        "reason": request.reason.clone().unwrap_or_default(),
+        "updatedAt": DateTime::now().try_to_rfc3339_string().unwrap_or_default(),
+    })))
+}
+
+async fn owner_staff_detail(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(staff_id): Path<String>,
+) -> Result<axum::response::Response, AppError> {
+    let context = context_from_headers(&state, &headers).await?;
+    require_owner_scope(&context)?;
+    let result = state
+        .owner
+        .staff(&context, OwnerListQuery { branch_id: None, limit: None })
+        .await?;
+    let found = result
+        .get("items")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default()
+        .into_iter()
+        .find(|item| item.get("id").and_then(|v| v.as_str()) == Some(staff_id.as_str()));
+    let mut staff_json = found.ok_or_else(|| AppError::NotFound("Staff member not found.".to_string()))?;
+    let branch_ids: Vec<String> = {
+        let user = find_staff_user(&state.store.database, &context.salon_id, &staff_id).await?;
+        user.as_ref()
+            .map(|u| {
+                let mut ids: Vec<String> = u
+                    .get_array("branchIds")
+                    .map(|a| {
+                        a.iter()
+                            .filter_map(|b| b.as_str().map(str::to_string))
+                            .collect::<Vec<String>>()
+                    })
+                    .unwrap_or_default();
+                let branch = doc_str(u, "branchId");
+                if !branch.is_empty() && !ids.contains(&branch) {
+                    ids.push(branch);
+                }
+                ids
+            })
+            .unwrap_or_default()
+    };
+    let branch_names = branch_name_map(&state.store.database, &context.salon_id).await;
+    let branches: Vec<serde_json::Value> = branch_ids
+        .clone()
+        .into_iter()
+        .map(|id| {
+            serde_json::json!({
+                "id": id,
+                "name": branch_names.get(&id).cloned().unwrap_or_else(|| id.clone()),
+            })
+        })
+        .collect();
+    if let Some(obj) = staff_json.as_object_mut() {
+        obj.insert("branches".to_string(), serde_json::json!(branches));
+        obj.insert("branchIds".to_string(), serde_json::json!(branch_ids));
+        obj.insert(
+            "capabilities".to_string(),
+            serde_json::json!({ "loginEnabled": true, "schedulingEnabled": true, "transferEnabled": true }),
+        );
+    }
+    Ok(ok(staff_json))
+}
+
+async fn owner_staff_status(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(staff_id): Path<String>,
+    Json(request): Json<OwnerStaffStatusRequest>,
+) -> Result<axum::response::Response, AppError> {
+    let context = context_from_headers(&state, &headers).await?;
+    require_owner_scope(&context)?;
+    let status = request.status.trim().to_string();
+    if !["active", "disabled", "suspended"].contains(&status.as_str()) {
+        return Err(AppError::Validation(
+            "status must be active, disabled, or suspended.".to_string(),
+        ));
+    }
+    let user = find_staff_user(&state.store.database, &context.salon_id, &staff_id)
+        .await?
+        .ok_or_else(|| AppError::NotFound("Staff member not found.".to_string()))?;
+    let user_id = doc_id_string(&user);
+    state
+        .store
+        .database
+        .collection::<Document>("users")
+        .update_one(
+            doc! { "_id": parse_object_id(&user_id)?, "salonId": &context.salon_id },
+            doc! {
+                "$set": {
+                    "status": status.clone(),
+                    "statusChangedBy": &context.user_id,
+                    "statusChangedAt": DateTime::now(),
+                    "statusChangeReason": request.reason.clone().unwrap_or_default(),
+                    "updatedAt": DateTime::now(),
+                }
+            },
+            None,
+        )
+        .await
+        .map_err(|_| AppError::Database)?;
+    Ok(ok(serde_json::json!({
+        "id": user_id,
+        "loginId": doc_str(&user, "loginId"),
+        "status": status,
+        "reason": request.reason.clone().unwrap_or_default(),
+        "updatedAt": DateTime::now().try_to_rfc3339_string().unwrap_or_default(),
+    })))
+}
+
+async fn owner_staff_login(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(staff_id): Path<String>,
+    Json(request): Json<OwnerStaffLoginRequest>,
+) -> Result<axum::response::Response, AppError> {
+    let context = context_from_headers(&state, &headers).await?;
+    require_owner_scope(&context)?;
+    let login_id = request.login_id.trim().to_string();
+    if login_id.is_empty() {
+        return Err(AppError::Validation("loginId is required.".to_string()));
+    }
+    let generated_password = request
+        .password
+        .clone()
+        .unwrap_or_else(|| {
+            rand::thread_rng()
+                .sample_iter(&Alphanumeric)
+                .take(12)
+                .map(char::from)
+                .collect()
+        });
+    if !request.password.is_none() && request.password.as_deref().unwrap_or("").len() < 4 {
+        return Err(AppError::Validation(
+            "password must be at least 4 characters.".to_string(),
+        ));
+    }
+    let password_hash =
+        bcrypt::hash(&generated_password, bcrypt::DEFAULT_COST).map_err(|_| AppError::Internal)?;
+    let role = request.role.clone().unwrap_or_else(|| "staff".to_string());
+    let status = request.status.clone().unwrap_or_else(|| "active".to_string());
+    let branch_ids = request.branch_ids.clone().unwrap_or_default();
+    let branch_id = branch_ids.first().cloned().unwrap_or_else(|| context.branch_id.clone());
+    let existing = find_staff_user(&state.store.database, &context.salon_id, &staff_id).await?;
+    let now = DateTime::now();
+    let id = if let Some(user) = existing {
+        let user_oid = parse_object_id(&doc_id_string(&user))?;
+        state
+            .store
+            .database
+            .collection::<Document>("users")
+            .update_one(
+                doc! { "_id": user_oid, "salonId": &context.salon_id },
+                doc! {
+                    "$set": {
+                        "loginId": login_id.clone(),
+                        "loginIdNormalized": login_id.to_lowercase(),
+                        "role": role.clone(),
+                        "status": status.clone(),
+                        "branchIds": &branch_ids,
+                        "branchId": &branch_id,
+                        "passwordHash": &password_hash,
+                        "email": request.email.clone(),
+                        "updatedAt": now.clone(),
+                    }
+                },
+                None,
+            )
+            .await
+            .map_err(|_| AppError::Database)?;
+        user_oid.to_hex()
+    } else {
+        let staff_permissions =
+            default_user_permissions_from_salon(&state.store.database, &context.salon_id).await?;
+        let refresh_tokens: Vec<Document> = Vec::new();
+        let insert = doc! {
+            "salonId": &context.salon_id,
+            "loginId": &login_id,
+            "loginIdNormalized": login_id.to_lowercase(),
+            "name": &login_id,
+            "email": request.email.clone(),
+            "passwordHash": &password_hash,
+            "role": &role,
+            "staffId": &staff_id,
+            "branchId": &branch_id,
+            "branchIds": &branch_ids,
+            "status": &status,
+            "staffAppPermissions": staff_permissions,
+            "crmPermissions": Vec::<String>::new(),
+            "totpEnabled": false,
+            "recoveryCodes": Vec::<String>::new(),
+            "refreshTokens": refresh_tokens,
+            "hourlyRatePaise": 0,
+            "createdAt": now.clone(),
+            "updatedAt": now.clone(),
+        };
+        let result = state
+            .store
+            .database
+            .collection::<Document>("users")
+            .insert_one(insert, None)
+            .await
+            .map_err(|_| AppError::Database)?;
+        result
+            .inserted_id
+            .as_object_id()
+            .map(|oid| oid.to_hex())
+            .unwrap_or_default()
+    };
+    Ok(ok(serde_json::json!({
+        "id": id,
+        "staffId": staff_id,
+        "loginId": login_id,
+        "email": request.email.unwrap_or_default(),
+        "role": role,
+        "status": status,
+        "branchIds": branch_ids,
+        "branchId": branch_id,
+        "loginStatus": "active",
+        "tempPassword": generated_password,
+        "credentialsChanged": false,
+        "sendCredentials": request.send_credentials.unwrap_or_default(),
+        "updatedAt": now.try_to_rfc3339_string().unwrap_or_default(),
+    })))
+}
+
+async fn default_user_permissions_from_salon(database: &mongodb::Database, salon_id: &str) -> Result<Vec<String>, AppError> {
+    let owner = database
+        .collection::<Document>("users")
+        .find_one(
+            doc! { "salonId": salon_id, "role": "owner" },
+            None,
+        )
+        .await
+        .map_err(|_| AppError::Database)?;
+    if let Some(doc) = owner {
+        if let Ok(perms) = doc.get_array("staffAppPermissions") {
+            let perms: Vec<String> = perms
+                .iter()
+                .filter_map(|p| p.as_str().map(str::to_string))
+                .take(8)
+                .collect();
+            if !perms.is_empty() {
+                return Ok(perms);
+            }
+        }
+    }
+    Ok(["read:appointments", "create:appointments", "update:appointments", "read:clients", "create:clients", "update:clients"]
+        .iter()
+        .map(|p| p.to_string())
+        .collect())
+}
+
+async fn owner_staff_transfer(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(staff_id): Path<String>,
+    Json(request): Json<OwnerStaffTransferRequest>,
+) -> Result<axum::response::Response, AppError> {
+    let context = context_from_headers(&state, &headers).await?;
+    require_owner_scope(&context)?;
+    let to_branch = request.branch_id.trim().to_string();
+    if to_branch.is_empty() {
+        return Err(AppError::Validation("branchId is required.".to_string()));
+    }
+    let branches = resolve_branch_ids(&context, Some(&to_branch))?;
+    if !branches.map(|ids| ids.contains(&to_branch)).unwrap_or(true) {
+        return Err(AppError::Authorization);
+    }
+    let user = find_staff_user(&state.store.database, &context.salon_id, &staff_id)
+        .await?
+        .ok_or_else(|| AppError::NotFound("Staff member not found.".to_string()))?;
+    let user_oid = parse_object_id(&doc_id_string(&user))?;
+    let from_branch = doc_str(&user, "branchId");
+    state
+        .store
+        .database
+        .collection::<Document>("users")
+        .update_one(
+            doc! { "_id": user_oid, "salonId": &context.salon_id },
+            doc! {
+                "$set": {
+                    "branchId": &to_branch,
+                    "branchIds": vec![&to_branch],
+                    "updatedAt": DateTime::now(),
+                },
+                "$push": {
+                    "organizationalChanges": doc! {
+                        "type": "transfer",
+                        "fromBranchId": &from_branch,
+                        "toBranchId": &to_branch,
+                        "effectiveFrom": request.effective_from.clone().unwrap_or_default(),
+                        "note": request.note.clone().unwrap_or_default(),
+                        "changedByUserId": &context.user_id,
+                        "at": DateTime::now(),
+                    }
+                }
+            },
+            None,
+        )
+        .await
+        .map_err(|_| AppError::Database)?;
+    Ok(ok(serde_json::json!({
+        "id": doc_id_string(&user),
+        "fromBranchId": from_branch,
+        "toBranchId": to_branch,
+        "effectiveFrom": request.effective_from.unwrap_or_default(),
+        "note": request.note.unwrap_or_default(),
+        "updatedAt": DateTime::now().try_to_rfc3339_string().unwrap_or_default(),
+    })))
+}
+
+async fn owner_staff_schedules(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(staff_id): Path<String>,
+    Json(request): Json<OwnerStaffScheduleRequest>,
+) -> Result<axum::response::Response, AppError> {
+    let context = context_from_headers(&state, &headers).await?;
+    require_owner_scope(&context)?;
+    if chrono::NaiveDate::parse_from_str(&request.schedule_date, "%Y-%m-%d").is_err() {
+        return Err(AppError::Validation(
+            "scheduleDate must be in YYYY-MM-DD format.".to_string(),
+        ));
+    }
+    if !is_time_string(&request.start_time) || !is_time_string(&request.end_time) {
+        return Err(AppError::Validation(
+            "startTime and endTime must be in HH:MM format.".to_string(),
+        ));
+    }
+    let user = find_staff_user(&state.store.database, &context.salon_id, &staff_id)
+        .await?
+        .ok_or_else(|| AppError::NotFound("Staff member not found.".to_string()))?;
+    let status = request.status.clone().unwrap_or_else(|| "scheduled".to_string());
+    let now = DateTime::now();
+    let insert = doc! {
+        "salonId": &context.salon_id,
+        "branchId": doc_str(&user, "branchId"),
+        "staffId": &staff_id,
+        "scheduleDate": &request.schedule_date,
+        "startTime": &request.start_time,
+        "endTime": &request.end_time,
+        "status": &status,
+        "version": 1,
+        "createdAt": now.clone(),
+        "updatedAt": now.clone(),
+        "createdByUserId": &context.user_id,
+    };
+    let result = state
+        .store
+        .database
+        .collection::<Document>("schedules")
+        .insert_one(insert, None)
+        .await
+        .map_err(|_| AppError::Database)?;
+    let id = result.inserted_id.as_object_id().map(|o| o.to_hex()).unwrap_or_default();
+    Ok(ok(serde_json::json!({
+        "id": id,
+        "branchId": doc_str(&user, "branchId"),
+        "staffId": staff_id,
+        "scheduleDate": request.schedule_date,
+        "startTime": request.start_time,
+        "endTime": request.end_time,
+        "status": status,
+        "version": 1,
+        "createdAt": now.try_to_rfc3339_string().unwrap_or_default(),
+        "updatedAt": now.try_to_rfc3339_string().unwrap_or_default(),
+    })))
+}
+
+fn is_time_string(value: &str) -> bool {
+    let mut parts = value.split(':');
+    let hours = parts.next().and_then(|p| p.parse::<u32>().ok());
+    let minutes = parts.next().and_then(|p| p.parse::<u32>().ok());
+    match (hours, minutes, parts.next()) {
+        (Some(h), Some(m), None) => h < 24 && m < 60,
+        _ => false,
+    }
+}
+
+async fn owner_staff_commissions(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(staff_id): Path<String>,
+    Json(request): Json<OwnerStaffCommissionRequest>,
+) -> Result<axum::response::Response, AppError> {
+    let context = context_from_headers(&state, &headers).await?;
+    require_owner_scope(&context)?;
+    if request.period.trim().is_empty() {
+        return Err(AppError::Validation("period is required.".to_string()));
+    }
+    let now = chrono::Utc::now().date_naive().to_string();
+    let to = request.to.clone().unwrap_or_else(|| now.clone());
+    let from = request
+        .from
+        .clone()
+        .unwrap_or_else(|| shift_day(&now, -30));
+    let _ = finance_window(&state.store.database, &context.salon_id, &None, &from, &to).await?;
+    let staff_sales = {
+        let mut appt_staff: HashMap<String, String> = HashMap::new();
+        {
+            let mut cursor = state
+                .store
+                .database
+                .collection::<Document>("appointments")
+                .find(doc! { "salonId": &context.salon_id, "staffId": &staff_id }, None)
+                .await
+                .map_err(|_| AppError::Database)?;
+            while cursor.advance().await.map_err(|_| AppError::Database)? {
+                let d: Document = cursor.deserialize_current().map_err(|_| AppError::Database)?;
+                appt_staff.insert(doc_id_string(&d), doc_str(&d, "staffId"));
+            }
+        }
+        let mut total = 0i64;
+        let mut invoice_count = 0i64;
+        for d in invoice_docs(&state.store.database, &context.salon_id, &None, &from, &to).await? {
+            let status = doc_str(&d, "status");
+            if status == "void" || status == "refunded" || status == "cancelled" {
+                continue;
+            }
+            let appointment_id = doc_str(&d, "appointmentId");
+            if !appointment_id.is_empty() && appt_staff.contains_key(&appointment_id) {
+                total += doc_i64(&d, &["grandTotalPaise"]);
+                invoice_count += 1;
+            }
+        }
+        (total, invoice_count)
+    };
+    let (sales, invoice_count) = staff_sales;
+    Ok(ok(serde_json::json!({
+        "staffId": staff_id,
+        "period": request.period,
+        "from": from,
+        "to": to,
+        "revenuePaise": sales,
+        "invoiceCount": invoice_count,
+        "serviceRevenuePaise": sales,
+        "productRevenuePaise": 0,
+        "commissionPaise": 0,
+        "commissionRatePct": 0,
+        "currency": "INR",
+        "generatedAt": DateTime::now().try_to_rfc3339_string().unwrap_or_default(),
+    })))
+}
+
+async fn owner_marketing_list(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Query(query): Query<OwnerMarketingQuery>,
+) -> Result<axum::response::Response, AppError> {
+    let context = context_from_headers(&state, &headers).await?;
+    require_owner_scope(&context)?;
+    let _branches = resolve_branch_ids(&context, query.branch_id.as_deref())?;
+    let limit = query.limit.or(query.page_size).unwrap_or(50).clamp(1, 200);
+    let offset = query.offset.map(|o| o.max(0)).unwrap_or_else(|| (query.page.unwrap_or(1).max(1) - 1) * limit);
+    let mut filter = doc! { "salonId": &context.salon_id };
+    if let Some(status) = query.status.as_deref().filter(|s| !s.is_empty()) {
+        filter.insert("status", status);
+    }
+    let collection = state.store.database.collection::<Document>("campaigns");
+    let total = collection
+        .count_documents(filter.clone(), None)
+        .await
+        .map_err(|_| AppError::Database)?;
+    let options = mongodb::options::FindOptions::builder()
+        .sort(doc! { "createdAt": -1 })
+        .skip(offset as u64)
+        .limit(limit)
+        .build();
+    let mut cursor = collection.find(filter, options).await.map_err(|_| AppError::Database)?;
+    let mut items = Vec::new();
+    while cursor.advance().await.map_err(|_| AppError::Database)? {
+        let d: Document = cursor.deserialize_current().map_err(|_| AppError::Database)?;
+        let mut item = document_json(d.clone());
+        if let Some(obj) = item.as_object_mut() {
+            obj.insert("id".to_string(), serde_json::json!(doc_id_string(&d)));
+            obj.shift_remove("_id");
+            obj.entry("name").or_insert_with(|| {
+                serde_json::Value::Null
+            });
+            obj.entry("campaignType").or_insert(serde_json::json!("whatsapp"));
+            obj.entry("bounceRatePct").or_insert(serde_json::json!(0));
+            obj.entry("openRatePct").or_insert(serde_json::json!(0));
+            obj.entry("conversionRatePct").or_insert(serde_json::json!(0));
+            obj.entry("recipients").or_insert(serde_json::json!(0));
+            obj.entry("createdBy").or_insert(serde_json::json!(""));
+        }
+        items.push(item);
+    }
+    let filters = serde_json::json!({
+        "branchId": query.branch_id,
+        "status": query.status,
+    });
+    Ok(ok(ops_envelope(items, limit, offset, total, filters)))
+}
+
+async fn owner_appointment_pos_handoff(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> Result<axum::response::Response, AppError> {
+    let context = context_from_headers(&state, &headers).await?;
+    require_owner_scope(&context)?;
+    let oid = parse_object_id(&id)?;
+    let collection = state.store.database.collection::<Document>("appointments");
+    let found = collection
+        .find_one(doc! { "_id": oid, "salonId": &context.salon_id }, None)
+        .await
+        .map_err(|_| AppError::Database)?
+        .ok_or_else(|| AppError::NotFound("Appointment not found.".to_string()))?;
+    let token: String = rand::thread_rng()
+        .sample_iter(&Alphanumeric)
+        .take(48)
+        .map(char::from)
+        .collect();
+    let now = DateTime::now().timestamp_millis();
+    let expiry = now + 30 * 60 * 1000;
+    collection
+        .update_one(
+            doc! { "_id": oid, "salonId": &context.salon_id },
+            doc! {
+                "$set": {
+                    "posHandoff": {
+                        "token": &token,
+                        "createdAt": DateTime::from_millis(now),
+                        "expiresAt": DateTime::from_millis(expiry),
+                        "createdByUserId": &context.user_id,
+                    }
+                }
+            },
+            None,
+        )
+        .await
+        .map_err(|_| AppError::Database)?;
+    let _ = doc_str(&found, "branchId");
+    Ok(ok(serde_json::json!({
+        "targetUrl": format!("/pos?handoff={}", token),
+        "token": token,
+        "expiresAt": DateTime::from_millis(expiry).try_to_rfc3339_string().unwrap_or_default(),
+        "appointmentId": id,
+        "branchId": doc_str(&found, "branchId"),
+        "staffId": doc_str(&found, "staffId"),
+        "createdAt": DateTime::from_millis(now).try_to_rfc3339_string().unwrap_or_default(),
+    })))
+}
+
+async fn realtime_issue_ticket(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(body): Json<OwnerRealtimeTicketRequest>,
+) -> Result<axum::response::Response, AppError> {
+    let context = context_from_headers(&state, &headers).await?;
+    let branch_id = body
+        .branch_id
+        .or_else(|| {
+            if context.branch_id.is_empty() {
+                None
+            } else {
+                Some(context.branch_id.clone())
+            }
+        })
+        .unwrap_or_default();
+    let token: String = rand::thread_rng()
+        .sample_iter(&Alphanumeric)
+        .take(48)
+        .map(char::from)
+        .collect();
+    let now = DateTime::now().timestamp_millis();
+    let expiry = now + 10 * 60 * 1000;
+    state
+        .store
+        .database
+        .collection::<Document>("realtimetickets")
+        .insert_one(
+            doc! {
+                "token": &token,
+                "salonId": &context.salon_id,
+                "branchId": &branch_id,
+                "userId": &context.user_id,
+                "createdAt": DateTime::from_millis(now),
+                "expiresAt": DateTime::from_millis(expiry),
+                "used": false,
+            },
+            None,
+        )
+        .await
+        .map_err(|_| AppError::Database)?;
+    Ok(ok(serde_json::json!({
+        "ticket": token,
+        "salonId": context.salon_id,
+        "branchId": branch_id,
+        "expiresAt": DateTime::from_millis(expiry).try_to_rfc3339_string().unwrap_or_default(),
+        "transport": "polling-compatible",
+        "serverTime": DateTime::from_millis(now).try_to_rfc3339_string().unwrap_or_default(),
+    })))
+}
+
+async fn staff_os_shift_swaps(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Query(query): Query<OwnerShiftSwapListQuery>,
+) -> Result<axum::response::Response, AppError> {
+    let context = context_from_headers(&state, &headers).await?;
+    require_staff_oversight(&context)?;
+    let branches = resolve_branch_ids(&context, query.branch_id.as_deref())?;
+    let limit = query.limit.or(query.page_size).unwrap_or(50).clamp(1, 200);
+    let offset = query.offset.map(|o| o.max(0)).unwrap_or_else(|| (query.page.unwrap_or(1).max(1) - 1) * limit);
+    let mut filter = doc! { "salonId": &context.salon_id };
+    if let Some(ids) = &branches {
+        filter.insert("branchId", doc! { "$in": ids });
+    }
+    if let Some(status) = query.status.as_deref().filter(|s| !s.is_empty()) {
+        filter.insert("status", status);
+    }
+    let names = staff_maps(&state.store.database, &context.salon_id).await?;
+    let collection = state.store.database.collection::<Document>("shiftswaps");
+    let total = collection
+        .count_documents(filter.clone(), None)
+        .await
+        .map_err(|_| AppError::Database)?;
+    let options = mongodb::options::FindOptions::builder()
+        .sort(doc! { "createdAt": -1 })
+        .skip(offset as u64)
+        .limit(limit)
+        .build();
+    let mut cursor = collection.find(filter, options).await.map_err(|_| AppError::Database)?;
+    let mut items = Vec::new();
+    while cursor.advance().await.map_err(|_| AppError::Database)? {
+        let d: Document = cursor.deserialize_current().map_err(|_| AppError::Database)?;
+        items.push(shift_swap_json(&d, &names));
+    }
+    let filters = serde_json::json!({
+        "branchId": query.branch_id,
+        "status": query.status,
+    });
+    Ok(ok(ops_envelope(items, limit, offset, total, filters)))
+}
+
+async fn staff_os_decide_shift_swap(
+    state: &Arc<AppState>,
+    context: &solastio_application::auth::RequestContext,
+    swap_id: &str,
+    request: &OwnerShiftSwapDecisionRequest,
+    action: &str,
+) -> Result<serde_json::Value, AppError> {
+    let oid = parse_object_id(swap_id)?;
+    let collection = state.store.database.collection::<Document>("shiftswaps");
+    let existing = collection
+        .find_one(doc! { "_id": oid, "salonId": &context.salon_id }, None)
+        .await
+        .map_err(|_| AppError::Database)?
+        .ok_or_else(|| AppError::NotFound("Shift swap request not found.".to_string()))?;
+    if doc_str(&existing, "status") != "pending" {
+        return Err(AppError::Conflict(
+            "This shift swap request is no longer pending.".to_string(),
+        ));
+    }
+    let set = if action == "approved" {
+        doc! {
+            "status": "approved",
+            "targetResponseNote": request.reason.clone().or_else(|| request.note.clone()).unwrap_or_else(|| "Approved by owner".to_string()),
+            "decidedBy": &context.user_id,
+            "decidedAt": DateTime::now(),
+            "updatedAt": DateTime::now(),
+        }
+    } else {
+        doc! {
+            "status": "rejected",
+            "rejectionReason": request.reason.clone().or_else(|| request.note.clone()).unwrap_or_else(|| "Rejected by owner".to_string()),
+            "decidedBy": &context.user_id,
+            "decidedAt": DateTime::now(),
+            "updatedAt": DateTime::now(),
+        }
+    };
+    let updated = collection
+        .find_one_and_update(
+            doc! { "_id": oid, "salonId": &context.salon_id, "status": "pending" },
+            doc! { "$set": set, "$inc": { "version": 1 } },
+            mongodb::options::FindOneAndUpdateOptions::builder()
+                .return_document(mongodb::options::ReturnDocument::After)
+                .build(),
+        )
+        .await
+        .map_err(|_| AppError::Database)?
+        .ok_or_else(|| AppError::Conflict("This shift swap request is no longer pending.".to_string()))?;
+    let names = staff_maps(&state.store.database, &context.salon_id).await?;
+    Ok(shift_swap_json(&updated, &names))
+}
+
+async fn staff_os_approve_shift_swap(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(swap_id): Path<String>,
+    Json(request): Json<OwnerShiftSwapDecisionRequest>,
+) -> Result<axum::response::Response, AppError> {
+    let context = context_from_headers(&state, &headers).await?;
+    require_staff_oversight(&context)?;
+    let result = staff_os_decide_shift_swap(&state, &context, &swap_id, &request, "approved").await?;
+    Ok(ok(result))
+}
+
+async fn staff_os_reject_shift_swap(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(swap_id): Path<String>,
+    Json(request): Json<OwnerShiftSwapDecisionRequest>,
+) -> Result<axum::response::Response, AppError> {
+    let context = context_from_headers(&state, &headers).await?;
+    require_staff_oversight(&context)?;
+    let result = staff_os_decide_shift_swap(&state, &context, &swap_id, &request, "rejected").await?;
+    Ok(ok(result))
+}
+
+async fn staff_os_decide_leave(
+    state: &Arc<AppState>,
+    context: &solastio_application::auth::RequestContext,
+    leave_id: &str,
+    request: &OwnerLeaveDecisionRequest,
+    decision: &str,
+) -> Result<serde_json::Value, AppError> {
+    let oid = parse_object_id(leave_id)?;
+    let collection = state.store.database.collection::<Document>("leaves");
+    let existing = collection
+        .find_one(doc! { "_id": oid, "salonId": &context.salon_id }, None)
+        .await
+        .map_err(|_| AppError::Database)?
+        .ok_or_else(|| AppError::NotFound("Leave request not found.".to_string()))?;
+    if doc_str(&existing, "status") != "pending" {
+        return Err(AppError::Conflict(
+            "This leave request is no longer pending.".to_string(),
+        ));
+    }
+    let status = if decision == "approved" {
+        "approved"
+    } else {
+        "rejected"
+    };
+    let decision_note = request
+        .reason
+        .clone()
+        .unwrap_or_else(|| format!("{} by owner", {
+            if decision == "approved" { "Approved" } else { "Rejected" }
+        }));
+    let updated = collection
+        .find_one_and_update(
+            doc! { "_id": oid, "salonId": &context.salon_id, "status": "pending" },
+            doc! {
+                "$set": {
+                    "status": status,
+                    "decisionNote": decision_note,
+                    "decidedAt": DateTime::now(),
+                    "decidedBy": &context.user_id,
+                    "updatedAt": DateTime::now(),
+                },
+                "$inc": { "version": 1 },
+            },
+            mongodb::options::FindOneAndUpdateOptions::builder()
+                .return_document(mongodb::options::ReturnDocument::After)
+                .build(),
+        )
+        .await
+        .map_err(|_| AppError::Database)?
+        .ok_or_else(|| AppError::Conflict("This leave request is no longer pending.".to_string()))?;
+    let names = staff_maps(&state.store.database, &context.salon_id).await?;
+    let staff_id = doc_str(&updated, "staffId");
+    let (staff_name, staff_branch) = names
+        .get(&staff_id)
+        .cloned()
+        .unwrap_or_else(|| (staff_id.clone(), String::new()));
+    let leave_type = doc_str(&updated, "leaveType");
+    let leave_type = if leave_type.is_empty() {
+        doc_str(&updated, "type")
+    } else {
+        leave_type
+    };
+    Ok(serde_json::json!({
+        "id": doc_id_string(&updated),
+        "branchId": staff_branch,
+        "staffId": staff_id,
+        "staffName": staff_name,
+        "leaveType": leave_type,
+        "startDate": doc_str(&updated, "startDate"),
+        "endDate": doc_str(&updated, "endDate"),
+        "days": doc_i64(&updated, &["days"]),
+        "reason": doc_str(&updated, "reason"),
+        "status": status,
+        "decisionNote": doc_str(&updated, "decisionNote"),
+        "version": doc_i64(&updated, &["version"]),
+        "decidedAt": doc_dt(&updated, "decidedAt"),
+        "documentAvailable": false,
+    }))
+}
+
+async fn staff_os_approve_leave(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(leave_id): Path<String>,
+    Json(request): Json<OwnerLeaveDecisionRequest>,
+) -> Result<axum::response::Response, AppError> {
+    let context = context_from_headers(&state, &headers).await?;
+    require_staff_oversight(&context)?;
+    let result = staff_os_decide_leave(&state, &context, &leave_id, &request, "approved").await?;
+    Ok(ok(result))
+}
+
+async fn staff_os_reject_leave(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(leave_id): Path<String>,
+    Json(request): Json<OwnerLeaveDecisionRequest>,
+) -> Result<axum::response::Response, AppError> {
+    let context = context_from_headers(&state, &headers).await?;
+    require_staff_oversight(&context)?;
+    let result = staff_os_decide_leave(&state, &context, &leave_id, &request, "rejected").await?;
+    Ok(ok(result))
+}
+
+fn default_att_verify_policy(salon_id: &str, branch_id: &str, user_id: &str) -> serde_json::Value {
+    serde_json::json!({
+        "salonId": salon_id,
+        "branchId": branch_id,
+        "allowFaceAuth": false,
+        "allowRFID": false,
+        "verifyPhotoOnClockIn": true,
+        "maxClockInOffsetMinutes": 15,
+        "lateAfterMinutes": 15,
+        "overtimeGraceMinutes": 5,
+        "autoClockOutEnabled": true,
+        "defaultShiftStart": "10:00",
+        "defaultShiftEnd": "20:00",
+        "updatedBy": user_id,
+        "updatedAt": DateTime::now().try_to_rfc3339_string().unwrap_or_default(),
+    })
+}
+
+async fn att_verify_policy(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(branch_id): Path<String>,
+) -> Result<axum::response::Response, AppError> {
+    let context = context_from_headers(&state, &headers).await?;
+    require_staff_oversight(&context)?;
+    let collection = state.store.database.collection::<Document>("attendancepolicy");
+    let found = collection
+        .find_one(
+            doc! { "salonId": &context.salon_id, "branchId": &branch_id },
+            None,
+        )
+        .await
+        .map_err(|_| AppError::Database)?;
+    let policy = match found {
+        Some(doc) => {
+            let mut value = document_json(doc.clone());
+            if let Some(obj) = value.as_object_mut() {
+                obj.insert("id".to_string(), serde_json::json!(doc_id_string(&doc)));
+                obj.shift_remove("_id");
+            }
+            value
+        }
+        None => default_att_verify_policy(&context.salon_id, &branch_id, &context.user_id),
+    };
+    Ok(ok(policy))
+}
+
+async fn att_verify_update_policy(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(branch_id): Path<String>,
+    Json(request): Json<AttVerifyPolicyRequest>,
+) -> Result<axum::response::Response, AppError> {
+    let context = context_from_headers(&state, &headers).await?;
+    require_staff_oversight(&context)?;
+    let collection = state.store.database.collection::<Document>("attendancepolicy");
+    let defaults = default_att_verify_policy(&context.salon_id, &branch_id, &context.user_id);
+    let existing = collection
+        .find_one(doc! { "salonId": &context.salon_id, "branchId": &branch_id }, None)
+        .await
+        .map_err(|_| AppError::Database)?;
+    let mut set = Document::new();
+    set.insert("updatedBy", &context.user_id);
+    set.insert("updatedAt", DateTime::now());
+    if let Some(v) = request.allow_face_auth {
+        set.insert("allowFaceAuth", v);
+    }
+    if let Some(v) = request.allow_rfid {
+        set.insert("allowRFID", v);
+    }
+    if let Some(v) = request.verify_photo_on_clock_in {
+        set.insert("verifyPhotoOnClockIn", v);
+    }
+    if let Some(v) = request.max_clock_in_offset_minutes {
+        set.insert("maxClockInOffsetMinutes", v);
+    }
+    if let Some(v) = request.late_after_minutes {
+        set.insert("lateAfterMinutes", v);
+    }
+    if let Some(v) = request.overtime_grace_minutes {
+        set.insert("overtimeGraceMinutes", v);
+    }
+    if let Some(v) = request.auto_clock_out_enabled {
+        set.insert("autoClockOutEnabled", v);
+    }
+    if let Some(v) = &request.default_shift_start {
+        set.insert("defaultShiftStart", v);
+    }
+    if let Some(v) = &request.default_shift_end {
+        set.insert("defaultShiftEnd", v);
+    }
+    let updated = collection
+        .find_one_and_update(
+            doc! { "salonId": &context.salon_id, "branchId": &branch_id },
+            doc! { "$set": set, "$setOnInsert": { "createdAt": DateTime::now() } },
+            mongodb::options::FindOneAndUpdateOptions::builder()
+                .upsert(true)
+                .return_document(mongodb::options::ReturnDocument::After)
+                .build(),
+        )
+        .await
+        .map_err(|_| AppError::Database)?;
+    let existing_defaults = existing
+        .map(|d| document_json(d))
+        .unwrap_or(defaults);
+    let mut merged = existing_defaults;
+    if let Some(obj) = merged.as_object_mut() {
+        obj.insert("branchId".to_string(), serde_json::json!(branch_id));
+        obj.insert("salonId".to_string(), serde_json::json!(context.salon_id));
+        if let Some(v) = request.allow_face_auth {
+            obj.insert("allowFaceAuth".to_string(), serde_json::json!(v));
+        }
+        if let Some(v) = request.allow_rfid {
+            obj.insert("allowRFID".to_string(), serde_json::json!(v));
+        }
+        if let Some(v) = request.verify_photo_on_clock_in {
+            obj.insert("verifyPhotoOnClockIn".to_string(), serde_json::json!(v));
+        }
+        if let Some(v) = request.max_clock_in_offset_minutes {
+            obj.insert("maxClockInOffsetMinutes".to_string(), serde_json::json!(v));
+        }
+        if let Some(v) = request.late_after_minutes {
+            obj.insert("lateAfterMinutes".to_string(), serde_json::json!(v));
+        }
+        if let Some(v) = request.overtime_grace_minutes {
+            obj.insert("overtimeGraceMinutes".to_string(), serde_json::json!(v));
+        }
+        if let Some(v) = request.auto_clock_out_enabled {
+            obj.insert("autoClockOutEnabled".to_string(), serde_json::json!(v));
+        }
+        if let Some(v) = &request.default_shift_start {
+            obj.insert("defaultShiftStart".to_string(), serde_json::json!(v));
+        }
+        if let Some(v) = &request.default_shift_end {
+            obj.insert("defaultShiftEnd".to_string(), serde_json::json!(v));
+        }
+    }
+    if let Some(updated_doc) = updated {
+        let mut backend_value = document_json(updated_doc.clone());
+        match backend_value.as_object_mut() {
+            Some(obj) => {
+                obj.insert("id".to_string(), serde_json::json!(doc_id_string(&updated_doc)));
+                obj.shift_remove("_id");
+            }
+            None => {}
+        }
+        return Ok(ok(backend_value));
+    }
+    Ok(ok(merged))
+}
+
+async fn att_verify_devices(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Query(query): Query<OwnerShiftSwapListQuery>,
+) -> Result<axum::response::Response, AppError> {
+    let context = context_from_headers(&state, &headers).await?;
+    require_staff_oversight(&context)?;
+    let limit = query.limit.or(query.page_size).unwrap_or(50).clamp(1, 200);
+    let offset = query.offset.map(|o| o.max(0)).unwrap_or_else(|| (query.page.unwrap_or(1).max(1) - 1) * limit);
+    let mut filter = doc! { "salonId": &context.salon_id };
+    if let Some(branch) = query.branch_id.as_deref().filter(|s| !s.is_empty()) {
+        filter.insert("branchId", branch);
+    }
+    let collection = state.store.database.collection::<Document>("attendedevices");
+    let total = collection
+        .count_documents(filter.clone(), None)
+        .await
+        .map_err(|_| AppError::Database)?;
+    let options = mongodb::options::FindOptions::builder()
+        .sort(doc! { "createdAt": -1 })
+        .skip(offset as u64)
+        .limit(limit)
+        .build();
+    let mut cursor = collection.find(filter, options).await.map_err(|_| AppError::Database)?;
+    let mut items = Vec::new();
+    while cursor.advance().await.map_err(|_| AppError::Database)? {
+        let d: Document = cursor.deserialize_current().map_err(|_| AppError::Database)?;
+        let mut item = document_json(d.clone());
+        if let Some(obj) = item.as_object_mut() {
+            obj.insert("id".to_string(), serde_json::json!(doc_id_string(&d)));
+            obj.shift_remove("_id");
+            obj.entry("verificationMethod")
+                .or_insert(serde_json::json!("face"));
+            obj.entry("status").or_insert(serde_json::json!("active"));
+        }
+        items.push(item);
+    }
+    let filters = serde_json::json!({ "branchId": query.branch_id });
+    Ok(ok(ops_envelope(items, limit, offset, total, filters)))
+}
+
+async fn att_verify_device_review(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(device_id): Path<String>,
+    Json(request): Json<AttVerifyDeviceReviewRequest>,
+) -> Result<axum::response::Response, AppError> {
+    let context = context_from_headers(&state, &headers).await?;
+    require_staff_oversight(&context)?;
+    let verdict = request.verdict.trim().to_string();
+    if !["approved", "rejected", "blocked"].contains(&verdict.as_str()) {
+        return Err(AppError::Validation(
+            "verdict must be approved, rejected, or blocked.".to_string(),
+        ));
+    }
+    let status = request.status.clone().unwrap_or_else(|| "reviewed".to_string());
+    let now = DateTime::now();
+    let insert = doc! {
+        "deviceId": &device_id,
+        "salonId": &context.salon_id,
+        "branchId": &context.branch_id,
+        "reviewerUserId": &context.user_id,
+        "verdict": &verdict,
+        "notes": request.notes.clone().unwrap_or_default(),
+        "status": &status,
+        "createdAt": now.clone(),
+        "updatedAt": now.clone(),
+    };
+    let result = state
+        .store
+        .database
+        .collection::<Document>("attendancecorrections")
+        .insert_one(insert, None)
+        .await
+        .map_err(|_| AppError::Database)?;
+    let id = result
+        .inserted_id
+        .as_object_id()
+        .map(|o| o.to_hex())
+        .unwrap_or_default();
+    Ok(ok(serde_json::json!({
+        "id": id,
+        "deviceId": device_id,
+        "verdict": verdict,
+        "notes": request.notes.unwrap_or_default(),
+        "status": status,
+        "type": "device-review",
+        "reviewedAt": now.try_to_rfc3339_string().unwrap_or_default(),
+    })))
+}
+
+async fn att_verify_evidence(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Query(query): Query<OwnerAttendanceListQuery>,
+) -> Result<axum::response::Response, AppError> {
+    let context = context_from_headers(&state, &headers).await?;
+    require_staff_oversight(&context)?;
+    let limit = query.limit.or(query.page_size).unwrap_or(50).clamp(1, 200);
+    let offset = query.offset.map(|o| o.max(0)).unwrap_or_else(|| (query.page.unwrap_or(1).max(1) - 1) * limit);
+    let mut filter = doc! { "salonId": &context.salon_id };
+    if let Some(branch) = query.branch_id.as_deref().filter(|s| !s.is_empty()) {
+        filter.insert("branchId", branch);
+    }
+    if let Some(staff_id) = query.staff_id.as_deref().filter(|s| !s.is_empty()) {
+        filter.insert("staffId", staff_id);
+    }
+    let mut date_criteria = Document::new();
+    if let Some(from) = query.from.as_deref().filter(|s| !s.is_empty()) {
+        date_criteria.insert("$gte", from);
+    }
+    if let Some(to) = query.to.as_deref().filter(|s| !s.is_empty()) {
+        date_criteria.insert("$lte", to);
+    }
+    if !date_criteria.is_empty() {
+        filter.insert("businessDate", date_criteria);
+    }
+    let collection = state.store.database.collection::<Document>("attendanceevidence");
+    let total = collection
+        .count_documents(filter.clone(), None)
+        .await
+        .map_err(|_| AppError::Database)?;
+    let options = mongodb::options::FindOptions::builder()
+        .sort(doc! { "businessDate": -1 })
+        .skip(offset as u64)
+        .limit(limit)
+        .build();
+    let mut cursor = collection.find(filter, options).await.map_err(|_| AppError::Database)?;
+    let mut items = Vec::new();
+    while cursor.advance().await.map_err(|_| AppError::Database)? {
+        let d: Document = cursor.deserialize_current().map_err(|_| AppError::Database)?;
+        let mut item = document_json(d.clone());
+        if let Some(obj) = item.as_object_mut() {
+            obj.insert("id".to_string(), serde_json::json!(doc_id_string(&d)));
+            obj.shift_remove("_id");
+            obj.entry("evidenceType").or_insert(serde_json::json!("photo"));
+            obj.entry("reviewStatus").or_insert(serde_json::json!("pending"));
+        }
+        items.push(item);
+    }
+    let filters = serde_json::json!({
+        "branchId": query.branch_id,
+        "staffId": query.staff_id,
+        "from": query.from,
+        "to": query.to,
+    });
+    Ok(ok(ops_envelope(items, limit, offset, total, filters)))
 }

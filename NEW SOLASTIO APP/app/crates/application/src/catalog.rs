@@ -570,7 +570,7 @@ fn slugify(value: &str) -> String {
 }
 
 fn normalize_phone(value: &str) -> String {
-    value.chars().filter(|c| c.is_ascii_digit()).collect()
+    solastio_shared::phone::normalize_phone_india(value)
 }
 
 fn default_hours() -> Vec<BranchHoursRecord> {

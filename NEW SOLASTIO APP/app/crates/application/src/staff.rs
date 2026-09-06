@@ -85,6 +85,8 @@ pub struct AttendanceDto {
     pub status: String,
     pub source: String,
     pub gross_minutes: i64,
+    pub break_minutes: i64,
+    pub net_minutes: i64,
     pub breaks: Vec<BreakDto>,
 }
 
@@ -310,6 +312,8 @@ impl StaffService {
             status: "open".to_string(),
             source: request.source.unwrap_or_else(|| "staff-app".to_string()),
             gross_minutes: 0,
+            break_minutes: 0,
+            net_minutes: 0,
             breaks: Vec::new(),
         };
         Ok(attendance_dto(self.attendance.clock_in(record).await?))
@@ -442,6 +446,8 @@ fn attendance_dto(record: AttendanceRecord) -> AttendanceDto {
         status: record.status,
         source: record.source,
         gross_minutes: record.gross_minutes,
+        break_minutes: record.break_minutes,
+        net_minutes: record.net_minutes,
         breaks: record
             .breaks
             .into_iter()

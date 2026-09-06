@@ -1,0 +1,14 @@
+node_modules/
+www/
+.angular/
+.vercel/
+android/
+apk-output/
+playwright-report/
+*.log
+*.apk
+*.key
+*.env
+
+.vercel
+.env*

@@ -1828,5 +1828,5 @@ fn branch_allowed(context: &RequestContext, branch_id: &str) -> bool {
 }
 
 fn normalize_phone(value: &str) -> String {
-    value.chars().filter(|c| c.is_ascii_digit()).collect()
+    solastio_shared::phone::normalize_phone_india(value)
 }

@@ -1283,13 +1283,15 @@ impl FinanceService {
                 "Redemption exceeds gift card balance.".to_string(),
             ));
         }
-        let new_balance_paise = gift_card.balance_paise - amount_paise;
-        let set_redeemed = new_balance_paise == 0;
         let updated = self
             .finance
-            .redeem_gift_card(id, new_balance_paise, set_redeemed)
-            .await?
-            .ok_or_else(|| AppError::NotFound("Gift card not found.".to_string()))?;
+            .redeem_gift_card(&context.salon_id, id, amount_paise)
+            .await?;
+        let Some(updated) = updated else {
+            return Err(AppError::Validation(
+                "Redemption exceeds gift card balance or the card is no longer active.".to_string(),
+            ));
+        };
         self.audit(
             context,
             "gift_card.redeem",

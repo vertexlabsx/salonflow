@@ -22,7 +22,9 @@ pub fn has_permission(grants: &[String], permission: &str) -> bool {
 fn legacy_aliases(permission: &str) -> &'static [&'static str] {
     match permission {
         "read:appointments" => &["appointments.read", "appointments.manage"],
-        "create:appointments" | "update:appointments" | "write:appointments" => &["appointments.manage"],
+        "create:appointments" | "update:appointments" | "write:appointments" => {
+            &["appointments.manage"]
+        }
         "read:clients" => &["clients.read", "clients.manage"],
         "create:clients" | "update:clients" | "write:clients" => &["clients.manage"],
         "allow:staff-checkin-checkout" => &["attendance.manage"],

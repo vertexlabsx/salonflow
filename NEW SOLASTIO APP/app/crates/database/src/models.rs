@@ -325,6 +325,10 @@ pub struct AttendanceRecord {
     #[serde(default)]
     pub gross_minutes: i64,
     #[serde(default)]
+    pub break_minutes: i64,
+    #[serde(default)]
+    pub net_minutes: i64,
+    #[serde(default)]
     pub breaks: Vec<AttendanceBreakRecord>,
 }
 
