@@ -2139,6 +2139,7 @@ async fn whatsapp_receive_webhook(
                 "messageId": message.message_id,
                 "text": message.text,
                 "timestamp": DateTime::from_millis(message.timestamp_ms),
+                "receivedAt": DateTime::from_millis(message.timestamp_ms),
                 "interactiveId": message.interactive_id,
                 "messageType": message.message_type,
                 "flowResponse": mongodb::bson::to_bson(&message.flow_response).map_err(|_| AppError::Validation("Invalid WhatsApp flow response.".to_string()))?,
