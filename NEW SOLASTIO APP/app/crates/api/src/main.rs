@@ -1980,13 +1980,22 @@ async fn subscribe_waba_to_webhooks(
         .send()
         .await
         .map_err(|_| AppError::ExternalService)?;
-    if response.status().as_u16() == 400 || response.status().as_u16() == 403 {
+    let status = response.status();
+    if status.is_success() {
+        return Ok(true);
+    }
+    let body = response.text().await.unwrap_or_default();
+    tracing::error!(
+        kind = "waba_subscribe",
+        %waba_id,
+        status = status.as_u16(),
+        body = %body,
+        "failed to subscribe app to waba"
+    );
+    if status.as_u16() == 400 || status.as_u16() == 403 {
         return Ok(false);
     }
-    if !response.status().is_success() {
-        return Err(AppError::ExternalService);
-    }
-    Ok(true)
+    Err(AppError::ExternalService)
 }
 
 async fn subscribe_phone_number_to_webhooks(
@@ -2006,20 +2015,33 @@ async fn subscribe_phone_number_to_webhooks(
         .send()
         .await
         .map_err(|_| AppError::ExternalService)?;
-    if response.status().as_u16() == 400 || response.status().as_u16() == 403 {
+    let status = response.status();
+    if status.is_success() {
+        return Ok(true);
+    }
+    let body = response.text().await.unwrap_or_default();
+    tracing::error!(
+        kind = "phone_subscribe",
+        %phone_number_id,
+        status = status.as_u16(),
+        body = %body,
+        "failed to subscribe app to phone number"
+    );
+    if status.as_u16() == 400 || status.as_u16() == 403 {
         return Ok(false);
     }
-    if !response.status().is_success() {
-        return Err(AppError::ExternalService);
-    }
-    Ok(true)
+    Err(AppError::ExternalService)
 }
 
 async fn resubscribe_connected_whatsapp(state: Arc<AppState>) {
     let connections = match state.whatsapp.list_connected_connections().await {
         Ok(value) => value,
-        Err(_) => return,
+        Err(err) => {
+            tracing::error!(kind = "resubscribe", error = ?err, "list connected connections failed");
+            return;
+        }
     };
+    tracing::error!(kind = "resubscribe", count = connections.len(), "resubscribe task started");
     for connection in connections {
         let Some(encrypted_token) = connection.get_str("encryptedAccessToken").ok() else {
             continue;
@@ -2028,25 +2050,42 @@ async fn resubscribe_connected_whatsapp(state: Arc<AppState>) {
             Ok(value) => value,
             Err(_) => continue,
         };
-        let waba_id = connection.get_str("wabaId").unwrap_or_default();
-        let phone_number_id = connection.get_str("phoneNumberId").unwrap_or_default();
-        let (waba_ok, phone_ok) = match (
-            subscribe_waba_to_webhooks(&state.config, &token, waba_id).await,
-            subscribe_phone_number_to_webhooks(&state.config, &token, phone_number_id).await,
-        ) {
-            (Ok(waba_ok), Ok(phone_ok)) => (waba_ok, phone_ok),
-            _ => (false, false),
-        };
-        let subscribed = waba_ok && phone_ok;
+        let waba_id = connection.get_str("wabaId").unwrap_or_default().to_string();
+        let phone_number_id = connection
+            .get_str("phoneNumberId")
+            .unwrap_or_default()
+            .to_string();
+        let waba_result = subscribe_waba_to_webhooks(&state.config, &token, &waba_id).await;
+        let phone_result =
+            subscribe_phone_number_to_webhooks(&state.config, &token, &phone_number_id).await;
+        match (&waba_result, &phone_result) {
+            (Err(waba_err), _) => tracing::error!(
+                kind = "resubscribe",
+                %waba_id,
+                %phone_number_id,
+                error = ?waba_err,
+                "waba subscribe request failed"
+            ),
+            (_, Err(phone_err)) => tracing::error!(
+                kind = "resubscribe",
+                %waba_id,
+                %phone_number_id,
+                error = ?phone_err,
+                "phone subscribe request failed"
+            ),
+            _ => {}
+        }
+        let subscribed = waba_result.unwrap_or(false) && phone_result.unwrap_or(false);
         let _ = state
             .whatsapp
-            .set_connection_webhook_subscribed(phone_number_id, subscribed)
+            .set_connection_webhook_subscribed(&phone_number_id, subscribed)
             .await;
-        tracing::info!(
+        tracing::error!(
+            kind = "resubscribe_result",
             %waba_id,
             %phone_number_id,
             subscribed,
-            "resubscribed whatsapp connection webhooks"
+            "resubscribe result"
         );
     }
 }
