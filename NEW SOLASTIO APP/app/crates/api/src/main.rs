@@ -401,6 +401,7 @@ fn whatsapp_router() -> Router<Arc<AppState>> {
             post(whatsapp_embedded_signup_callback),
         )
         .route("/disconnect", post(whatsapp_disconnect))
+        .route("/admin/cleanup-all", post(whatsapp_cleanup_all))
         .route(
             "/webhook",
             get(whatsapp_verify_webhook).post(whatsapp_receive_webhook),
@@ -2131,6 +2132,83 @@ async fn register_phone_number_if_needed(
         "phone number not registered for cloud api, attempting register"
     );
     register_phone_number(config, access_token, phone_number_id).await;
+}
+
+async fn deregister_phone_number(
+    config: &AppConfig,
+    access_token: &str,
+    phone_number_id: &str,
+) -> bool {
+    let url = format!(
+        "{}/{}/{}/deregister",
+        config.meta_graph_api_base_url.trim_end_matches('/'),
+        whatsapp_meta_api_version(config),
+        phone_number_id
+    );
+    let response = reqwest::Client::new()
+        .post(url)
+        .bearer_auth(access_token)
+        .send()
+        .await;
+    match response {
+        Ok(response) => {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            tracing::error!(
+                kind = "phone_deregister",
+                %phone_number_id,
+                status = status.as_u16(),
+                body = %body,
+                "deregister phone number result"
+            );
+            status.is_success()
+        }
+        Err(err) => {
+            tracing::error!(
+                kind = "phone_deregister",
+                %phone_number_id,
+                error = ?err,
+                "deregister phone number request failed"
+            );
+            false
+        }
+    }
+}
+
+async fn whatsapp_cleanup_all(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<axum::response::Response, AppError> {
+    let ops_key = std::env::var("WHATSAPP_OPS_KEY").unwrap_or_default();
+    if ops_key.is_empty() || headers.get("x-ops-key").and_then(|v| v.to_str().ok()) != Some(&ops_key) {
+        return Err(AppError::Authorization);
+    }
+    let connections = state
+        .whatsapp
+        .list_connected_connections()
+        .await
+        .map_err(|_| AppError::Database)?;
+    tracing::error!(
+        kind = "whatsapp_cleanup",
+        connections = connections.len(),
+        "cleanup started"
+    );
+    for doc in &connections {
+        let encrypted_token = match doc.get_str("encryptedAccessToken") {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        let token = match decrypt_secret(&state.config, encrypted_token) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        let phone_number_id = doc.get_str("phoneNumberId").unwrap_or_default();
+        deregister_phone_number(&state.config, &token, phone_number_id).await;
+    }
+    state.whatsapp.delete_all_data().await.map_err(|_| AppError::Database)?;
+    state.salons.clear_all_whatsapp_phone_numbers().await.map_err(|_| AppError::Database)?;
+    tracing::error!(kind = "whatsapp_cleanup", "cleanup complete");
+    Ok(ok(serde_json::json!({ "deleted": true })))
 }
 
 async fn graph_get_probe(

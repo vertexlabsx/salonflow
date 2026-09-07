@@ -2094,6 +2094,34 @@ impl WhatsAppRepository {
         Ok(())
     }
 
+    pub async fn delete_all_data(&self) -> Result<(), AppError> {
+        self.webhook_events
+            .delete_many(doc! {}, None)
+            .await
+            .map_err(|_| AppError::Database)?;
+        self.inbounds
+            .delete_many(doc! {}, None)
+            .await
+            .map_err(|_| AppError::Database)?;
+        self.outbounds
+            .delete_many(doc! {}, None)
+            .await
+            .map_err(|_| AppError::Database)?;
+        self.connections
+            .delete_many(doc! {}, None)
+            .await
+            .map_err(|_| AppError::Database)?;
+        self.oauth_states
+            .delete_many(doc! {}, None)
+            .await
+            .map_err(|_| AppError::Database)?;
+        self.whatsapp_sessions
+            .delete_many(doc! {}, None)
+            .await
+            .map_err(|_| AppError::Database)?;
+        Ok(())
+    }
+
     pub async fn upsert_connection(
         &self,
         salon_id: &str,
@@ -4054,6 +4082,18 @@ impl SalonRepository {
             .update_one(
                 doc! { "_id": salon_id.trim() },
                 doc! { "$pull": { "whatsappPhoneNumberIds": phone_number_id } },
+                None,
+            )
+            .await
+            .map_err(|_| AppError::Database)?;
+        Ok(())
+    }
+
+    pub async fn clear_all_whatsapp_phone_numbers(&self) -> Result<(), AppError> {
+        self.salons
+            .update_many(
+                doc! { "whatsappPhoneNumberIds": { "$exists": true } },
+                doc! { "$set": { "whatsappPhoneNumberIds": [] } },
                 None,
             )
             .await
