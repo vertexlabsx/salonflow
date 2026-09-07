@@ -2033,6 +2033,52 @@ async fn subscribe_phone_number_to_webhooks(
     Err(AppError::ExternalService)
 }
 
+async fn register_phone_number(
+    config: &AppConfig,
+    access_token: &str,
+    phone_number_id: &str,
+) -> bool {
+    let pin = std::env::var("WHATSAPP_REGISTRATION_PIN").unwrap_or_else(|_| "000000".to_string());
+    let url = format!(
+        "{}/{}/{}/register",
+        config.meta_graph_api_base_url.trim_end_matches('/'),
+        whatsapp_meta_api_version(config),
+        phone_number_id
+    );
+    let response = reqwest::Client::new()
+        .post(url)
+        .bearer_auth(access_token)
+        .json(&serde_json::json!({
+            "messaging_product": "whatsapp",
+            "pin": pin,
+        }))
+        .send()
+        .await;
+    match response {
+        Ok(response) => {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            tracing::error!(
+                kind = "phone_register",
+                %phone_number_id,
+                status = status.as_u16(),
+                body = %body,
+                "register phone number result"
+            );
+            status.is_success()
+        }
+        Err(err) => {
+            tracing::error!(
+                kind = "phone_register",
+                %phone_number_id,
+                error = ?err,
+                "register phone number request failed"
+            );
+            false
+        }
+    }
+}
+
 async fn graph_get_probe(
     config: &AppConfig,
     access_token: &str,
@@ -2096,6 +2142,7 @@ async fn resubscribe_connected_whatsapp(state: Arc<AppState>) {
         let waba_result = subscribe_waba_to_webhooks(&state.config, &token, &waba_id).await;
         let phone_result =
             subscribe_phone_number_to_webhooks(&state.config, &token, &phone_number_id).await;
+        let _ = register_phone_number(&state.config, &token, &phone_number_id).await;
         match (&waba_result, &phone_result) {
             (Err(waba_err), _) => tracing::error!(
                 kind = "resubscribe",
@@ -2251,6 +2298,7 @@ async fn whatsapp_embedded_signup_callback(
                 phone_number_id,
             )
             .await?;
+    let _ = register_phone_number(&state.config, &access_token, phone_number_id).await;
     let encrypted_access_token = encrypt_secret(&state.config, &access_token)?;
     let token_expires_at = expires_in
         .map(|seconds| DateTime::from_millis(DateTime::now().timestamp_millis() + seconds * 1000));
