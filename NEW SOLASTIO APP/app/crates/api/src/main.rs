@@ -2033,6 +2033,44 @@ async fn subscribe_phone_number_to_webhooks(
     Err(AppError::ExternalService)
 }
 
+async fn graph_get_probe(
+    config: &AppConfig,
+    access_token: &str,
+    kind: &str,
+    path_with_query: &str,
+) {
+    let url = format!(
+        "{}/{}/{}",
+        config.meta_graph_api_base_url.trim_end_matches('/'),
+        whatsapp_meta_api_version(config),
+        path_with_query
+    );
+    let response = reqwest::Client::new()
+        .get(url)
+        .bearer_auth(access_token)
+        .send()
+        .await;
+    match response {
+        Ok(response) => {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            tracing::error!(
+                kind = "graph_probe",
+                %kind,
+                status = status.as_u16(),
+                body = %body,
+                "graph probe result"
+            );
+        }
+        Err(err) => tracing::error!(
+            kind = "graph_probe",
+            %kind,
+            error = ?err,
+            "graph probe request failed"
+        ),
+    }
+}
+
 async fn resubscribe_connected_whatsapp(state: Arc<AppState>) {
     let connections = match state.whatsapp.list_connected_connections().await {
         Ok(value) => value,
@@ -2087,6 +2125,33 @@ async fn resubscribe_connected_whatsapp(state: Arc<AppState>) {
             subscribed,
             "resubscribe result"
         );
+        graph_get_probe(
+            &state.config,
+            &token,
+            "phone_webhook_config",
+            &format!(
+                "{}/?fields=id,display_phone_number,verified_name,platform_type,code_verification_status,webhook_configuration",
+                phone_number_id
+            ),
+        )
+        .await;
+        graph_get_probe(
+            &state.config,
+            &token,
+            "waba_subscribed_apps",
+            &format!("{}/subscribed_apps", waba_id),
+        )
+        .await;
+        let _ = graph_get_probe(
+            &state.config,
+            &token,
+            "waba_info",
+            &format!(
+                "{}/?fields=id,name,account_status,timezone_id,currency",
+                waba_id
+            ),
+        )
+        .await;
     }
 }
 
