@@ -159,6 +159,7 @@ async fn main() -> Result<(), AppError> {
         salons,
         config: config.clone(),
     };
+    tokio::spawn(resubscribe_connected_whatsapp(Arc::new(state.clone())));
     start_whatsapp_nudge_loop(Arc::new(state.clone()));
     start_shopify_execution_loop(Arc::new(state.clone()));
     let app = build_router(state);
@@ -1988,6 +1989,68 @@ async fn subscribe_waba_to_webhooks(
     Ok(true)
 }
 
+async fn subscribe_phone_number_to_webhooks(
+    config: &AppConfig,
+    access_token: &str,
+    phone_number_id: &str,
+) -> Result<bool, AppError> {
+    let url = format!(
+        "{}/{}/{}/subscribed_apps",
+        config.meta_graph_api_base_url.trim_end_matches('/'),
+        whatsapp_meta_api_version(config),
+        phone_number_id
+    );
+    let response = reqwest::Client::new()
+        .post(url)
+        .bearer_auth(access_token)
+        .send()
+        .await
+        .map_err(|_| AppError::ExternalService)?;
+    if response.status().as_u16() == 400 || response.status().as_u16() == 403 {
+        return Ok(false);
+    }
+    if !response.status().is_success() {
+        return Err(AppError::ExternalService);
+    }
+    Ok(true)
+}
+
+async fn resubscribe_connected_whatsapp(state: Arc<AppState>) {
+    let connections = match state.whatsapp.list_connected_connections().await {
+        Ok(value) => value,
+        Err(_) => return,
+    };
+    for connection in connections {
+        let Some(encrypted_token) = connection.get_str("encryptedAccessToken").ok() else {
+            continue;
+        };
+        let token = match decrypt_secret(&state.config, encrypted_token) {
+            Ok(value) => value,
+            Err(_) => continue,
+        };
+        let waba_id = connection.get_str("wabaId").unwrap_or_default();
+        let phone_number_id = connection.get_str("phoneNumberId").unwrap_or_default();
+        let (waba_ok, phone_ok) = match (
+            subscribe_waba_to_webhooks(&state.config, &token, waba_id).await,
+            subscribe_phone_number_to_webhooks(&state.config, &token, phone_number_id).await,
+        ) {
+            (Ok(waba_ok), Ok(phone_ok)) => (waba_ok, phone_ok),
+            _ => (false, false),
+        };
+        let subscribed = waba_ok && phone_ok;
+        let _ = state
+            .whatsapp
+            .set_connection_webhook_subscribed(phone_number_id, subscribed)
+            .await;
+        tracing::info!(
+            %waba_id,
+            %phone_number_id,
+            subscribed,
+            "resubscribed whatsapp connection webhooks"
+        );
+    }
+}
+
 async fn whatsapp_embedded_signup_callback(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -2077,7 +2140,13 @@ async fn whatsapp_embedded_signup_callback(
         }
     }
     let webhook_subscribed =
-        subscribe_waba_to_webhooks(&state.config, &access_token, &waba_id).await?;
+        subscribe_waba_to_webhooks(&state.config, &access_token, &waba_id).await?
+            && subscribe_phone_number_to_webhooks(
+                &state.config,
+                &access_token,
+                phone_number_id,
+            )
+            .await?;
     let encrypted_access_token = encrypt_secret(&state.config, &access_token)?;
     let token_expires_at = expires_in
         .map(|seconds| DateTime::from_millis(DateTime::now().timestamp_millis() + seconds * 1000));

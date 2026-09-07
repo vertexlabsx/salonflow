@@ -2058,6 +2058,42 @@ impl WhatsAppRepository {
             .map_err(|_| AppError::Database)
     }
 
+    pub async fn list_connected_connections(&self) -> Result<Vec<Document>, AppError> {
+        let options = mongodb::options::FindOptions::builder()
+            .sort(doc! { "connectedAt": -1 })
+            .build();
+        let mut cursor = self
+            .connections
+            .find(doc! { "status": "connected" }, Some(options))
+            .await
+            .map_err(|_| AppError::Database)?;
+        let mut items = Vec::new();
+        while cursor.advance().await.map_err(|_| AppError::Database)? {
+            items.push(
+                cursor
+                    .deserialize_current()
+                    .map_err(|_| AppError::Database)?,
+            );
+        }
+        Ok(items)
+    }
+
+    pub async fn set_connection_webhook_subscribed(
+        &self,
+        phone_number_id: &str,
+        subscribed: bool,
+    ) -> Result<(), AppError> {
+        self.connections
+            .update_one(
+                doc! { "phoneNumberId": phone_number_id, "status": "connected" },
+                doc! { "$set": { "webhookSubscribed": subscribed, "updatedAt": DateTime::now() } },
+                None,
+            )
+            .await
+            .map_err(|_| AppError::Database)?;
+        Ok(())
+    }
+
     pub async fn upsert_connection(
         &self,
         salon_id: &str,
