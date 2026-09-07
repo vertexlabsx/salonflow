@@ -2107,6 +2107,7 @@ impl WhatsAppRepository {
         encrypted_access_token: &str,
         token_expires_at: Option<DateTime>,
         webhook_subscribed: bool,
+        registration_pending: bool,
     ) -> Result<Document, AppError> {
         self.connections
             .find_one_and_update(
@@ -2122,6 +2123,7 @@ impl WhatsAppRepository {
                         "tokenExpiresAt": token_expires_at,
                         "status": "connected",
                         "webhookSubscribed": webhook_subscribed,
+                        "registrationPending": registration_pending,
                         "connectedAt": DateTime::now(),
                         "disconnectedAt": null,
                         "lastError": "",

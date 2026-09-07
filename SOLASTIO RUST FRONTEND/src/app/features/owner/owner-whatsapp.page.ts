@@ -1,12 +1,12 @@
-import { DatePipe } from "@angular/common";
 import { Component, OnInit, computed, signal } from "@angular/core";
 import { FormsModule } from "@angular/forms";
 import { OwnerAppService } from "./owner-app.service";
+import { OwnerContextService } from "./owner-context.service";
 import { OwnerWhatsAppBotSettings, OwnerWhatsAppConversation, OwnerWhatsAppIntelligence, OwnerWhatsAppMessage, OwnerWhatsAppMessageList } from "./owner-administration.models";
 
 @Component({
   standalone: true,
-  imports: [DatePipe, FormsModule],
+  imports: [FormsModule],
   template: `
     <section class="owner-whatsapp-page">
       <header class="whatsapp-hero">
@@ -56,7 +56,7 @@ import { OwnerWhatsAppBotSettings, OwnerWhatsAppConversation, OwnerWhatsAppIntel
         <article class="panel"><p class="owner-kicker">Top demand</p><h2>Asked services</h2><div class="chip-list">@for (service of intel?.analytics?.topServices ?? []; track service.name) { <span>{{ service.name }} · {{ service.count }}</span> } @empty { <small>No service demand detected yet.</small> }</div></article>
         <article class="panel"><p class="owner-kicker">Smart leads</p><h2>Tagged customers</h2><div class="lead-list">@for (customer of leadCustomers(); track customer.id) { <div><strong>{{ customer.name }}</strong><small>{{ customer.phone }} · {{ customer.tags.slice(0, 4).join(', ') }}</small></div> } @empty { <small>No tagged WhatsApp leads yet.</small> }</div></article>
         <article class="panel"><p class="owner-kicker">Waitlist</p><h2>Live demand</h2><div class="lead-list">@for (entry of (intel?.waitlist ?? []).slice(0, 6); track entry.id) { <div><strong>{{ entry.serviceNames.join(', ') || 'Service' }}</strong><small>{{ entry.customerPhone }} · {{ entry.date }} {{ entry.preferredTime }} · {{ entry.status }}</small></div> } @empty { <small>No active waitlist entries.</small> }</div></article>
-        <article class="panel"><p class="owner-kicker">Quality queue</p><h2>Manual review</h2><div class="lead-list">@for (item of (intel?.qualityQueue ?? []).slice(0, 6); track item.id) { <div><strong>{{ item.name }}</strong><small>{{ item.phone }} · {{ item.text }} · {{ item.receivedAt | date:'short' }}</small></div> } @empty { <small>No manual-review messages.</small> }</div></article>
+        <article class="panel"><p class="owner-kicker">Quality queue</p><h2>Manual review</h2><div class="lead-list">@for (item of (intel?.qualityQueue ?? []).slice(0, 6); track item.id) { <div><strong>{{ item.name }}</strong><small>{{ item.phone }} · {{ item.text }} · {{ dateTime(item.receivedAt) }}</small></div> } @empty { <small>No manual-review messages.</small> }</div></article>
         <article class="panel"><p class="owner-kicker">Campaign segments</p><h2>Ready audiences</h2><div class="chip-list">@for (segment of intel?.campaignSegments ?? []; track segment.key) { <span>{{ segment.key }} · {{ segment.count }}</span> } @empty { <small>No campaign segments available.</small> }</div></article>
       </section>
 
@@ -69,7 +69,7 @@ import { OwnerWhatsAppBotSettings, OwnerWhatsAppConversation, OwnerWhatsAppIntel
           @if (loadingConversations() && !conversations().length) { <div class="state">Loading conversations...</div> }
           <nav class="conversation-list" aria-label="WhatsApp conversations">
             @for (conversation of conversations(); track conversation.phone) {
-              <button type="button" [class.active]="conversation.phone === selectedPhone()" (click)="openConversation(conversation.phone)"><span class="avatar">{{ initials(conversation) }}</span><span class="summary"><strong>{{ conversation.customerName }}</strong><small>{{ conversation.phone }}</small><em>{{ conversation.lastBody || 'No message body stored' }}</em></span><span class="meta"><time [attr.datetime]="conversation.lastMessageAt || ''">{{ conversation.lastMessageAt | date:'short' }}</time><small [class.outbound]="conversation.lastDirection === 'outbound'">{{ conversation.lastDirection || 'customer' }} {{ conversation.lastStatus }}</small></span></button>
+              <button type="button" [class.active]="conversation.phone === selectedPhone()" (click)="openConversation(conversation.phone)"><span class="avatar">{{ initials(conversation) }}</span><span class="summary"><strong>{{ conversation.customerName }}</strong><small>{{ conversation.phone }}</small><em>{{ conversation.lastBody || 'No message body stored' }}</em></span><span class="meta"><time [attr.datetime]="conversation.lastMessageAt || ''">{{ dateTime(conversation.lastMessageAt) }}</time><small [class.outbound]="conversation.lastDirection === 'outbound'">{{ conversation.lastDirection || 'customer' }} {{ conversation.lastStatus }}</small></span></button>
             } @empty { <div class="state">No WhatsApp conversations found.</div> }
           </nav>
           @if (conversationPage()?.hasMore) { <button class="load-more" type="button" [disabled]="loadingConversations()" (click)="loadMoreConversations()">Load more</button> }
@@ -79,7 +79,7 @@ import { OwnerWhatsAppBotSettings, OwnerWhatsAppConversation, OwnerWhatsAppIntel
           @if (selected(); as selectedThread) {
             <header class="thread-head"><div><p class="owner-kicker">{{ selectedThread.customer.marketingOptOut ? 'Opted out of marketing' : 'Active customer' }}</p><h2>{{ selectedThread.customer.name }}</h2><span>{{ selectedThread.customer.phone }} · {{ selectedThread.customer.interactionStatus }}</span></div><div class="thread-count">{{ messagePage()?.total || messages().length }} messages</div></header>
             @if (messageError()) { <div class="state error">{{ messageError() }}</div> }
-            <div class="message-list">@for (message of orderedMessages(); track message.id) { <article class="message" [class.outbound]="message.direction === 'outbound'"><div class="bubble"><p>{{ message.body || '(empty message)' }}</p><footer><span>{{ message.type }} · {{ message.status }}</span><time [attr.datetime]="message.at || ''">{{ message.at | date:'medium' }}</time></footer>@if (message.error) { <small class="failure">{{ message.error }}</small> }</div></article> } @empty { <div class="state">No stored messages for this phone.</div> }</div>
+            <div class="message-list">@for (message of orderedMessages(); track message.id) { <article class="message" [class.outbound]="message.direction === 'outbound'"><div class="bubble"><p>{{ message.body || '(empty message)' }}</p><footer><span>{{ message.type }} · {{ message.status }}</span><time [attr.datetime]="message.at || ''">{{ dateTime(message.at) }}</time></footer>@if (message.error) { <small class="failure">{{ message.error }}</small> }</div></article> } @empty { <div class="state">No stored messages for this phone.</div> }</div>
             @if (messagePage()?.hasMore) { <button class="load-more" type="button" [disabled]="loadingMessages()" (click)="loadMoreMessages()">Load older messages</button> }
           } @else { <div class="empty-thread"><strong>Select a WhatsApp conversation</strong><p>Open a customer to inspect the stored inbound/outbound history and delivery statuses.</p></div> }
         </main>
@@ -121,7 +121,7 @@ export class OwnerWhatsAppPage implements OnInit {
   readonly actionLabels = computed(() => Object.keys(this.intelligence()?.analytics.actionCounts || {}));
   readonly leadCustomers = computed(() => (this.intelligence()?.customers || []).filter((customer) => customer.tags.length).slice(0, 8));
 
-  constructor(private readonly owner: OwnerAppService) {}
+  constructor(private readonly owner: OwnerAppService, readonly context: OwnerContextService) {}
 
   ngOnInit(): void { void this.refreshAll(); }
 
@@ -212,4 +212,6 @@ export class OwnerWhatsAppPage implements OnInit {
   initials(conversation: OwnerWhatsAppConversation): string {
     return (conversation.customerName || conversation.phone).split(/\s+/).filter(Boolean).slice(0, 2).map((part) => part[0]?.toUpperCase()).join("") || "WA";
   }
+
+  dateTime(value?: string | null): string { return value ? this.context.formatDateTime(value) : ""; }
 }

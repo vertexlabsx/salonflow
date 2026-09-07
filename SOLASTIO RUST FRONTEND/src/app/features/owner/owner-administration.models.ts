@@ -126,6 +126,7 @@ export interface OwnerWhatsAppConnection {
   verifiedName: string;
   status: "pending" | "connected" | "disconnected" | "error" | "token_expired" | "permission_revoked" | "phone_unregistered";
   webhookSubscribed: boolean;
+  registrationPending?: boolean;
   connectedAt: string | null;
   disconnectedAt: string | null;
   updatedAt: string | null;

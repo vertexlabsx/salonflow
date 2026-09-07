@@ -1668,6 +1668,7 @@ fn whatsapp_connection_json(doc: &Document) -> serde_json::Value {
         "verifiedName": doc.get_str("verifiedName").unwrap_or_default(),
         "status": doc.get_str("status").unwrap_or("connected"),
         "webhookSubscribed": doc.get_bool("webhookSubscribed").unwrap_or(false),
+        "registrationPending": doc.get_bool("registrationPending").unwrap_or(false),
         "connectedAt": doc.get_datetime("connectedAt").ok().and_then(|d| d.try_to_rfc3339_string().ok()),
         "disconnectedAt": doc.get_datetime("disconnectedAt").ok().and_then(|d| d.try_to_rfc3339_string().ok()),
         "updatedAt": doc.get_datetime("updatedAt").ok().and_then(|d| d.try_to_rfc3339_string().ok()),
@@ -2079,58 +2080,57 @@ async fn register_phone_number(
     }
 }
 
-async fn register_phone_number_if_needed(
+async fn probe_phone_platform_type(
     config: &AppConfig,
     access_token: &str,
     phone_number_id: &str,
-) {
+) -> String {
     let node_url = format!(
         "{}/{}/{}?fields=platform_type",
         config.meta_graph_api_base_url.trim_end_matches('/'),
         whatsapp_meta_api_version(config),
         phone_number_id
     );
-    let current = reqwest::Client::new()
+    let response = reqwest::Client::new()
         .get(&node_url)
         .bearer_auth(access_token)
         .send()
         .await;
-    match current {
-        Ok(response) => {
-            let body = response.text().await.unwrap_or_default();
-            let parsed = serde_json::from_str::<serde_json::Value>(&body).ok();
-            let platform = parsed
-                .as_ref()
-                .and_then(|value| value.get("platform_type"))
-                .and_then(|value| value.as_str())
-                .unwrap_or("")
-                .to_string();
-            if platform == "CLOUD_API" {
-                tracing::error!(
-                    kind = "phone_register",
-                    %phone_number_id,
-                    platform = %platform,
-                    "phone number already registered for cloud api, skipping"
-                );
-                return;
-            }
-            tracing::error!(
-                kind = "phone_register",
-                %phone_number_id,
-                platform = %platform,
-                "phone number not registered for cloud api, attempting register"
-            );
-        }
-        Err(err) => {
-            tracing::error!(
-                kind = "phone_register",
-                %phone_number_id,
-                error = ?err,
-                "phone platform probe request failed, still attempting register"
-            );
-        }
+    let body = match response {
+        Ok(response) => response.text().await.unwrap_or_default(),
+        Err(_) => return String::new(),
+    };
+    let parsed = serde_json::from_str::<serde_json::Value>(&body).ok();
+    parsed
+        .as_ref()
+        .and_then(|value| value.get("platform_type"))
+        .and_then(|value| value.as_str())
+        .unwrap_or("")
+        .to_string()
+}
+
+async fn register_phone_number_if_needed(
+    config: &AppConfig,
+    access_token: &str,
+    phone_number_id: &str,
+) {
+    let platform = probe_phone_platform_type(config, access_token, phone_number_id).await;
+    if platform == "CLOUD_API" {
+        tracing::error!(
+            kind = "phone_register",
+            %phone_number_id,
+            platform = %platform,
+            "phone number already registered for cloud api, skipping"
+        );
+        return;
     }
-    let _ = register_phone_number(config, access_token, phone_number_id).await;
+    tracing::error!(
+        kind = "phone_register",
+        %phone_number_id,
+        platform = %platform,
+        "phone number not registered for cloud api, attempting register"
+    );
+    register_phone_number(config, access_token, phone_number_id).await;
 }
 
 async fn graph_get_probe(
@@ -2353,6 +2353,8 @@ async fn whatsapp_embedded_signup_callback(
             )
             .await?;
     let _ = register_phone_number(&state.config, &access_token, phone_number_id).await;
+    let registration_pending =
+        probe_phone_platform_type(&state.config, &access_token, phone_number_id).await != "CLOUD_API";
     let encrypted_access_token = encrypt_secret(&state.config, &access_token)?;
     let token_expires_at = expires_in
         .map(|seconds| DateTime::from_millis(DateTime::now().timestamp_millis() + seconds * 1000));
@@ -2378,6 +2380,7 @@ async fn whatsapp_embedded_signup_callback(
             &encrypted_access_token,
             token_expires_at,
             webhook_subscribed,
+            registration_pending,
         )
         .await?;
     state
